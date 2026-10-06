@@ -2,8 +2,25 @@
   "name": "rephoto",
   "private": true,
   "version": "0.0.0",
+  "type": "module",
   "workspaces": [
     "apps/*",
     "packages/*"
-  ]
+  ],
+  "scripts": {
+    "dev": "node -e \"console.log('Start three processes:\\n  npm run dev:api\\n  npm run dev:worker\\n  npm run dev:web')\"",
+    "dev:api": "npm run dev -w @rephoto/api",
+    "dev:worker": "npm run dev -w @rephoto/worker",
+    "dev:web": "npm run dev -w @rephoto/web",
+    "db:migrate": "node --env-file=.env --import tsx packages/db/src/migrate.ts",
+    "db:seed": "node --env-file=.env --import tsx packages/db/src/seed.ts",
+    "test": "node --import tsx --test packages/contracts/src/collection-id.test.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
 }

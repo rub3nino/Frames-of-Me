@@ -1,535 +1,245 @@
 # RePhoto contracts
 
-Status: **FROZEN**. Implement HTTP, jobs, persistence, and `FaceEngine` against this file and `@rephoto/contracts`. Similarity is Rekognition's scale **0–100**. The default match threshold is **90** (`REKOGNITION_MIN_SIMILARITY`), inclusive (`>=`). Do not rescale to 0–1.
+Frozen MVP contract. Clarify wording only by editing this file in a follow-up; do not rename fields, routes, env vars, table columns, or job payload keys.
 
-Region is **AWS eu-central-1 only**. There is no Qdrant, no GPU host, and no InsightFace runtime. InsightFace may later replace the Rekognition adapter behind the same `FaceEngine` interface.
+Region assumption: `eu-central-1`. No Qdrant. No GPU. No SQS in the local/MVP code path.
 
-## 1. Environments
+## Monorepo
 
-| | Local compose | Production |
+npm workspaces (`apps/*`, `packages/*`):
+
+| Path | Package | Role |
 | --- | --- | --- |
-| `FACE_ENGINE` | `fake` | `rekognition` |
-| Objects | MinIO, bucket `rephoto`, private | S3 `eu-central-1`, private bucket |
-| Mail | SMTP to Mailpit | SES in `eu-central-1` |
-| Queue | Postgres table `jobs` | SQS. Message body is the same JSON as `jobs.payload` |
-| AWS calls | none | Rekognition + S3 + SES, all `eu-central-1` |
+| `apps/api` | `@rephoto/api` | Hono on Node, port **8787**. HTTP only. |
+| `apps/worker` | `@rephoto/worker` | Polls Postgres `jobs`. No HTTP server. |
+| `apps/web` | `@rephoto/web` | Next.js, port **3000**, Italian UI. |
+| `packages/contracts` | `@rephoto/contracts` | Zod schemas + `FaceEngine` **types** and `rekognitionCollectionId`. No AWS SDK. |
+| `packages/db` | `@rephoto/db` | SQL migrations, `migrate`, `seed`. |
+| `packages/face-engine` | `@rephoto/face-engine` | `FaceEngine` implementations (`fake`, `rekognition`). No caller imports the AWS SDK except this package. |
 
-`AWS_REGION` and `S3_REGION` are always `eu-central-1`. Reject any other region.
+Callers depend on `FaceEngine` from `@rephoto/contracts`. Swapping InsightFace in later means a new class in `packages/face-engine` plus `FACE_ENGINE`. Callers stay unchanged.
 
-### Env vars
-
-Validated by `envSchema` in `@rephoto/contracts`.
-
-| Name | Local example | Rule |
-| --- | --- | --- |
-| `DATABASE_URL` | `postgres://rephoto:rephoto@localhost:5432/rephoto` | required |
-| `S3_ENDPOINT` | `http://localhost:9000` | required for MinIO (`FACE_ENGINE=fake`). Omit in production so the AWS SDK uses S3 in `eu-central-1` |
-| `S3_BUCKET` | `rephoto` | one private bucket |
-| `S3_ACCESS_KEY_ID` | `rephoto` | MinIO root user locally. IAM in production |
-| `S3_SECRET_ACCESS_KEY` | dev placeholder | secret, env only |
-| `S3_REGION` | `eu-central-1` | literal |
-| `MAIL_TRANSPORT` | `smtp` | `smtp` or `ses` |
-| `MAILPIT_SMTP_HOST` | `localhost` | required when `MAIL_TRANSPORT=smtp`. Inside compose: `mailpit` |
-| `MAILPIT_SMTP_PORT` | `1025` | required when `MAIL_TRANSPORT=smtp` |
-| `MAILPIT_UI_URL` | `http://localhost:8025` | local UI only |
-| `FACE_ENGINE` | `fake` | `fake` or `rekognition` |
-| `REKOGNITION_COLLECTION_PREFIX` | `rephoto` | charset `[A-Za-z0-9_.\-]+` |
-| `REKOGNITION_MIN_SIMILARITY` | `90` | number 0–100, default 90 |
-| `AWS_REGION` | `eu-central-1` | literal |
-| `SESSION_SECRET` | placeholder, min 16 chars | signs nothing user-facing; hashes are sha256. Still required and env-only |
-| `EVENT_SLUG` | `demo` | seed event |
-| `ADMIN_EMAIL` | `admin@example.com` | seed admin |
-| `PUBLIC_WEB_URL` | `http://localhost:3000` | links in email |
-| `API_PORT` | `3001` | API listen port |
-
-Secrets never go in the repo, the database, logs, or Rekognition `ExternalImageId`.
-
-## 2. FaceEngine
-
-TypeScript source of truth: `packages/face-engine/src/types.ts` (`@rephoto/face-engine/types`).
+## FaceEngine
 
 ```ts
-export type ImageContentType = "image/jpeg" | "image/png";
-export interface Box { left: number; top: number; width: number; height: number } // normalized 0..1
-export interface IndexPhotoInput {
-  eventId: string;
+export type BBox = { x: number; y: number; width: number; height: number }; // 0..1 relative
+
+export interface IndexFace {
+  externalId: string;
+  bbox: BBox;
+  confidence: number; // 0..1
+}
+
+export interface FaceMatch {
+  externalId: string;
   photoId: string;
-  imageBytes: Uint8Array;
-  contentType: ImageContentType;
+  similarity: number; // 0..1
 }
-export interface IndexedFace {
-  externalFaceId: string;
-  bbox: Box;
-  confidence: number; // 0..100
-}
-export interface SearchInput {
-  eventId: string;
-  imageBytes: Uint8Array;
-  contentType: ImageContentType;
-}
-export interface SearchHit {
-  externalFaceId: string;
-  photoId: string;
-  similarity: number; // 0..100
-}
+
 export interface FaceEngine {
-  indexPhoto(input: IndexPhotoInput): Promise<IndexedFace[]>;
-  search(input: SearchInput): Promise<SearchHit[]>;
-  deleteFaces(eventId: string, externalFaceIds: string[]): Promise<void>;
+  indexPhoto(input: { eventId: string; photoId: string; imageBytes: Uint8Array }): Promise<IndexFace[]>;
+  searchSelfie(input: { eventId: string; imageBytes: Uint8Array; threshold: number }): Promise<FaceMatch[]>;
+  deleteFaces(input: { eventId: string; externalIds: string[] }): Promise<void>;
 }
 ```
 
-Rules for every adapter:
-
-- `indexPhoto` indexes one **event photo**. It must never be called with a selfie.
-- `search` is the only call that receives selfie bytes. It must not call `IndexFaces` and must not write the selfie into a collection or into `face_index`.
-- Returned hits have `similarity >= REKOGNITION_MIN_SIMILARITY`. The worker applies the same filter again.
-- `deleteFaces` removes engine-side records only. The worker deletes rows in `faces`.
-- `bbox` is normalized 0..1 (Rekognition `BoundingBox`). `confidence` and `similarity` are 0..100.
-- A photo with no face returns `[]` and is still a successful index.
-
-Collection name (Rekognition adapter):
-
-```text
-safe = eventId with every char outside [a-zA-Z0-9_.\-] replaced by "_"
-name = REKOGNITION_COLLECTION_PREFIX + "-" + safe
-```
-
-Example: event `11111111-1111-4111-8111-111111111111` → `rephoto-11111111-1111-4111-8111-111111111111`. Create the collection on first index if missing. Length must be ≤ 255.
-
-### 2.1 Fake adapter (`FACE_ENGINE=fake`)
-
-Local and tests only. Do not use it in production.
-
-Subject key = quantized average color of the image (PNG or JPEG):
-
-```text
-Read every pixel as RGB. Ignore alpha.
-avgR = round(sum(R) / pixelCount)   # integer 0..255, same for G and B
-quant(c) = floor(c / 16) * 16       # 0, 16, 32, …, 240
-```
-
-`pixelCount = 0` → `indexPhoto` returns `[]` and writes nothing.
-
-`indexPhoto` writes one row into `face_index` (table owned by the API migration; the fake adapter reads and writes it):
-
-| column | value |
-| --- | --- |
-| `external_face_id` | `fake-{photoId}` |
-| `photo_id` | input `photoId` |
-| `event_id` | input `eventId` |
-| `r`, `g`, `b` | quantized averages, each in {0,16,…,240} |
-
-Return one `IndexedFace`: that `externalFaceId`, `confidence: 99`, `bbox: { left: 0, top: 0, width: 1, height: 1 }`.
-
-`search` computes the same quantized color and returns every `face_index` row of that `event_id` with equal `r,g,b`. Each hit: `similarity: 99`, `photoId` and `externalFaceId` from the row. No color match → `[]`.
-
-`deleteFaces` deletes `face_index` rows for that `event_id` whose `external_face_id` is in the list. Unknown ids are ignored.
-
-### 2.2 Rekognition adapter (`FACE_ENGINE=rekognition`)
-
-One collection per event, named as above.
-
-- `indexPhoto`: `IndexFaces` on the photo bytes. `ExternalImageId = photoId`. `MaxFaces = 50`. Quality filter `AUTO`. Map each face: `externalFaceId = FaceId`, `bbox` from `BoundingBox` (already 0..1), `confidence = Confidence` (0..100).
-- `search`: `SearchFacesByImage` only. `FaceMatchThreshold = REKOGNITION_MIN_SIMILARITY`. `MaxFaces = 50`. `photoId = Face.ExternalImageId`, `externalFaceId = Face.FaceId`, `similarity = Similarity`. Never `IndexFaces` the selfie.
-- `deleteFaces`: `DeleteFaces` in that collection. Missing collection → no-op.
-
-The worker, before a re-index, loads existing `faces.external_face_id` for the photo and calls `deleteFaces`, then `indexPhoto`, then replaces `faces` rows. `indexPhoto` does not delete old faces itself.
-
-## 3. HTTP
-
-Base path `/api`. JSON bodies except the selfie upload. Cookie session, not bearer tokens.
-
-Cookie `rephoto_session`:
-
-- value: opaque random token (store only `sha256(token)` in `sessions.token_hash`)
-- `HttpOnly`, `SameSite=Lax`, `Path=/`, `Max-Age=2592000` (30 days)
-- `Secure` when `PUBLIC_WEB_URL` is `https`, otherwise omit `Secure` (local http)
-- host-only (no `Domain`)
-
-The web app is served on `PUBLIC_WEB_URL` and **proxies `/api` to the API**, so the cookie is first-party. CORS is not required for that setup. If an `Origin` header is present and is not `PUBLIC_WEB_URL`, respond `403 forbidden`.
-
-Validation failures use zod schemas from `@rephoto/contracts`. Unknown JSON fields are rejected (schemas are `.strict()`).
-
-Error body (every 4xx/5xx that has a body):
-
-```json
-{ "error": { "code": "validation_error", "message": "Dati non validi." } }
-```
-
-`code` is stable English. `message` is Italian and safe to show in the UI.
-
-| code | HTTP | when |
-| --- | --- | --- |
-| `validation_error` | 400 | zod failure, bad multipart, `accepted` not `true` |
-| `unauthorized` | 401 | missing or expired session |
-| `forbidden` | 403 | role cannot call this route |
-| `consent_required` | 403 | selfie without a stored consent for this event and current text version |
-| `not_found` | 404 | missing event, search, photo, upload, or user (also when the row exists but is not owned, so ownership does not leak) |
-| `conflict` | 409 | invite role clash, upload already completed, consent `textVersion` ≠ event's current version |
-| `rate_limited` | 429 | magic link or selfie limits |
-
-Success responses below are the entire JSON body. `204` has no body.
-
-IDs in JSON are UUID strings. Timestamps in Postgres are `timestamptz`. Client-supplied hashes are lowercase hex sha256 (64 chars). The API does **not** re-hash bytes in v1; dedup trusts the client sha256 within one event.
-
-### 3.1 Auth
-
-`POST /api/auth/request-link`
-
-- Auth: none
-- Body: `{ "email": string, "eventSlug": string }`
-- `202`: `{ "ok": true }`
-- Unknown `eventSlug` → `404`. Known event → always `202`, even if the email is new (no account enumeration).
-- New email: create `users.role = participant` and an `event_memberships` row.
-- Existing user: do not change `role`. Still send the link.
-- Insert `magic_links` (store `token_hash` only), expiry 30 minutes, single use.
-- Send mail immediately (not the `email` job). Text body is only the URL `${PUBLIC_WEB_URL}/verifica?token=${token}`. Subject: `Accedi a RePhoto`. No images.
-- Rate limit: 5 links per email per 15 minutes, and 30 per `request_ip` per 15 minutes. Count rows in `magic_links`.
-
-`POST /api/auth/verify`
-
-- Auth: none
-- Body: `{ "token": string }`
-- `200`: the user `{ "id", "email", "role" }` and `Set-Cookie`
-- Token must match an unused, unexpired hash. Set `used_at`. Second use → `400`.
-- Insert `sessions`.
-
-`POST /api/auth/logout`
-
-- Auth: session optional
-- `204`. Delete the session row if the cookie matches. Clear the cookie.
-
-`GET /api/me`
-
-- Auth: session
-- `200`: `{ "id", "email", "role" }` with `role` one of `participant`, `photographer`, `admin`
-
-### 3.2 Consent and selfie
-
-Current consent copy is version `2026-10-06`, stored on the event:
-
-> Acconsento al confronto temporaneo del mio volto con le foto dell'evento per trovare gli scatti in cui compaio. Il selfie viene cancellato subito dopo la ricerca. Le foto restano disponibili per 90 giorni.
-
-`POST /api/events/:slug/consent`
-
-- Auth: `participant`
-- Body: `{ "textVersion": string, "accepted": true }`
-- `accepted` must be the boolean `true`. Anything else → `400`.
-- `textVersion` must equal `events.consent_text_version` → else `409`.
-- `201`: `{ "ok": true }`
-- Insert `consents` with `text_version`, `accepted=true`, `accepted_at`, client IP, and `User-Agent`. Required before selfie. Keep the row even if a newer search happens (legal record). A selfie is allowed when at least one consent exists for `(user, event, current text version)`.
-
-`POST /api/events/:slug/selfie`
-
-- Auth: `participant` with consent, else `403 consent_required`
-- `multipart/form-data`, file field name **`image`**
-- Content type `image/jpeg` or `image/png`. Max **8 MiB**. Else `400`.
-- `202`: `{ "searchId": uuid }`
-- Insert `searches` with `status=queued`, `selfie_key` set. Store the object at `selfies/{eventId}/{searchId}`.
-- Enqueue job `{ "type": "search", "searchId" }`. Do not call `FaceEngine` in the request.
-- Rate limit: 10 searches per user per 60 minutes, and 30 per IP per 60 minutes. Count `searches` rows (`request_ip` column).
-
-`GET /api/events/:slug/searches/:searchId`
-
-- Auth: the participant who owns the search. Others, including admin, → `404`.
-- `200`: `{ "status": "queued" | "done" | "error", "galleryReady": boolean }`
-- `galleryReady` is `true` only when `status === "done"` (including zero matches).
-
-### 3.3 Gallery
-
-`GET /api/events/:slug/gallery`
-
-- Auth: `participant`
-- `200`: `{ "items": [{ "photoId", "thumbUrl", "webUrl", "score" }] }`
-- Only that user's gallery for the event. `score` is similarity 0–100. One item per photo (maximum score). Sort `score` descending, then `photoId` ascending.
-- `thumbUrl` and `webUrl` are signed GET URLs, TTL **15 minutes**, for derivative kinds `thumb` and `web`.
-
-`POST /api/events/:slug/gallery/download`
-
-- Auth: `participant`
-- Body: `{ "photoIds": uuid[] }` length 1–100
-- `200`: `{ "urls": string[] }` same order as `photoIds`
-- Each URL is a signed GET of the **original** object, TTL 15 minutes.
-- If any id is not in the caller's gallery for that event → `403` for the whole request (no partial URLs).
-
-### 3.4 Photographer upload
-
-`eventSlug` is required on create. Dedup scope is that event. This is the frozen clarification of "dedup same sha256 per event".
-
-`POST /api/uploads`
-
-- Auth: `photographer` who has `event_memberships` for `eventSlug`. Admin → `403`. Unknown event or missing membership → `404`.
-- Body: `{ "eventSlug", "filename", "contentType", "byteSize", "sha256" }`
-- `contentType`: `image/jpeg` | `image/png`
-- `byteSize`: integer 1 … 31457280 (30 MiB)
-- `sha256`: `/^[a-f0-9]{64}$/`
-- `filename`: 1–200 chars, no `/` or `\`, not `.` or `..`
-- If a `photos` row already exists for `(event, sha256)` → `200`:
-
-```json
-{ "deduped": true, "photoId": "<uuid>" }
-```
-
-Do not create an upload session and do not re-index. The caller does not become the owner.
-
-- Otherwise `201`:
-
-```json
-{
-  "deduped": false,
-  "uploadId": "<uuid>",
-  "key": "originals/<eventId>/uploads/<uploadId>",
-  "partSize": 8388608,
-  "parts": [{ "partNumber": 1, "url": "https://..." }]
-}
-```
-
-- `partSize` is always 8388608. `parts.length = ceil(byteSize / partSize)`. The last part may be shorter. Part URLs are presigned PUT, TTL 15 minutes. Insert `upload_sessions.status = open`.
-
-`POST /api/uploads/:uploadId/complete`
-
-- Auth: the photographer who owns the session
-- Body: `{ "parts": [{ "partNumber": number, "etag": string }] }`
-- The set of `partNumber` must equal `1..N` exactly.
-- `200`: `{ "photoId", "status": "queued" }`
-- Complete the multipart upload, insert `photos` (`status=queued`, `object_key` = the upload key, `photographer_user_id` = caller), mark the session `completed`, enqueue `{ "type": "derive", "photoId" }`.
-- Second complete → `409`.
-
-`GET /api/photos`
-
-- Auth: `photographer` only (admin → `403`)
-- `200`: `{ "photos": [{ "photoId", "filename", "status", "error?" }] }`
-- `status`: `queued` | `processing` | `indexed` | `error`
-- Only rows where `photographer_user_id` is the caller. `error` is present only when `status` is `error`.
-
-### 3.5 Admin
-
-`GET /api/admin/metrics`
-
-- Auth: `admin`
-- `200`: `{ "photos", "indexed", "participants", "queueDepth" }`
-- `photos`: count of `photos` rows
-- `indexed`: count where `status = indexed`
-- `participants`: count of users with `role = participant`
-- `queueDepth`: count of `jobs` where `status = queued`
-- No vectors, face ids, or image bytes in this payload. The database has no embedding column.
-
-`POST /api/admin/photographers`
-
-- Auth: `admin`
-- Body: `{ "email", "eventSlug" }`
-- Unknown event → `404`
-- Email new: create `role=photographer`, membership, magic link, send the same login mail as request-link. `202` `{ "ok": true }`
-- Email already `photographer`: ensure membership, send a new magic link. `202`
-- Email exists with another role → `409`. Do not change role.
-
-`DELETE /api/admin/photos/:photoId`
-
-- Auth: `admin`
-- `204`
-- Delete the original object, both derivatives, `FaceEngine.deleteFaces` for that photo's external ids, rows in `faces`, `gallery_items` for that photo, and the `photos` row. Other photos stay.
-
-`DELETE /api/admin/participants/:userId`
-
-- Auth: `admin`
-- Target must have `role=participant`, else `404`
-- `204`
-- Delete the user account, sessions, magic links, consents, searches (and any leftover selfie object), galleries, and `gallery_items` for that user.
-- Do **not** delete event photos, derivative objects, or `faces` rows. Group photos stay in the event.
-
-`POST /api/admin/retention`
-
-- Auth: `admin`
-- Body: `{ "eventSlug" }`
-- `200`: `{ "photosDeleted", "facesDeleted", "searchesDeleted" }`
-- Cutoff = `now() - events.retention_days` (default 90).
-- For photos of that event with `created_at < cutoff`: same deletion as `DELETE /admin/photos/:photoId`.
-- For searches of that event with `created_at < cutoff`: delete selfie object if `selfie_key` is still set, delete those searches, and delete gallery items that belonged only to removed photos. Do not delete `users` or `consents` or `audit_log`.
-- Synchronous in v1. No extra job type.
-
-### 3.6 Authorization
-
-| Route | participant | photographer | admin | anonymous |
-| --- | --- | --- | --- | --- |
-| request-link, verify | | | | yes |
-| logout, GET /me | yes | yes | yes | |
-| consent, selfie, search status, gallery, download | yes | | | |
-| uploads, complete, GET /photos | | own event / own photos | | |
-| metrics, invite, delete photo, delete participant, retention | | | yes | |
-
-A participant cannot upload or call admin routes. A photographer cannot read galleries or another photographer's photos. An admin cannot receive raw vectors (none are stored).
-
-## 4. Jobs
-
-Local stand-in: table `jobs`. Production: SQS queue `rephoto-jobs` in `eu-central-1`. **The JSON body is identical.** Do not run ElasticMQ.
-
-`jobs.payload` and the SQS body are a `jobEnvelopeSchema`:
-
-```json
-{ "type": "derive", "photoId": "<uuid>" }
-{ "type": "index", "photoId": "<uuid>" }
-{ "type": "search", "searchId": "<uuid>" }
-{ "type": "email", "to": "a@b.c", "template": "gallery_ready", "searchId": "<uuid>" }
-```
-
-`jobs.type` duplicates `payload.type` for indexing.
-
-Worker claim (local): `SELECT … FROM jobs WHERE status = 'queued' AND run_at <= now() ORDER BY created_at FOR UPDATE SKIP LOCKED`. Set `status=running`, `locked_at=now()`, `attempts = attempts + 1`.
-
-Retry: on a thrown error, if `attempts < 5`, set `status=queued` and `run_at = now() + attempts * 30 seconds`. Else `status=error` and `last_error` set. Domain status side effects below happen on the final failure only, except where noted.
-
-| Job | Success | Final failure |
-| --- | --- | --- |
-| `derive` | Write derivatives `thumb` (max edge 480, JPEG) and `web` (max edge 1600, JPEG). Set `photos.status=processing`. Enqueue `index`. | `photos.status=error`, `photos.error` set |
-| `index` | `deleteFaces` of previous ids (if any), `indexPhoto`, replace `faces` rows. Set `photos.status=indexed`, `error=null`. Zero faces is success. | `photos.status=error` |
-| `search` | `search`, drop similarity &lt; threshold, one gallery item per photo at max score, replace that user's event gallery, delete the selfie object, set `selfie_key=null`, `searches.status=done`, enqueue `email`. | Delete the selfie anyway, `selfie_key=null`, `searches.status=error` |
-| `email` | `Mailer.send` with the gallery link only | job `error` only. Search stays `done` |
-
-`derive` sets `processing` as soon as it starts (not only on success), so photographers see progress. If it fails finally, status becomes `error`.
-
-`search` has no `processing` value. It stays `queued` until `done` or `error`.
-
-Idempotency:
-
-- `derive` / `index`: safe to run again. Index replaces faces for that photo.
-- `search`: if `searches.status` is already `done`, the job succeeds without sending another email.
-- `email`: a retry may send a second letter. Acceptable for v1.
-
-Object keys:
-
-| object | key |
-| --- | --- |
-| original | `originals/{eventId}/uploads/{uploadId}` |
-| thumb | `derivatives/{eventId}/{photoId}/thumb.jpg` |
-| web | `derivatives/{eventId}/{photoId}/web.jpg` |
-| selfie | `selfies/{eventId}/{searchId}` |
-
-Bucket `S3_BUCKET` (`rephoto`). No public policy, no public ACL. All reads go through 15-minute signed URLs.
-
-Selfie deletion is mandatory on both search success and search failure, including process crashes recovered by a retry: the retry deletes the object if `selfie_key` is still set, then nulls it. The selfie is never indexed.
-
-Gallery link in the `gallery_ready` mail (even when there are zero matches):
-
-```text
-${PUBLIC_WEB_URL}/eventi/${eventSlug}/galleria
-```
-
-Subject: `Le tue foto sono pronte`. Body: that URL and nothing else. No attachments, no image parts.
-
-## 5. Mailer
+- Default `threshold` is **0.8** (0..1). Callers pass 0..1 only.
+- Rekognition `Similarity` and `Confidence` are 0–100. The adapter divides by 100 at the boundary before returning `FaceMatch.similarity` or `IndexFace.confidence`. The adapter multiplies `threshold` by 100 when it sets Rekognition `FaceMatchThreshold`.
+- Rekognition `BoundingBox` (`Left`, `Top`, `Width`, `Height`, already 0..1) maps to `{ x: Left, y: Top, width: Width, height: Height }`.
+- `IndexFace.externalId` is the vendor face id (Rekognition `FaceId`). It is **not** the photo id.
+- Rekognition `ExternalImageId` is the **photoId** unchanged. `FaceMatch.photoId` is that value. `FaceMatch.externalId` is the matched `FaceId`.
+- `deleteFaces` deletes by `externalId` inside the event collection. Empty `externalIds` is a no-op.
+- Do not persist raw embeddings. Not in Postgres, not in object storage, not in logs.
+
+### Collection id (frozen function)
+
+Rekognition collection ids must match `[a-zA-Z0-9_.\-]` and be 1–255 characters. Hyphens are legal, so UUID hyphens in `eventId` are **kept**. Strip a character only when it is outside that set. The only legal builder is `rekognitionCollectionId` in `@rephoto/contracts`:
 
 ```ts
-interface Mailer {
-  send(message: { to: string; subject: string; text: string }): Promise<void>;
+const COLLECTION_ID_PATTERN = /^[a-zA-Z0-9_.\-]+$/;
+
+/** Prefix defaults to env REKOGNITION_COLLECTION_PREFIX or "rephoto-". */
+export function rekognitionCollectionId(eventId: string, prefix = "rephoto-"): string {
+  const safePrefix = prefix.replace(/[^a-zA-Z0-9_.\-]/g, "");
+  const safeEventId = eventId.replace(/[^a-zA-Z0-9_.\-]/g, "");
+  const id = `${safePrefix}${safeEventId}`;
+  if (!COLLECTION_ID_PATTERN.test(id) || id.length > 255) {
+    throw new Error(`Invalid Rekognition collection id for event ${eventId}`);
+  }
+  return id;
 }
 ```
 
-- `MAIL_TRANSPORT=smtp`: SMTP to `MAILPIT_SMTP_HOST`:`MAILPIT_SMTP_PORT` (Mailpit). No auth locally.
-- `MAIL_TRANSPORT=ses`: SES in `eu-central-1`.
-- Messages are `text` only. Never attach photos or the selfie.
+Example: event `550e8400-e29b-41d4-a716-446655440000` → collection `rephoto-550e8400-e29b-41d4-a716-446655440000`.
 
-Login and photographer-invite mails are sent inside the API request. Only `gallery_ready` uses the `email` job.
+One collection per event. Create it lazily on first `indexPhoto`.
 
-## 6. Data model
+### `FACE_ENGINE=fake`
 
-The API agent writes SQL. No embedding / vector column anywhere. Columns:
+No AWS calls.
 
-### `users`
+- `indexPhoto` returns one face: `externalId` `fake-${photoId}`, `bbox` `{ x: 0.25, y: 0.2, width: 0.3, height: 0.4 }`, `confidence` `0.99`.
+- `searchSelfie` reads rows from Postgres `faces` for `eventId` (via `DATABASE_URL`) and returns one `FaceMatch` per row with that `externalId`, the row's `photoId`, and `similarity` `0.99`, dropping rows below `threshold`. This is how the demo works across the API and worker processes. It must not read or write an embedding.
+- `deleteFaces` resolves successfully and does not itself delete SQL rows (the caller does).
 
-`id uuid pk`, `email text not null unique`, `role text not null` (`participant`|`photographer`|`admin`), `created_at timestamptz not null default now()`
+## Environment
 
-### `sessions`
+`.env.example` only. Never commit real secrets.
 
-`id uuid pk`, `user_id uuid not null` → users on delete cascade, `token_hash text not null unique`, `expires_at timestamptz not null`, `created_at timestamptz not null default now()`
+| Variable | Local value |
+| --- | --- |
+| `DATABASE_URL` | `postgres://rephoto:rephoto@localhost:5432/rephoto` |
+| `S3_ENDPOINT` | `http://localhost:9000` |
+| `S3_BUCKET` | `rephoto` |
+| `S3_ACCESS_KEY` | `rephoto` |
+| `S3_SECRET_KEY` | `rephoto-secret` (local MinIO only) |
+| `S3_REGION` | `eu-central-1` |
+| `S3_FORCE_PATH_STYLE` | `true` |
+| `SESSION_SECRET` | long random string; dev placeholder in `.env.example` |
+| `FACE_ENGINE` | `fake` locally, `rekognition` in AWS |
+| `AWS_REGION` | `eu-central-1` |
+| `REKOGNITION_COLLECTION_PREFIX` | `rephoto-` |
+| `SMTP_HOST` | `localhost` |
+| `SMTP_PORT` | `1025` |
+| `SMTP_FROM` | `noreply@rephoto.local` |
+| `WEB_ORIGIN` | `http://localhost:3000` |
+| `API_ORIGIN` | `http://localhost:8787` |
 
-### `magic_links`
+`FACE_ENGINE` is exactly `fake` or `rekognition`.
 
-`id uuid pk`, `user_id uuid not null`, `event_id uuid null`, `email text not null`, `token_hash text not null unique`, `request_ip text null`, `expires_at timestamptz not null`, `used_at timestamptz null`, `created_at timestamptz not null default now()`
+## Object keys
 
-### `consents`
+| Object | Key | Notes |
+| --- | --- | --- |
+| Original | `originals/{eventId}/{photoId}` | No extra extension. |
+| Thumb | `thumbs/{photoId}.jpg` | Long edge 480, JPEG. |
+| Web | `web/{photoId}.jpg` | Long edge 1600, JPEG quality 80. |
+| Selfie | `selfies/{eventId}/{userId}/{uuid}` | Deleted after a successful `searchSelfie`. |
 
-`id uuid pk`, `user_id uuid not null`, `event_id uuid not null`, `text_version text not null`, `accepted boolean not null` check `accepted`, `ip text not null`, `user_agent text not null`, `accepted_at timestamptz not null default now()`
+Derivative `kind` is `thumb` or `web` and matches those keys.
 
-### `events`
+On `searchSelfie` success (including zero matches), the match job deletes the selfie object before it marks the job `done`. On a thrown search, keep the object for retry. After the final failed attempt, delete the selfie anyway.
 
-`id uuid pk`, `slug text not null unique`, `name text not null`, `retention_days int not null default 90`, `consent_text_version text not null`, `consent_text text not null`, `created_at timestamptz not null default now()`
+## Jobs
 
-### `event_memberships`
+Jobs live in Postgres table `jobs`, not SQS, on the local/MVP path. Production may swap the job runner for SQS without changing payload shapes.
 
-Needed because invite and upload are per event. `user_id uuid`, `event_id uuid`, `created_at timestamptz not null default now()`, primary key `(user_id, event_id)`.
+Payloads:
 
-### `photos`
+| `type` | `payload` |
+| --- | --- |
+| `derive` | `{ photoId }` |
+| `index` | `{ photoId }` |
+| `match` | `{ userId, eventId, selfieKey }` |
+| `email` | `{ userId, eventId, galleryPath }` |
 
-`id uuid pk`, `event_id uuid not null`, `photographer_user_id uuid not null`, `filename text not null`, `content_type text not null`, `byte_size bigint not null`, `sha256 text not null`, `object_key text not null`, `status text not null`, `error text null`, `created_at timestamptz not null default now()`, unique `(event_id, sha256)`
+Row: `id`, `type`, `payload` jsonb, `status` (`queued` \| `running` \| `done` \| `error`), `attempts`, `run_after`, `last_error`, `created_at`.
 
-### `derivatives`
+Worker claim: `UPDATE` one `queued` row whose `run_after <= now()` to `running`, using `FOR UPDATE SKIP LOCKED`. On success, `done`. On failure, increment `attempts`, set `last_error`, and either requeue (`queued`, `run_after` in the future) or set `error` when `attempts` reaches **5**.
 
-`id uuid pk`, `photo_id uuid not null` on delete cascade, `kind text not null` (`thumb`|`web`), `object_key text not null`, `content_type text not null`, `byte_size bigint not null`, unique `(photo_id, kind)`
+Pipeline:
 
-### `faces`
+1. Upload complete inserts `photos.status = uploaded` and enqueues `derive`.
+2. `derive` writes both derivatives, sets `processing`, enqueues `index`.
+3. `index` calls `indexPhoto`, inserts `faces`, sets `indexed`.
+4. `POST .../selfie` stores the selfie object and enqueues `match`.
+5. `match` calls `searchSelfie`, upserts `galleries` / `gallery_items` (score = similarity), deletes the selfie object, enqueues `email`.
+6. `email` sends the gallery link. `galleryPath` is `/e/{slug}` on `WEB_ORIGIN`.
 
-`id uuid pk`, `photo_id uuid not null`, `event_id uuid not null`, `external_face_id text not null`, `bbox_left double precision not null`, `bbox_top double precision not null`, `bbox_width double precision not null`, `bbox_height double precision not null`, `confidence double precision not null`, unique `(event_id, external_face_id)`. **No embedding column.**
+Terminal job failure on `derive` or `index` sets the photo to `error`.
 
-### `face_index`
+## Postgres
 
-Fake engine only. `external_face_id text pk`, `photo_id uuid not null`, `event_id uuid not null`, `r smallint not null`, `g smallint not null`, `b smallint not null`, unique `(event_id, photo_id)`.
+`packages/db/migrations/001_init.sql`. The migrate script may keep a `schema_migrations` bookkeeping table; that table is not a domain table.
 
-### `galleries`
+Photo status: `uploaded` \| `processing` \| `indexed` \| `error`.
 
-`id uuid pk`, `user_id uuid not null`, `event_id uuid not null`, `search_id uuid null`, `updated_at timestamptz not null`, unique `(user_id, event_id)`
+```text
+events(id uuid pk, slug unique, name, retention_days int default 90, created_at)
+users(id uuid pk, email, role text check in participant|photographer|admin, created_at, unique email+role)
+magic_links(id, email, role, token_hash, expires_at, used_at)
+sessions(id, user_id fk, token_hash, expires_at)
+consents(id, user_id, event_id, text_version, granted_at, withdrawn_at, ip, user_agent)
+photos(id, event_id, photographer_id, sha256, status, original_key, content_type, bytes, created_at, unique event_id+sha256)
+derivatives(id, photo_id, kind check in thumb|web, s3_key)
+faces(id, photo_id, event_id, external_id, bbox jsonb, confidence real, created_at)  -- NO embedding column
+galleries(id, user_id, event_id, unique user_id+event_id)
+gallery_items(id, gallery_id, photo_id, face_id, score, unique gallery_id+photo_id)
+upload_sessions(id, event_id, photographer_id, s3_upload_id, object_key, sha256, content_type, status, created_at)
+jobs as above
+audit_log(id, actor_id, action, target, created_at, meta jsonb)
+invites(id, email, event_id, token_hash, role, expires_at, used_at)
+```
 
-### `gallery_items`
+Clarifications (column names unchanged):
 
-`id uuid pk`, `gallery_id uuid not null` on delete cascade, `photo_id uuid not null`, `user_id uuid not null`, `score double precision not null`, unique `(gallery_id, photo_id)`
+- Ids are `uuid` default `gen_random_uuid()` unless a seed inserts a fixed id.
+- Timestamps are `timestamptz` default `now()` where the column is a creation or grant time. `used_at` and `withdrawn_at` are nullable.
+- `token_hash` is hex SHA-256 of the raw token. Raw tokens are never stored.
+- `faces.bbox` is `{ "x", "y", "width", "height" }` numbers in 0..1. No `embedding` column, ever.
+- `gallery_items.score` is the match similarity in 0..1.
+- `upload_sessions.status` is `open` \| `completed` \| `aborted`. `s3_upload_id` is null for a single PUT.
+- `upload_sessions.bytes` is not a column; byte size lives on `photos.bytes` after complete. Init still receives `bytes` in the HTTP body.
+- Unique `(photo_id, kind)` on `derivatives`. Unique `(photo_id, external_id)` on `faces`.
 
-### `upload_sessions`
+Seed (`npm run db:seed`, idempotent):
 
-`id uuid pk`, `event_id uuid not null`, `user_id uuid not null`, `filename text not null`, `content_type text not null`, `byte_size bigint not null`, `sha256 text not null`, `object_key text not null`, `part_size int not null`, `status text not null` (`open`|`completed`|`aborted`), `created_at timestamptz not null default now()`
+- Event slug `demo`, name `Demo`, `retention_days` 90, id `00000000-0000-4000-8000-000000000001`.
+- Admin user `admin@rephoto.local`, id `00000000-0000-4000-8000-000000000002`.
+- Photographer user `photographer@rephoto.local`, id `00000000-0000-4000-8000-000000000003`.
+- Invite for that photographer email + demo event, role `photographer`, `used_at` set (already accepted), id `00000000-0000-4000-8000-000000000004`.
 
-### `searches`
+## HTTP
 
-`id uuid pk`, `user_id uuid not null`, `event_id uuid not null`, `status text not null`, `selfie_key text null`, `error text null`, `request_ip text null`, `created_at timestamptz not null default now()`, `finished_at timestamptz null`
+Base: `API_ORIGIN`. JSON unless noted. Cookie session:
 
-### `jobs`
+- name `rephoto_session`
+- `httpOnly`
+- `SameSite=Lax`
+- `Path=/`
+- `Secure` when `WEB_ORIGIN` is `https:`
 
-`id uuid pk`, `type text not null`, `payload jsonb not null`, `status text not null default 'queued'` (`queued`|`running`|`done`|`error`), `attempts int not null default 0`, `max_attempts int not null default 5`, `run_at timestamptz not null default now()`, `locked_at timestamptz null`, `locked_by text null`, `last_error text null`, `created_at timestamptz not null default now()`, `updated_at timestamptz not null default now()`
+Cookie value is the raw session token. `sessions.token_hash` stores its SHA-256 hex. Logout deletes the session row and clears the cookie.
 
-### `audit_log`
+Error body: `{ "error": string }` with `400` validation, `401` unauthenticated, `403` forbidden, `404` missing, `409` duplicate `(event_id, sha256)`, `429` rate limit.
 
-`id uuid pk`, `actor_user_id uuid null`, `action text not null`, `entity_type text not null`, `entity_id uuid null`, `metadata jsonb not null default '{}'`, `ip text null`, `created_at timestamptz not null default now()`
+| Method | Path | Body / query | Success |
+| --- | --- | --- | --- |
+| `POST` | `/v1/auth/request-link` | `{ email, role }` | `202` `{ status: "sent" }` |
+| `POST` | `/v1/auth/verify` | `{ token }` | `200` `{ user: { id, email, role } }` + `Set-Cookie` |
+| `POST` | `/v1/auth/logout` | | `204` empty |
+| `GET` | `/v1/events/:slug` | | `200` `{ id, slug, name, retentionDays }` |
+| `POST` | `/v1/events/:slug/consent` | `{ textVersion, accepted: true }` | `201` `{ id, grantedAt }` |
+| `POST` | `/v1/events/:slug/selfie` | multipart field `selfie`, `image/jpeg` or `image/png` | `202` `{ status: "queued" }` |
+| `GET` | `/v1/events/:slug/gallery` | | `200` `{ status, items: [{ photoId, thumbUrl, webUrl, score }] }` |
+| `POST` | `/v1/events/:slug/gallery/download` | `{ photoIds }` | `200` `{ urls: [{ photoId, url }] }` signed |
+| `POST` | `/v1/uploads/init` | `{ eventId, filename, contentType, sha256, bytes }` | `201` `{ id, objectKey, mode, url?, partSize? }` |
+| `POST` | `/v1/uploads/:id/parts` | `{ partNumber }` | `200` `{ url, partNumber }` |
+| `POST` | `/v1/uploads/:id/complete` | `{ parts: [{ partNumber, etag }] }` | `201` `{ photoId, status: "uploaded" }` |
+| `GET` | `/v1/uploads` | `?eventId=` | `200` `{ uploads: [{ id, objectKey, sha256, contentType, status, createdAt }] }` |
+| `GET` | `/v1/admin/metrics` | | `200` `{ events, photos, faces, users, jobsQueued }` counts |
+| `POST` | `/v1/admin/photographers/invite` | `{ email, eventId }` | `201` `{ inviteId }` |
+| `DELETE` | `/v1/admin/photos/:id` | | `204` |
+| `DELETE` | `/v1/admin/participants/:id` | | `204` |
+| `POST` | `/v1/admin/retention/run` | `{ eventId }` | `200` `{ deletedPhotoIds }` |
 
-Write an audit row for: `consent.accepted`, `photo.deleted`, `participant.deleted`, `retention.purged`, `photographer.invited`. Metadata must not contain image bytes, tokens, or biometric templates.
+`role` is `participant` \| `photographer` \| `admin`.
 
-### Seed
+Auth rules:
 
-On API startup, if missing:
+- `request-link` always returns `202` `{ status: "sent" }` (no account enumeration). Mail is sent only when the role is allowed: `participant` always; `photographer` or `admin` only when that `(email, role)` user already exists. Verify creates a `participant` user on first use. Verify for `photographer` or `admin` fails with the same generic `400` `{ error }` if that user does not exist. A photographer is created by accepting an invite (seed, or a future accept step). This MVP's accept path is the seed; `POST /v1/admin/photographers/invite` only inserts an unused `invites` row with role `photographer`.
+- Magic-link and invite tokens expire. Verify rejects expired or already used links.
+- Participant: only the gallery, consent, and selfie for the signed-in user.
+- Photographer: only upload routes, and only their own `upload_sessions` and photos (`photographer_id`).
+- Admin: metrics, photographer invites, photo delete, participant delete, retention run.
+- Selfie requires a consent row for this user and event with `withdrawn_at` null. Otherwise `403`.
+- Rate-limit selfie: **5 per hour per email** (the session user's email). `429` over the limit.
+- Gallery `status` is `empty` (no match job and no items), `queued` (a `match` job for this user+event is `queued` or `running`), or `ready` (latest such job is `done` or `error`). `items` lists `gallery_items` with signed `thumbUrl` and `webUrl`. `score` is the stored similarity.
+- Download signs **original** keys. Only photo ids already in the caller's gallery. URLs expire in 15 minutes.
+- `uploads/init`: when `bytes` <= 8388608 (8 MiB), `mode` is `single` and `url` is a presigned PUT. Otherwise `mode` is `multipart`, `partSize` is 8388608, and `url` is omitted. `objectKey` is `originals/{eventId}/{photoId}` using a new photo id reserved at init time. Complete creates the `photos` row (`uploaded`) and enqueues `derive`. Single-PUT complete sends `parts: []`.
+- `contentType` for uploads is `image/jpeg` or `image/png`.
+- `DELETE /v1/admin/photos/:id` deletes the photo row, derivatives, faces, gallery items, S3 objects, and calls `deleteFaces` with the stored `external_id`s. Writes `audit_log`.
+- `DELETE /v1/admin/participants/:id` deletes that `participant` user and dependent galleries, consents, sessions, magic links. Photos stay. Writes `audit_log`.
+- `retention/run` deletes photos of `eventId` whose `created_at` is older than `retention_days`. Same erasure path as photo delete. Not a job type. Response lists deleted photo ids.
 
-- Event `slug=demo` (from `EVENT_SLUG`), `name=Conferenza europea`, `retention_days=90`, `consent_text_version=2026-10-06`, `consent_text` as in §3.2.
-- User `email=ADMIN_EMAIL`, `role=admin`. No password. They sign in with a magic link.
-
-## 7. Security
-
-- Zod on every JSON body and on env at process start.
-- Signed URLs expire after 15 minutes. Presigned upload part URLs too.
-- Secrets only via env. `.env` is gitignored. `.env.example` has placeholders only.
-- Rate-limit magic links and selfies as in §3.1 and §3.2.
-- Helmet-style headers on every API response: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `X-DNS-Prefetch-Control: off`. `Strict-Transport-Security` only when `PUBLIC_WEB_URL` is `https`.
-- Buckets are private. MinIO init creates `rephoto` and does not set an anonymous policy.
-- Do not log tokens, cookies, `SESSION_SECRET`, selfie bytes, or face ids at info level.
-- Admin responses never include vectors. There is no vector column to return.
-
-## 8. UI notes for the web agent (not implemented here)
-
-Language: Italian. Mobile-first, light, airy, one primary action per screen.
-
-Routes the mails already point at:
-
-- `/verifica?token=` reads the token and `POST /api/auth/verify`
-- `/eventi/:slug/galleria` is the gallery
-
-The web server proxies `/api` to `http://api:3001` (compose) or `http://localhost:3001` (host).
-
-## 9. Scale
-
-Target: 6000 users, 100–150k JPEG/PNG, about 1.2 TB. One Postgres, one private bucket, one face collection per event, a `jobs` table locally and one SQS queue in production. Do not add search clusters, GPU nodes, or a second queue.
+Signed URL helpers and the Rekognition client stay out of `packages/contracts`.

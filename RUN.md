@@ -1,25 +1,25 @@
-# Avvio locale
+# Run locally
 
-L'MVP non è finito. Il 2026-10-06 i Dockerfile di `api`, `worker` e `web` non sono nel tree, e il `package.json` di root non ha script `migrate` o `seed`. Postgres, MinIO e Mailpit partono lo stesso. Porte prese da `docker-compose.yml`.
+API (`8787`), worker, and web (`3000`) are three host processes. Compose only starts Postgres, MinIO, and Mailpit. The MinIO image is `cgr.dev/chainguard/minio` because `minio/minio` is no longer on Docker Hub.
 
-```bash
-pnpm install
+```sh
 cp .env.example .env
 docker compose up -d
+npm install
+npm run db:migrate
+npm run db:seed
+npm run dev:api
+npm run dev:worker
+npm run dev:web
 ```
 
-Seed, da `CONTRACTS.md` §6: all'avvio dell'API, se mancano, crea l'evento `slug=demo` (`EVENT_SLUG`) e l'admin `ADMIN_EMAIL`. Non c'è un comando seed separato. La migrazione SQL non ha ancora un comando: non inventarne uno.
+`npm run dev` prints those three process commands. `npm test` checks the collection-id rule and does not need Docker.
 
-| Cosa | URL |
+| Service | URL |
 | --- | --- |
 | Web | http://localhost:3000 |
-| API | http://localhost:3001 |
-| Mailpit (SMTP 1025) | http://localhost:8025 |
-| Postgres | localhost:5432, database `rephoto` |
+| API | http://localhost:8787 |
 | MinIO | http://localhost:9000 (console http://localhost:9001) |
+| Mailpit | http://localhost:8025 (SMTP `localhost:1025`) |
 
-In locale `FACE_ENGINE=fake`: nessun chiamata AWS. La posta finisce in Mailpit.
-
-## Conformità
-
-Bozza DPIA, non firmata: `docs/DPIA.md`. Accesso di produzione SES: `docs/ses-produzione.md`. Note di deploy, non una fattura: `docs/aws.md`.
+Seeded data: event slug `demo`, admin `admin@rephoto.local`, photographer `photographer@rephoto.local` with the invite already accepted. `FACE_ENGINE=fake`. No real secrets are in the repo.
