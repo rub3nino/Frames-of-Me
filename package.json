@@ -14,7 +14,7 @@
     "dev:web": "npm run dev -w @rephoto/web",
     "db:migrate": "node --env-file=.env --import tsx packages/db/src/migrate.ts",
     "db:seed": "node --env-file=.env --import tsx packages/db/src/seed.ts",
-    "test": "node --import tsx --test packages/contracts/src/collection-id.test.ts"
+    "test": "node --import tsx --test packages/contracts/src/collection-id.test.ts packages/face-engine/src/face-engine.test.ts apps/worker/test/mvp.test.ts"
   },
   "devDependencies": {
     "tsx": "^4.20.5",

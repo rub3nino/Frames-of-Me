@@ -3,7 +3,6 @@ import type { JobType, PhotoStatus, Role } from "@rephoto/contracts";
 import { JOB_MAX_ATTEMPTS } from "@rephoto/contracts";
 import { DuplicateKeyError } from "./types.js";
 import type {
-  BBox,
   ClaimedJob,
   Database,
   EventRow,
@@ -86,6 +85,15 @@ export class MemoryDatabase implements Database {
         createdAt: new Date(),
       });
     }
+    await this.insertInvite({
+      id: INVITE_ID,
+      email: "photographer@rephoto.local",
+      eventId: EVENT_ID,
+      tokenHash: seedInviteHash(),
+      role: "photographer",
+      expiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
+      usedAt: new Date(),
+    });
   }
 
   async findEventBySlug(slug: string): Promise<EventRow | null> {
@@ -106,6 +114,10 @@ export class MemoryDatabase implements Database {
       if (user.email === email && user.role === role) return user;
     }
     return null;
+  }
+
+  async insertUser(email: string, role: Role): Promise<UserRow> {
+    return this.createUser({ email, role });
   }
 
   async createUser(input: { id?: string; email: string; role: Role }): Promise<UserRow> {
@@ -171,7 +183,7 @@ export class MemoryDatabase implements Database {
     );
   }
 
-  async countRecentMatchJobs(userId: string, since: Date): Promise<number> {
+  async countMatchJobsSince(userId: string, since: Date): Promise<number> {
     return this.jobs.filter((job) => {
       if (job.type !== "match" || job.createdAt < since) return false;
       const payload = job.payload as { userId?: string };
@@ -249,15 +261,22 @@ export class MemoryDatabase implements Database {
     );
   }
 
-  async upsertDerivative(photoId: string, kind: "thumb" | "web", s3Key: string): Promise<void> {
-    const index = this.derivatives.findIndex((row) => row.photoId === photoId && row.kind === kind);
-    const row = { photoId, kind, s3Key };
-    if (index >= 0) this.derivatives[index] = row;
-    else this.derivatives.push(row);
+  async upsertDerivative(input: {
+    photoId: string;
+    kind: "thumb" | "web";
+    s3Key: string;
+  }): Promise<void> {
+    const index = this.derivatives.findIndex(
+      (row) => row.photoId === input.photoId && row.kind === input.kind,
+    );
+    if (index >= 0) this.derivatives[index] = input;
+    else this.derivatives.push(input);
   }
 
-  async derivativeKey(photoId: string, kind: "thumb" | "web"): Promise<string | null> {
-    return this.derivatives.find((row) => row.photoId === photoId && row.kind === kind)?.s3Key ?? null;
+  async listDerivatives(photoId: string): Promise<Array<{ kind: "thumb" | "web"; s3Key: string }>> {
+    return this.derivatives
+      .filter((row) => row.photoId === photoId)
+      .map(({ kind, s3Key }) => ({ kind, s3Key }));
   }
 
   async replaceFaces(photoId: string, eventId: string, faces: FaceInsert[]): Promise<void> {
@@ -269,12 +288,18 @@ export class MemoryDatabase implements Database {
     }
   }
 
-  async listExternalFaceIds(photoId: string): Promise<string[]> {
+  async listExternalIds(photoId: string): Promise<string[]> {
     return this.faces.filter((face) => face.photoId === photoId).map((face) => face.externalId);
   }
 
-  async findFaceId(photoId: string, externalId: string): Promise<string | null> {
-    return this.faces.find((face) => face.photoId === photoId && face.externalId === externalId)?.id ?? null;
+  async findFaceByExternalId(
+    eventId: string,
+    externalId: string,
+  ): Promise<{ id: string; photoId: string } | null> {
+    const face = this.faces.find(
+      (row) => row.eventId === eventId && row.externalId === externalId,
+    );
+    return face ? { id: face.id, photoId: face.photoId } : null;
   }
 
   async replaceGallery(
@@ -302,19 +327,22 @@ export class MemoryDatabase implements Database {
       .map(({ photoId, faceId, score }) => ({ photoId, faceId, score }));
   }
 
-  async latestMatchStatus(userId: string, eventId: string): Promise<"empty" | "queued" | "ready"> {
-    const matches = this.jobs.filter((job) => {
-      if (job.type !== "match") return false;
-      const payload = job.payload as { userId?: string; eventId?: string };
-      return payload.userId === userId && payload.eventId === eventId;
-    });
-    if (matches.some((job) => job.status === "queued" || job.status === "running")) return "queued";
-    if (matches.length > 0) return "ready";
-    const items = await this.listGallery(userId, eventId);
-    return items.length > 0 ? "ready" : "empty";
+  async latestMatchJob(
+    userId: string,
+    eventId: string,
+  ): Promise<{ status: "queued" | "running" | "done" | "error" } | null> {
+    const matches = this.jobs
+      .filter((job) => {
+        if (job.type !== "match") return false;
+        const payload = job.payload as { userId?: string; eventId?: string };
+        return payload.userId === userId && payload.eventId === eventId;
+      })
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    const latest = matches[0];
+    return latest ? { status: latest.status } : null;
   }
 
-  async deletePhotoRecords(photoId: string): Promise<void> {
+  async deletePhoto(photoId: string): Promise<void> {
     for (let index = this.items.length - 1; index >= 0; index -= 1) {
       if (this.items[index]?.photoId === photoId) this.items.splice(index, 1);
     }
@@ -327,7 +355,9 @@ export class MemoryDatabase implements Database {
     this.photos.delete(photoId);
   }
 
-  async deleteParticipant(userId: string): Promise<void> {
+  async deleteParticipant(userId: string): Promise<boolean> {
+    const user = this.users.get(userId);
+    if (!user || user.role !== "participant") return false;
     for (let index = this.items.length - 1; index >= 0; index -= 1) {
       const gallery = this.galleries.find((row) => row.id === this.items[index]?.galleryId);
       if (gallery?.userId === userId) this.items.splice(index, 1);
@@ -347,18 +377,27 @@ export class MemoryDatabase implements Database {
     for (const [hash, session] of this.sessions) {
       if (session.userId === userId) this.sessions.delete(hash);
     }
+    if (!this.users.has(userId)) return false;
     this.users.delete(userId);
+    return true;
   }
 
   async insertInvite(input: {
+    id?: string;
     email: string;
     eventId: string;
     tokenHash: string;
     role: Role;
     expiresAt: Date;
+    usedAt?: Date | null;
   }): Promise<string> {
-    void input;
-    return randomUUID();
+    void input.email;
+    void input.eventId;
+    void input.tokenHash;
+    void input.role;
+    void input.expiresAt;
+    void input.usedAt;
+    return input.id ?? randomUUID();
   }
 
   async insertAudit(): Promise<void> {
@@ -409,11 +448,11 @@ export class MemoryDatabase implements Database {
     if (job) job.status = "done";
   }
 
-  async failJob(id: string, attempts: number, error: string): Promise<"queued" | "error"> {
+  async failJob(id: string, error: string): Promise<"queued" | "error"> {
     void error;
     const job = this.jobs.find((row) => row.id === id);
     if (!job) return "error";
-    const next = attempts + 1;
+    const next = job.attempts + 1;
     job.attempts = next;
     if (next >= JOB_MAX_ATTEMPTS) {
       job.status = "error";
@@ -428,5 +467,3 @@ export class MemoryDatabase implements Database {
 export function seedInviteHash(): string {
   return createHash("sha256").update("seed-invite").digest("hex");
 }
-
-void BBox;

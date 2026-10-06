@@ -1,0 +1,24 @@
+{
+  "name": "@rephoto/worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "start": "tsx src/index.ts",
+    "test": "node --import tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@rephoto/api": "file:../api",
+    "@rephoto/contracts": "file:../../packages/contracts",
+    "@rephoto/db": "file:../../packages/db",
+    "@rephoto/face-engine": "file:../../packages/face-engine",
+    "sharp": "^0.34.4",
+    "tsx": "^4.20.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.0",
+    "typescript": "^5.9.3"
+  }
+}

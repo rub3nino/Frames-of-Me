@@ -1,32 +1,9 @@
-export type BBox = { x: number; y: number; width: number; height: number }; // 0..1 relative
-
-export interface IndexFace {
-  externalId: string;
-  bbox: BBox;
-  confidence: number; // 0..1
-}
-
-export interface FaceMatch {
-  externalId: string;
-  photoId: string;
-  similarity: number; // 0..1
-}
-
-export interface FaceEngine {
-  indexPhoto(input: {
-    eventId: string;
-    photoId: string;
-    imageBytes: Uint8Array;
-  }): Promise<IndexFace[]>;
-  searchSelfie(input: {
-    eventId: string;
-    imageBytes: Uint8Array;
-    threshold: number;
-  }): Promise<FaceMatch[]>;
-  deleteFaces(input: { eventId: string; externalIds: string[] }): Promise<void>;
-}
-
-/** Callers pass 0..1. Rekognition's 0–100 scale stops at the adapter. */
+/**
+ * Runtime FaceEngine lives in `@rephoto/face-engine` (0–100 similarity).
+ * This package does not declare a second interface.
+ * Gallery rows store that similarity divided by 100, and keep a hit only
+ * when the stored score is at least this threshold.
+ */
 export const DEFAULT_MATCH_THRESHOLD = 0.8;
 
 const COLLECTION_ID_PATTERN = /^[a-zA-Z0-9_.\-]+$/;

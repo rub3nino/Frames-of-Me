@@ -89,6 +89,10 @@ export class PostgresDatabase implements Database {
     return rows[0] ? mapUser(rows[0]) : null;
   }
 
+  async insertUser(email: string, role: Role): Promise<UserRow> {
+    return this.createUser({ email, role });
+  }
+
   async createUser(input: { id?: string; email: string; role: Role }): Promise<UserRow> {
     const existing = await this.findUserByEmailRole(input.email, input.role);
     if (existing) return existing;
@@ -170,7 +174,7 @@ export class PostgresDatabase implements Database {
     return rows.length > 0;
   }
 
-  async countRecentMatchJobs(userId: string, since: Date): Promise<number> {
+  async countMatchJobsSince(userId: string, since: Date): Promise<number> {
     const rows = await this.sql<{ count: number }[]>`
       select count(*)::int as count from jobs
       where type = 'match' and payload->>'userId' = ${userId} and created_at >= ${since}
@@ -287,19 +291,25 @@ export class PostgresDatabase implements Database {
     return rows.map(mapPhoto);
   }
 
-  async upsertDerivative(photoId: string, kind: "thumb" | "web", s3Key: string): Promise<void> {
+  async upsertDerivative(input: {
+    photoId: string;
+    kind: "thumb" | "web";
+    s3Key: string;
+  }): Promise<void> {
     await this.sql`
       insert into derivatives (photo_id, kind, s3_key)
-      values (${photoId}, ${kind}, ${s3Key})
+      values (${input.photoId}, ${input.kind}, ${input.s3Key})
       on conflict (photo_id, kind) do update set s3_key = excluded.s3_key
     `;
   }
 
-  async derivativeKey(photoId: string, kind: "thumb" | "web"): Promise<string | null> {
-    const rows = await this.sql<{ s3_key: string }[]>`
-      select s3_key from derivatives where photo_id = ${photoId} and kind = ${kind}
+  async listDerivatives(
+    photoId: string,
+  ): Promise<Array<{ kind: "thumb" | "web"; s3Key: string }>> {
+    const rows = await this.sql<{ kind: "thumb" | "web"; s3_key: string }[]>`
+      select kind, s3_key from derivatives where photo_id = ${photoId}
     `;
-    return rows[0]?.s3_key ?? null;
+    return rows.map((row) => ({ kind: row.kind, s3Key: row.s3_key }));
   }
 
   async replaceFaces(photoId: string, eventId: string, faces: FaceInsert[]): Promise<void> {
@@ -318,18 +328,23 @@ export class PostgresDatabase implements Database {
     });
   }
 
-  async listExternalFaceIds(photoId: string): Promise<string[]> {
+  async listExternalIds(photoId: string): Promise<string[]> {
     const rows = await this.sql<{ external_id: string }[]>`
       select external_id from faces where photo_id = ${photoId}
     `;
     return rows.map((row) => row.external_id);
   }
 
-  async findFaceId(photoId: string, externalId: string): Promise<string | null> {
-    const rows = await this.sql<{ id: string }[]>`
-      select id from faces where photo_id = ${photoId} and external_id = ${externalId}
+  async findFaceByExternalId(
+    eventId: string,
+    externalId: string,
+  ): Promise<{ id: string; photoId: string } | null> {
+    const rows = await this.sql<{ id: string; photo_id: string }[]>`
+      select id, photo_id from faces
+      where event_id = ${eventId} and external_id = ${externalId}
     `;
-    return rows[0]?.id ?? null;
+    const row = rows[0];
+    return row ? { id: row.id, photoId: row.photo_id } : null;
   }
 
   async replaceGallery(
@@ -370,21 +385,23 @@ export class PostgresDatabase implements Database {
     }));
   }
 
-  async latestMatchStatus(userId: string, eventId: string): Promise<"empty" | "queued" | "ready"> {
-    const rows = await this.sql<{ status: string }[]>`
+  async latestMatchJob(
+    userId: string,
+    eventId: string,
+  ): Promise<{ status: "queued" | "running" | "done" | "error" } | null> {
+    const rows = await this.sql<{ status: "queued" | "running" | "done" | "error" }[]>`
       select status from jobs
       where type = 'match'
         and payload->>'userId' = ${userId}
         and payload->>'eventId' = ${eventId}
       order by created_at desc
+      limit 1
     `;
-    if (rows.some((row) => row.status === "queued" || row.status === "running")) return "queued";
-    if (rows.length > 0) return "ready";
-    const items = await this.listGallery(userId, eventId);
-    return items.length > 0 ? "ready" : "empty";
+    const row = rows[0];
+    return row ? { status: row.status } : null;
   }
 
-  async deletePhotoRecords(photoId: string): Promise<void> {
+  async deletePhoto(photoId: string): Promise<void> {
     await this.sql.begin(async (tx) => {
       await tx`delete from gallery_items where photo_id = ${photoId}`;
       await tx`delete from faces where photo_id = ${photoId}`;
@@ -393,8 +410,9 @@ export class PostgresDatabase implements Database {
     });
   }
 
-  async deleteParticipant(userId: string): Promise<void> {
+  async deleteParticipant(userId: string): Promise<boolean> {
     const user = await this.findUserById(userId);
+    if (!user || user.role !== "participant") return false;
     await this.sql.begin(async (tx) => {
       await tx`delete from gallery_items where gallery_id in (select id from galleries where user_id = ${userId})`;
       await tx`delete from galleries where user_id = ${userId}`;
@@ -405,6 +423,7 @@ export class PostgresDatabase implements Database {
       }
       await tx`delete from users where id = ${userId}`;
     });
+    return true;
   }
 
   async insertInvite(input: {
@@ -432,7 +451,7 @@ export class PostgresDatabase implements Database {
   }): Promise<void> {
     await this.sql`
       insert into audit_log (actor_id, action, target, meta)
-      values (${input.actorId}, ${input.action}, ${input.target}, ${this.sql.json(input.meta)})
+      values (${input.actorId}, ${input.action}, ${input.target}, ${JSON.stringify(input.meta)}::jsonb)
     `;
   }
 
@@ -503,8 +522,11 @@ export class PostgresDatabase implements Database {
     await this.sql`update jobs set status = 'done' where id = ${id}`;
   }
 
-  async failJob(id: string, attempts: number, error: string): Promise<"queued" | "error"> {
-    const next = attempts + 1;
+  async failJob(id: string, error: string): Promise<"queued" | "error"> {
+    const current = await this.sql<{ attempts: number }[]>`
+      select attempts from jobs where id = ${id}
+    `;
+    const next = (current[0]?.attempts ?? 0) + 1;
     if (next >= JOB_MAX_ATTEMPTS) {
       await this.sql`
         update jobs set status = 'error', attempts = ${next}, last_error = ${error} where id = ${id}

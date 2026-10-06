@@ -1,0 +1,38 @@
+{
+  "name": "@rephoto/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/app.ts",
+    "./consent": "./src/consent.ts",
+    "./crypto": "./src/crypto.ts",
+    "./env": "./src/env.ts",
+    "./http": "./src/http.ts",
+    "./face": "./src/face.ts",
+    "./mailer": "./src/mailer.ts",
+    "./object-store": "./src/object-store.ts",
+    "./objects": "./src/objects.ts",
+    "./queue": "./src/queue.ts",
+    "./seed": "./src/seed.ts"
+  },
+  "scripts": {
+    "dev": "tsx src/server.ts",
+    "start": "tsx src/server.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.901.0",
+    "@aws-sdk/s3-request-presigner": "^3.901.0",
+    "@hono/node-server": "^1.19.5",
+    "@rephoto/contracts": "file:../../packages/contracts",
+    "@rephoto/db": "file:../../packages/db",
+    "@rephoto/face-engine": "file:../../packages/face-engine",
+    "hono": "^4.9.8",
+    "tsx": "^4.20.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.0",
+    "typescript": "^5.9.3"
+  }
+}

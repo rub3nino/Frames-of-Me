@@ -17,38 +17,39 @@ npm workspaces (`apps/*`, `packages/*`):
 | `packages/db` | `@rephoto/db` | SQL migrations, `migrate`, `seed`. |
 | `packages/face-engine` | `@rephoto/face-engine` | `FaceEngine` implementations (`fake`, `rekognition`). No caller imports the AWS SDK except this package. |
 
-Callers depend on `FaceEngine` from `@rephoto/contracts`. Swapping InsightFace in later means a new class in `packages/face-engine` plus `FACE_ENGINE`. Callers stay unchanged.
+Callers depend on `FaceEngine` from `@rephoto/face-engine` (`packages/face-engine/src/types.ts`). Swapping InsightFace in later means a new class in that package plus `FACE_ENGINE`. Callers stay unchanged. `@rephoto/contracts` does not declare a second engine interface.
 
 ## FaceEngine
 
 ```ts
-export type BBox = { x: number; y: number; width: number; height: number }; // 0..1 relative
+export interface Box { left: number; top: number; width: number; height: number } // normalized 0..1
 
-export interface IndexFace {
-  externalId: string;
-  bbox: BBox;
-  confidence: number; // 0..1
+export interface IndexedFace {
+  externalFaceId: string;
+  bbox: Box;
+  confidence: number; // 0..100
 }
 
-export interface FaceMatch {
-  externalId: string;
+export interface SearchHit {
+  externalFaceId: string;
   photoId: string;
-  similarity: number; // 0..1
+  similarity: number; // 0..100
 }
 
 export interface FaceEngine {
-  indexPhoto(input: { eventId: string; photoId: string; imageBytes: Uint8Array }): Promise<IndexFace[]>;
-  searchSelfie(input: { eventId: string; imageBytes: Uint8Array; threshold: number }): Promise<FaceMatch[]>;
-  deleteFaces(input: { eventId: string; externalIds: string[] }): Promise<void>;
+  indexPhoto(input: { eventId: string; photoId: string; imageBytes: Uint8Array; contentType: "image/jpeg" | "image/png" }): Promise<IndexedFace[]>;
+  search(input: { eventId: string; imageBytes: Uint8Array; contentType: "image/jpeg" | "image/png" }): Promise<SearchHit[]>;
+  deleteFaces(eventId: string, externalFaceIds: string[]): Promise<void>;
 }
 ```
 
-- Default `threshold` is **0.8** (0..1). Callers pass 0..1 only.
-- Rekognition `Similarity` and `Confidence` are 0–100. The adapter divides by 100 at the boundary before returning `FaceMatch.similarity` or `IndexFace.confidence`. The adapter multiplies `threshold` by 100 when it sets Rekognition `FaceMatchThreshold`.
-- Rekognition `BoundingBox` (`Left`, `Top`, `Width`, `Height`, already 0..1) maps to `{ x: Left, y: Top, width: Width, height: Height }`.
-- `IndexFace.externalId` is the vendor face id (Rekognition `FaceId`). It is **not** the photo id.
-- Rekognition `ExternalImageId` is the **photoId** unchanged. `FaceMatch.photoId` is that value. `FaceMatch.externalId` is the matched `FaceId`.
-- `deleteFaces` deletes by `externalId` inside the event collection. Empty `externalIds` is a no-op.
+- The engine speaks Rekognition's **0–100** scale. `REKOGNITION_MIN_SIMILARITY` defaults to **90** and is applied inside the Rekognition adapter as `FaceMatchThreshold`. The fake adapter returns similarity **99** for a hit.
+- The worker divides engine confidence and similarity by 100 before writing Postgres. `faces.confidence` and `gallery_items.score` are **0–1**. A stored score is kept only when it is `>= DEFAULT_MATCH_THRESHOLD` (**0.8**).
+- Rekognition `BoundingBox` (`Left`, `Top`, `Width`, `Height`, already 0..1) maps to `{ left, top, width, height }`. Postgres stores the same box as `{ x, y, width, height }`.
+- `externalFaceId` is the vendor face id (Rekognition `FaceId`, or the fake id). It is **not** the photo id.
+- Rekognition `ExternalImageId` is the **photoId** unchanged. `SearchHit.photoId` is that value.
+- `deleteFaces` deletes by `externalFaceId` inside the event collection. An empty list is a no-op.
+- A selfie is never passed to `indexPhoto`.
 - Do not persist raw embeddings. Not in Postgres, not in object storage, not in logs.
 
 ### Collection id (frozen function)
@@ -78,9 +79,8 @@ One collection per event. Create it lazily on first `indexPhoto`.
 
 No AWS calls.
 
-- `indexPhoto` returns one face: `externalId` `fake-${photoId}`, `bbox` `{ x: 0.25, y: 0.2, width: 0.3, height: 0.4 }`, `confidence` `0.99`.
-- `searchSelfie` reads rows from Postgres `faces` for `eventId` (via `DATABASE_URL`) and returns one `FaceMatch` per row with that `externalId`, the row's `photoId`, and `similarity` `0.99`, dropping rows below `threshold`. This is how the demo works across the API and worker processes. It must not read or write an embedding.
-- `deleteFaces` resolves successfully and does not itself delete SQL rows (the caller does).
+- Subject key = average color quantized to 16 levels per channel. Two images with the same key in the same event are the same person. `indexPhoto` stores that key in `face_index` (`external_face_id`, `event_id`, `photo_id`, `r`, `g`, `b`). `search` returns similarity **99** for those rows and nothing otherwise. Tests construct `FakeFaceEngine` with an injected store; with `DATABASE_URL` the engine can persist `face_index`.
+- `deleteFaces` removes those ids from the store and does not itself delete `faces` rows (the caller does).
 
 ## Environment
 
@@ -114,11 +114,11 @@ No AWS calls.
 | Original | `originals/{eventId}/{photoId}` | No extra extension. |
 | Thumb | `thumbs/{photoId}.jpg` | Long edge 480, JPEG. |
 | Web | `web/{photoId}.jpg` | Long edge 1600, JPEG quality 80. |
-| Selfie | `selfies/{eventId}/{userId}/{uuid}` | Deleted after a successful `searchSelfie`. |
+| Selfie | `selfies/{eventId}/{userId}/{uuid}` | Deleted after `search` returns. |
 
 Derivative `kind` is `thumb` or `web` and matches those keys.
 
-On `searchSelfie` success (including zero matches), the match job deletes the selfie object before it marks the job `done`. On a thrown search, keep the object for retry. After the final failed attempt, delete the selfie anyway.
+On `search` success (including zero matches), the match job deletes the selfie object before it marks the job `done`. On a thrown search, keep the object for retry. After the final failed attempt, delete the selfie anyway.
 
 ## Jobs
 
@@ -143,7 +143,7 @@ Pipeline:
 2. `derive` writes both derivatives, sets `processing`, enqueues `index`.
 3. `index` calls `indexPhoto`, inserts `faces`, sets `indexed`.
 4. `POST .../selfie` stores the selfie object and enqueues `match`.
-5. `match` calls `searchSelfie`, upserts `galleries` / `gallery_items` (score = similarity), deletes the selfie object, enqueues `email`.
+5. `match` calls `search`, keeps the best hit per photo with stored score `similarity / 100` when that score is `>= 0.8`, upserts `galleries` / `gallery_items`, deletes the selfie object, enqueues `email`.
 6. `email` sends the gallery link. `galleryPath` is `/e/{slug}` on `WEB_ORIGIN`.
 
 Terminal job failure on `derive` or `index` sets the photo to `error`.

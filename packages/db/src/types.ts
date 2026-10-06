@@ -76,6 +76,7 @@ export interface Database {
   findUserById(id: string): Promise<UserRow | null>;
   findUserByEmailRole(email: string, role: Role): Promise<UserRow | null>;
   createUser(input: { id?: string; email: string; role: Role }): Promise<UserRow>;
+  insertUser(email: string, role: Role): Promise<UserRow>;
   insertMagicLink(input: {
     email: string;
     role: Role;
@@ -94,7 +95,7 @@ export interface Database {
     userAgent: string;
   }): Promise<{ id: string; grantedAt: Date }>;
   hasActiveConsent(userId: string, eventId: string): Promise<boolean>;
-  countRecentMatchJobs(userId: string, since: Date): Promise<number>;
+  countMatchJobsSince(userId: string, since: Date): Promise<number>;
   findPhotoBySha(eventId: string, sha256: string): Promise<PhotoRow | null>;
   insertUploadSession(input: {
     id: string;
@@ -121,23 +122,30 @@ export interface Database {
   listPhotosByPhotographer(photographerId: string): Promise<PhotoRow[]>;
   setPhotoStatus(id: string, status: PhotoStatus): Promise<void>;
   listPhotosCreatedBefore(eventId: string, cutoff: Date): Promise<PhotoRow[]>;
-  upsertDerivative(photoId: string, kind: "thumb" | "web", s3Key: string): Promise<void>;
-  derivativeKey(photoId: string, kind: "thumb" | "web"): Promise<string | null>;
+  upsertDerivative(input: {
+    photoId: string;
+    kind: "thumb" | "web";
+    s3Key: string;
+  }): Promise<void>;
+  listDerivatives(photoId: string): Promise<Array<{ kind: "thumb" | "web"; s3Key: string }>>;
   replaceFaces(photoId: string, eventId: string, faces: FaceInsert[]): Promise<void>;
-  listExternalFaceIds(photoId: string): Promise<string[]>;
-  findFaceId(photoId: string, externalId: string): Promise<string | null>;
+  listExternalIds(photoId: string): Promise<string[]>;
+  findFaceByExternalId(
+    eventId: string,
+    externalId: string,
+  ): Promise<{ id: string; photoId: string } | null>;
   replaceGallery(
     userId: string,
     eventId: string,
     items: Array<{ photoId: string; faceId: string; score: number }>,
   ): Promise<void>;
   listGallery(userId: string, eventId: string): Promise<GalleryItemRow[]>;
-  latestMatchStatus(
+  latestMatchJob(
     userId: string,
     eventId: string,
-  ): Promise<"empty" | "queued" | "ready">;
-  deletePhotoRecords(photoId: string): Promise<void>;
-  deleteParticipant(userId: string): Promise<void>;
+  ): Promise<{ status: "queued" | "running" | "done" | "error" } | null>;
+  deletePhoto(photoId: string): Promise<void>;
+  deleteParticipant(userId: string): Promise<boolean>;
   insertInvite(input: {
     email: string;
     eventId: string;
@@ -161,5 +169,5 @@ export interface Database {
   enqueueJob(type: JobType, payload: unknown): Promise<void>;
   claimJob(): Promise<ClaimedJob | null>;
   completeJob(id: string): Promise<void>;
-  failJob(id: string, attempts: number, error: string): Promise<"queued" | "error">;
+  failJob(id: string, error: string): Promise<"queued" | "error">;
 }
