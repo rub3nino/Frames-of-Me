@@ -19,7 +19,7 @@ export {
 } from "./fake.ts";
 export type { FaceIndexRecord, FaceIndexStore, Queryable } from "./fake.ts";
 
-export { RekognitionFaceEngine } from "./rekognition.ts";
+export { RekognitionFaceEngine, RekognitionThrottleError } from "./rekognition.ts";
 export type { RekognitionFaceClient } from "./rekognition.ts";
 
 /**

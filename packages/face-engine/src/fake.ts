@@ -29,6 +29,7 @@ export interface FaceIndexStore {
     b: number,
   ): Promise<FaceIndexRecord[]>;
   deleteIds(eventId: string, externalFaceIds: string[]): Promise<void>;
+  deleteEvent(eventId: string): Promise<void>;
 }
 
 export interface Queryable {
@@ -87,6 +88,12 @@ export class MemoryFaceIndexStore implements FaceIndexStore {
     const ids = new Set(externalFaceIds);
     for (const [id, row] of this.rows) {
       if (row.eventId === eventId && ids.has(id)) this.rows.delete(id);
+    }
+  }
+
+  async deleteEvent(eventId: string): Promise<void> {
+    for (const [id, row] of this.rows) {
+      if (row.eventId === eventId) this.rows.delete(id);
     }
   }
 }
@@ -178,6 +185,15 @@ export class SqlFaceIndexStore implements FaceIndexStore {
     );
   }
 
+  async deleteEvent(eventId: string): Promise<void> {
+    await this.run(
+      () => this.memory.deleteEvent(eventId),
+      async (db) => {
+        await db.query(`DELETE FROM face_index WHERE event_id = $1`, [eventId]);
+      },
+    );
+  }
+
   private async run<T>(
     memory: () => Promise<T>,
     query: (db: Queryable) => Promise<T>,
@@ -247,6 +263,10 @@ export class FakeFaceEngine implements FaceEngine {
   async deleteFaces(eventId: string, externalFaceIds: string[]): Promise<void> {
     if (externalFaceIds.length === 0) return;
     await this.store.deleteIds(eventId, externalFaceIds);
+  }
+
+  async deleteCollection(eventId: string): Promise<void> {
+    await this.store.deleteEvent(eventId);
   }
 }
 

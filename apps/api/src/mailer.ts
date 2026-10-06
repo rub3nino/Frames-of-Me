@@ -1,4 +1,5 @@
 import net from "node:net";
+import { SESv2Client, SendEmailCommand } from "@aws-sdk/client-sesv2";
 import type { Env } from "@rephoto/contracts";
 
 export type MailMessage = {
@@ -12,8 +13,32 @@ export interface Mailer {
 }
 
 export function createMailer(env: Env): Mailer {
+  if (env.MAIL_TRANSPORT === "ses") return createSesMailer(env);
+  const host = env.SMTP_HOST;
+  const port = env.SMTP_PORT;
+  if (!host || !port) throw new Error("SMTP_HOST and SMTP_PORT are required");
   return {
-    send: (message) => smtpSend(env.SMTP_HOST, env.SMTP_PORT, env.SMTP_FROM, message),
+    send: (message) => smtpSend(host, port, env.SMTP_FROM, message),
+  };
+}
+
+function createSesMailer(env: Env): Mailer {
+  const client = new SESv2Client({ region: env.AWS_REGION });
+  return {
+    async send(message) {
+      await client.send(
+        new SendEmailCommand({
+          FromEmailAddress: env.SMTP_FROM,
+          Destination: { ToAddresses: [message.to] },
+          Content: {
+            Simple: {
+              Subject: { Data: message.subject, Charset: "UTF-8" },
+              Body: { Text: { Data: message.text, Charset: "UTF-8" } },
+            },
+          },
+        }),
+      );
+    },
   };
 }
 

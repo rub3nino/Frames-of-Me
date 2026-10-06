@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { JobType, PhotoStatus, Role } from "@rephoto/contracts";
-import { JOB_MAX_ATTEMPTS } from "@rephoto/contracts";
+import { JOB_MAX_ATTEMPTS, STALE_RUNNING_MS, THROTTLE_REQUEUE_SECONDS } from "@rephoto/contracts";
 import { isUniqueViolation, type Sql } from "./sql.js";
 import { DuplicateKeyError } from "./types.js";
 import type {
@@ -283,10 +283,41 @@ export class PostgresDatabase implements Database {
     await this.sql`update photos set status = ${status} where id = ${id}`;
   }
 
-  async listPhotosCreatedBefore(eventId: string, cutoff: Date): Promise<PhotoRow[]> {
+  async listPhotosCreatedBefore(
+    eventId: string,
+    cutoff: Date,
+    limit?: number,
+  ): Promise<PhotoRow[]> {
+    const rows =
+      limit === undefined
+        ? await this.sql<PhotoSql[]>`
+            select id, event_id, photographer_id, sha256, status, original_key, content_type, bytes, created_at
+            from photos
+            where event_id = ${eventId} and created_at < ${cutoff}
+            order by created_at
+          `
+        : await this.sql<PhotoSql[]>`
+            select id, event_id, photographer_id, sha256, status, original_key, content_type, bytes, created_at
+            from photos
+            where event_id = ${eventId} and created_at < ${cutoff}
+            order by created_at
+            limit ${limit}
+          `;
+    return rows.map(mapPhoto);
+  }
+
+  async countPhotos(eventId: string): Promise<number> {
+    const rows = await this.sql<{ count: number }[]>`
+      select count(*)::int as count from photos where event_id = ${eventId}
+    `;
+    return rows[0]?.count ?? 0;
+  }
+
+  async listPhotosByIds(ids: string[]): Promise<PhotoRow[]> {
+    if (ids.length === 0) return [];
     const rows = await this.sql<PhotoSql[]>`
       select id, event_id, photographer_id, sha256, status, original_key, content_type, bytes, created_at
-      from photos where event_id = ${eventId} and created_at < ${cutoff}
+      from photos where id = any(${ids}::uuid[])
     `;
     return rows.map(mapPhoto);
   }
@@ -312,6 +343,14 @@ export class PostgresDatabase implements Database {
     return rows.map((row) => ({ kind: row.kind, s3Key: row.s3_key }));
   }
 
+  async listDerivativeKeys(photoIds: string[]): Promise<string[]> {
+    if (photoIds.length === 0) return [];
+    const rows = await this.sql<{ s3_key: string }[]>`
+      select s3_key from derivatives where photo_id = any(${photoIds}::uuid[])
+    `;
+    return rows.map((row) => row.s3_key);
+  }
+
   async replaceFaces(photoId: string, eventId: string, faces: FaceInsert[]): Promise<void> {
     await this.sql.begin(async (tx) => {
       await tx`delete from gallery_items where face_id in (select id from faces where photo_id = ${photoId})`;
@@ -335,6 +374,14 @@ export class PostgresDatabase implements Database {
     return rows.map((row) => row.external_id);
   }
 
+  async listExternalIdsForPhotos(photoIds: string[]): Promise<string[]> {
+    if (photoIds.length === 0) return [];
+    const rows = await this.sql<{ external_id: string }[]>`
+      select external_id from faces where photo_id = any(${photoIds}::uuid[])
+    `;
+    return rows.map((row) => row.external_id);
+  }
+
   async findFaceByExternalId(
     eventId: string,
     externalId: string,
@@ -345,6 +392,22 @@ export class PostgresDatabase implements Database {
     `;
     const row = rows[0];
     return row ? { id: row.id, photoId: row.photo_id } : null;
+  }
+
+  async findFacesByExternalIds(
+    eventId: string,
+    externalIds: string[],
+  ): Promise<Array<{ id: string; photoId: string; externalId: string }>> {
+    if (externalIds.length === 0) return [];
+    const rows = await this.sql<{ id: string; photo_id: string; external_id: string }[]>`
+      select id, photo_id, external_id from faces
+      where event_id = ${eventId} and external_id = any(${externalIds})
+    `;
+    return rows.map((row) => ({
+      id: row.id,
+      photoId: row.photo_id,
+      externalId: row.external_id,
+    }));
   }
 
   async replaceGallery(
@@ -486,15 +549,26 @@ export class PostgresDatabase implements Database {
     };
   }
 
-  async enqueueJob(type: JobType, payload: unknown): Promise<void> {
-    await this.sql`
+  async enqueueJob(type: JobType, payload: unknown): Promise<string> {
+    const rows = await this.sql<{ id: string }[]>`
       insert into jobs (type, payload)
       values (${type}, ${this.sql.json(payload as Parameters<Sql["json"]>[0])})
+      returning id
     `;
+    const id = rows[0]?.id;
+    if (!id) throw new Error("Job insert failed");
+    return id;
   }
 
   async claimJob(): Promise<ClaimedJob | null> {
+    const staleSeconds = STALE_RUNNING_MS / 1000;
     return this.sql.begin(async (tx) => {
+      await tx`
+        update jobs
+        set status = 'queued', claimed_at = null
+        where status = 'running'
+          and coalesce(claimed_at, created_at) < now() - (${staleSeconds} * interval '1 second')
+      `;
       const rows = await tx<{
         id: string;
         type: JobType;
@@ -502,7 +576,7 @@ export class PostgresDatabase implements Database {
         attempts: number;
       }[]>`
         update jobs
-        set status = 'running'
+        set status = 'running', claimed_at = now()
         where id = (
           select id from jobs
           where status = 'queued' and run_after <= now()
@@ -529,7 +603,9 @@ export class PostgresDatabase implements Database {
     const next = (current[0]?.attempts ?? 0) + 1;
     if (next >= JOB_MAX_ATTEMPTS) {
       await this.sql`
-        update jobs set status = 'error', attempts = ${next}, last_error = ${error} where id = ${id}
+        update jobs
+        set status = 'error', attempts = ${next}, last_error = ${error}, claimed_at = null
+        where id = ${id}
       `;
       return "error";
     }
@@ -539,10 +615,22 @@ export class PostgresDatabase implements Database {
       set status = 'queued',
           attempts = ${next},
           last_error = ${error},
+          claimed_at = null,
           run_after = now() + (${delaySeconds} * interval '1 second')
       where id = ${id}
     `;
     return "queued";
+  }
+
+  async requeueJob(id: string, error: string): Promise<void> {
+    await this.sql`
+      update jobs
+      set status = 'queued',
+          last_error = ${error},
+          claimed_at = null,
+          run_after = now() + (${THROTTLE_REQUEUE_SECONDS} * interval '1 second')
+      where id = ${id}
+    `;
   }
 }
 

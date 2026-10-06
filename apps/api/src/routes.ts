@@ -33,6 +33,9 @@ const INVITE_TTL_SECONDS = 7 * 24 * 60 * 60;
 const SELFIE_MAX_BYTES = 8_388_608;
 
 export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
+  app.get("/health", (c) => c.json({ ok: true }));
+  app.get("/v1/health", (c) => c.json({ ok: true }));
+
   app.post("/v1/auth/request-link", async (c) => {
     const body = requestLinkBodySchema.safeParse(await readJson(c));
     if (!body.success) throw new ApiError(400, MESSAGES.validation);
@@ -367,20 +370,11 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     if (!body.success) throw new ApiError(400, MESSAGES.validation);
     const event = await deps.db.findEventById(body.data.eventId);
     if (!event) throw new ApiError(404, MESSAGES.notFound);
-    const cutoff = new Date(Date.now() - event.retentionDays * 24 * 60 * 60 * 1000);
-    const photos = await deps.db.listPhotosCreatedBefore(event.id, cutoff);
-    const deletedPhotoIds: string[] = [];
-    for (const photo of photos) {
-      await purgePhoto(deps, photo.id);
-      await deps.db.insertAudit({
-        actorId: actor.id,
-        action: "photo.deleted",
-        target: `photo:${photo.id}`,
-        meta: { eventId: event.id, retention: true },
-      });
-      deletedPhotoIds.push(photo.id);
-    }
-    return c.json({ deletedPhotoIds });
+    const jobId = await deps.queue.enqueue("retention", {
+      eventId: event.id,
+      actorId: actor.id,
+    });
+    return c.json({ jobId }, 202);
   });
 }
 

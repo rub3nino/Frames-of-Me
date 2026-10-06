@@ -8,7 +8,11 @@ import {
   createFaceEngine,
   type FaceIndexStore,
 } from "./index.ts";
-import { RekognitionFaceEngine, type RekognitionFaceClient } from "./rekognition.ts";
+import {
+  RekognitionFaceEngine,
+  RekognitionThrottleError,
+  type RekognitionFaceClient,
+} from "./rekognition.ts";
 
 function crc32(data: Uint8Array): number {
   let crc = 0xffffffff;
@@ -207,6 +211,7 @@ describe("FakeFaceEngine", () => {
       },
       findByColor: (eventId, r, g, b) => inner.findByColor(eventId, r, g, b),
       deleteIds: (eventId, ids) => inner.deleteIds(eventId, ids),
+      deleteEvent: (eventId) => inner.deleteEvent(eventId),
     };
     const face = new FakeFaceEngine(store);
     await face.indexPhoto({
@@ -398,7 +403,7 @@ describe("RekognitionFaceEngine", () => {
       },
       async searchFacesByImage(input) {
         calls.push("searchFacesByImage");
-        assert.equal(input.MaxFaces, 50);
+        assert.equal(input.MaxFaces, 500);
         assert.equal(input.FaceMatchThreshold, 90);
         assert.equal(Object.hasOwn(input, "ExternalImageId"), false);
         assert.equal(
@@ -425,6 +430,9 @@ describe("RekognitionFaceEngine", () => {
       },
       async deleteFaces(input) {
         calls.push(`delete:${input.FaceIds.join(",")}`);
+      },
+      async deleteCollection(input) {
+        calls.push(`deleteCollection:${input.CollectionId}`);
       },
     };
     const face = new RekognitionFaceEngine({
@@ -489,6 +497,11 @@ describe("RekognitionFaceEngine", () => {
         error.name = "ResourceNotFoundException";
         throw error;
       },
+      async deleteCollection() {
+        const error = new Error("missing");
+        error.name = "ResourceNotFoundException";
+        throw error;
+      },
     };
     const face = new RekognitionFaceEngine({ client, env: {} });
     await assert.rejects(
@@ -540,6 +553,9 @@ describe("RekognitionFaceEngine", () => {
       async deleteFaces() {
         calls.push("deleteFaces");
       },
+      async deleteCollection() {
+        calls.push("deleteCollection");
+      },
     };
     const face = new RekognitionFaceEngine({
       client,
@@ -559,6 +575,79 @@ describe("RekognitionFaceEngine", () => {
       contentType: "image/png",
     });
     assert.deepEqual(calls, ["create", "indexFaces", "indexFaces"]);
+  });
+
+  it("turns a throughput error into a throttle error without image bytes", async () => {
+    const imageBytes = Uint8Array.from("SECRET-IMAGE-BYTES-1234567890", (char) =>
+      char.charCodeAt(0),
+    );
+    const client: RekognitionFaceClient = {
+      async createCollection() {
+        return undefined;
+      },
+      async indexFaces() {
+        const error = new Error(`busy ${Buffer.from(imageBytes).toString("utf8")}`);
+        error.name = "ProvisionedThroughputExceededException";
+        throw error;
+      },
+      async searchFacesByImage() {
+        return { FaceMatches: [] };
+      },
+      async deleteFaces() {
+        return undefined;
+      },
+      async deleteCollection() {
+        return undefined;
+      },
+    };
+    const face = new RekognitionFaceEngine({ client, env: {} });
+    await assert.rejects(
+      () =>
+        face.indexPhoto({
+          eventId: "event-1",
+          photoId: "photo-1",
+          imageBytes,
+          contentType: "image/jpeg",
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof RekognitionThrottleError);
+        assert.equal(error.message.includes("SECRET-IMAGE-BYTES"), false);
+        return true;
+      },
+    );
+  });
+
+  it("deletes the collection and ignores one that is already gone", async () => {
+    const calls: string[] = [];
+    const client: RekognitionFaceClient = {
+      async createCollection() {
+        return undefined;
+      },
+      async indexFaces() {
+        return {};
+      },
+      async searchFacesByImage() {
+        return {};
+      },
+      async deleteFaces() {
+        return undefined;
+      },
+      async deleteCollection(input) {
+        calls.push(input.CollectionId);
+        if (calls.length === 2) {
+          const error = new Error("missing");
+          error.name = "ResourceNotFoundException";
+          throw error;
+        }
+      },
+    };
+    const face = new RekognitionFaceEngine({
+      client,
+      env: { REKOGNITION_COLLECTION_PREFIX: "rephoto-" },
+    });
+    await face.deleteCollection("event-1");
+    await face.deleteCollection("event-1");
+    assert.deepEqual(calls, ["rephoto-event-1", "rephoto-event-1"]);
   });
 });
 
@@ -586,6 +675,9 @@ function recordingClient(onCall: () => void): RekognitionFaceClient {
       return {};
     },
     async deleteFaces() {
+      onCall();
+    },
+    async deleteCollection() {
       onCall();
     },
   };

@@ -28,6 +28,7 @@ process.on("SIGTERM", () => {
   stopped = true;
 });
 
+// One job at a time. A Rekognition throttle is requeued without using an attempt.
 while (!stopped) {
   const worked = await pollOnce(deps);
   if (!worked && !stopped) {

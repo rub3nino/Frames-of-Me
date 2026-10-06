@@ -36,4 +36,6 @@ export interface FaceEngine {
   indexPhoto(input: IndexPhotoInput): Promise<IndexedFace[]>;
   search(input: SearchInput): Promise<SearchHit[]>;
   deleteFaces(eventId: string, externalFaceIds: string[]): Promise<void>;
+  /** Removes the event collection. A missing collection is success. */
+  deleteCollection(eventId: string): Promise<void>;
 }

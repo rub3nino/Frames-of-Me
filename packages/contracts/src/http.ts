@@ -200,5 +200,5 @@ export const retentionBodySchema = z
   .strict();
 
 export const retentionResponseSchema = z
-  .object({ deletedPhotoIds: z.array(z.string().uuid()) })
+  .object({ jobId: z.string().uuid() })
   .strict();

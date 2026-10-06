@@ -5,12 +5,18 @@ import {
   type EmailPayload,
   type Env,
   type MatchPayload,
+  type RetentionPayload,
 } from "@rephoto/contracts";
 import type { Database } from "@rephoto/db";
-import type { FaceEngine, ImageContentType } from "@rephoto/face-engine/types";
+import type { FaceEngine } from "@rephoto/face-engine/types";
 import type { Mailer } from "@rephoto/api/mailer";
 import type { ObjectStore } from "@rephoto/api/object-store";
 import type { JobQueue } from "@rephoto/api/queue";
+
+/** Rekognition Bytes API rejects images over 5 MB. S3Object allows 15 MB; we send bytes. */
+const REKOGNITION_MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const RETENTION_PHOTO_BATCH = 50;
+const DELETE_FACES_CHUNK = 1000;
 
 export type WorkerDeps = {
   env: Env;
@@ -25,7 +31,8 @@ export type WorkerJob =
   | { type: "derive"; photoId: string }
   | { type: "index"; photoId: string }
   | ({ type: "match" } & MatchPayload)
-  | ({ type: "email" } & EmailPayload);
+  | ({ type: "email" } & EmailPayload)
+  | ({ type: "retention" } & RetentionPayload);
 
 export async function runJob(job: WorkerJob, deps: WorkerDeps): Promise<void> {
   if (job.type === "derive") {
@@ -38,6 +45,10 @@ export async function runJob(job: WorkerJob, deps: WorkerDeps): Promise<void> {
   }
   if (job.type === "match") {
     await matchSelfie(job, deps);
+    return;
+  }
+  if (job.type === "retention") {
+    await retainEvent(job, deps);
     return;
   }
   await sendGalleryMail(job, deps);
@@ -66,13 +77,22 @@ async function indexPhoto(photoId: string, deps: WorkerDeps): Promise<void> {
   if (photo.originalKey.startsWith("selfies/")) {
     throw new Error("Refusing to index a selfie");
   }
-  const original = await deps.objects.get(photo.originalKey);
-  if (!original) throw new Error("Original missing");
+  const existing = await deps.db.listExternalIds(photo.id);
+  if (photo.status === "indexed" && existing.length > 0) return;
+  const web = await deps.objects.get(objectKeys.web(photo.id));
+  if (!web) throw new Error("Web derivative missing");
+  const imageBytes =
+    web.body.byteLength > REKOGNITION_MAX_IMAGE_BYTES
+      ? await fitRekognitionJpeg(web.body)
+      : web.body;
+  if (existing.length > 0) {
+    await deps.faces.deleteFaces(photo.eventId, existing);
+  }
   const indexed = await deps.faces.indexPhoto({
     eventId: photo.eventId,
     photoId: photo.id,
-    imageBytes: original.body,
-    contentType: photo.contentType,
+    imageBytes,
+    contentType: "image/jpeg",
   });
   await deps.db.replaceFaces(
     photo.id,
@@ -94,16 +114,24 @@ async function indexPhoto(photoId: string, deps: WorkerDeps): Promise<void> {
 async function matchSelfie(job: { type: "match" } & MatchPayload, deps: WorkerDeps): Promise<void> {
   const selfie = await deps.objects.get(job.selfieKey);
   if (!selfie) throw new Error("Selfie object missing");
+  const imageBytes = await fitRekognitionJpeg(selfie.body);
   const hits = await deps.faces.search({
     eventId: job.eventId,
-    imageBytes: selfie.body,
-    contentType: asImageType(selfie.contentType),
+    imageBytes,
+    contentType: "image/jpeg",
   });
+  const faceRows = await deps.db.findFacesByExternalIds(
+    job.eventId,
+    hits.map((hit) => hit.externalFaceId),
+  );
+  const faceByExternal = new Map(faceRows.map((face) => [face.externalId, face]));
+  const photos = await deps.db.listPhotosByIds([...new Set(hits.map((hit) => hit.photoId))]);
+  const photoById = new Map(photos.map((photo) => [photo.id, photo]));
   const best = new Map<string, { faceId: string; score: number }>();
   for (const hit of hits) {
-    const face = await deps.db.findFaceByExternalId(job.eventId, hit.externalFaceId);
+    const face = faceByExternal.get(hit.externalFaceId);
     if (!face || face.photoId !== hit.photoId) continue;
-    const photo = await deps.db.findPhoto(hit.photoId);
+    const photo = photoById.get(hit.photoId);
     if (!photo || photo.eventId !== job.eventId || photo.status !== "indexed") continue;
     const score = unitInterval(hit.similarity);
     if (score < DEFAULT_MATCH_THRESHOLD) continue;
@@ -129,6 +157,50 @@ async function matchSelfie(job: { type: "match" } & MatchPayload, deps: WorkerDe
     eventId: job.eventId,
     galleryPath: `/e/${event.slug}`,
   });
+}
+
+async function retainEvent(
+  job: { type: "retention" } & RetentionPayload,
+  deps: WorkerDeps,
+): Promise<void> {
+  const event = await deps.db.findEventById(job.eventId);
+  if (!event) return;
+  const cutoff = new Date(Date.now() - event.retentionDays * 24 * 60 * 60 * 1000);
+  for (;;) {
+    const photos = await deps.db.listPhotosCreatedBefore(
+      event.id,
+      cutoff,
+      RETENTION_PHOTO_BATCH,
+    );
+    if (photos.length === 0) break;
+    const photoIds = photos.map((photo) => photo.id);
+    const externalIds = await deps.db.listExternalIdsForPhotos(photoIds);
+    for (let offset = 0; offset < externalIds.length; offset += DELETE_FACES_CHUNK) {
+      await deps.faces.deleteFaces(
+        event.id,
+        externalIds.slice(offset, offset + DELETE_FACES_CHUNK),
+      );
+    }
+    const keys = [
+      ...photos.map((photo) => photo.originalKey),
+      ...(await deps.db.listDerivativeKeys(photoIds)),
+    ];
+    for (const key of keys) {
+      await deps.objects.delete(key);
+    }
+    for (const photo of photos) {
+      await deps.db.deletePhoto(photo.id);
+      await deps.db.insertAudit({
+        actorId: job.actorId,
+        action: "photo.deleted",
+        target: `photo:${photo.id}`,
+        meta: { eventId: event.id, retention: true },
+      });
+    }
+  }
+  if ((await deps.db.countPhotos(event.id)) === 0) {
+    await deps.faces.deleteCollection(event.id);
+  }
 }
 
 async function sendGalleryMail(
@@ -161,7 +233,11 @@ export async function applyFinalFailure(
   }
 }
 
-async function renderJpeg(bytes: Uint8Array, maxEdge: number): Promise<Uint8Array> {
+async function renderJpeg(
+  bytes: Uint8Array,
+  maxEdge: number,
+  quality = 80,
+): Promise<Uint8Array> {
   const rendered = await sharp(Buffer.from(bytes))
     .rotate()
     .resize({
@@ -170,15 +246,28 @@ async function renderJpeg(bytes: Uint8Array, maxEdge: number): Promise<Uint8Arra
       fit: "inside",
       withoutEnlargement: true,
     })
-    .jpeg({ quality: 80 })
+    .jpeg({ quality })
     .toBuffer();
   return new Uint8Array(rendered);
 }
 
-function asImageType(value: string): ImageContentType {
-  const contentType = value.split(";")[0]?.trim();
-  if (contentType === "image/jpeg" || contentType === "image/png") return contentType;
-  throw new Error("Unsupported image content type");
+/** EXIF-oriented JPEG small enough for Rekognition's Bytes API. */
+async function fitRekognitionJpeg(bytes: Uint8Array): Promise<Uint8Array> {
+  let maxEdge = 2048;
+  let quality = 85;
+  let rendered = await renderJpeg(bytes, maxEdge, quality);
+  while (rendered.byteLength > REKOGNITION_MAX_IMAGE_BYTES && maxEdge > 480) {
+    if (quality > 55) quality -= 10;
+    else {
+      maxEdge = Math.floor(maxEdge * 0.75);
+      quality = 80;
+    }
+    rendered = await renderJpeg(bytes, maxEdge, quality);
+  }
+  if (rendered.byteLength > REKOGNITION_MAX_IMAGE_BYTES) {
+    throw new Error("Image exceeds the Rekognition byte limit");
+  }
+  return rendered;
 }
 
 /** Face engine reports 0–100. Gallery score and face confidence are 0–1. */

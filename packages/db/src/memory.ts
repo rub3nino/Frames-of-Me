@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { JobType, PhotoStatus, Role } from "@rephoto/contracts";
-import { JOB_MAX_ATTEMPTS } from "@rephoto/contracts";
+import { JOB_MAX_ATTEMPTS, STALE_RUNNING_MS, THROTTLE_REQUEUE_SECONDS } from "@rephoto/contracts";
 import { DuplicateKeyError } from "./types.js";
 import type {
   ClaimedJob,
@@ -43,6 +43,7 @@ type JobRow = {
   attempts: number;
   runAfter: Date;
   createdAt: Date;
+  claimedAt: Date | null;
 };
 
 export class MemoryDatabase implements Database {
@@ -255,10 +256,30 @@ export class MemoryDatabase implements Database {
     if (photo) photo.status = status;
   }
 
-  async listPhotosCreatedBefore(eventId: string, cutoff: Date): Promise<PhotoRow[]> {
-    return [...this.photos.values()].filter(
-      (photo) => photo.eventId === eventId && photo.createdAt < cutoff,
-    );
+  async listPhotosCreatedBefore(
+    eventId: string,
+    cutoff: Date,
+    limit?: number,
+  ): Promise<PhotoRow[]> {
+    const rows = [...this.photos.values()]
+      .filter((photo) => photo.eventId === eventId && photo.createdAt < cutoff)
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+    return limit === undefined ? rows : rows.slice(0, limit);
+  }
+
+  async countPhotos(eventId: string): Promise<number> {
+    let count = 0;
+    for (const photo of this.photos.values()) if (photo.eventId === eventId) count += 1;
+    return count;
+  }
+
+  async listPhotosByIds(ids: string[]): Promise<PhotoRow[]> {
+    const rows: PhotoRow[] = [];
+    for (const id of ids) {
+      const photo = this.photos.get(id);
+      if (photo) rows.push(photo);
+    }
+    return rows;
   }
 
   async upsertDerivative(input: {
@@ -279,6 +300,11 @@ export class MemoryDatabase implements Database {
       .map(({ kind, s3Key }) => ({ kind, s3Key }));
   }
 
+  async listDerivativeKeys(photoIds: string[]): Promise<string[]> {
+    const ids = new Set(photoIds);
+    return this.derivatives.filter((row) => ids.has(row.photoId)).map((row) => row.s3Key);
+  }
+
   async replaceFaces(photoId: string, eventId: string, faces: FaceInsert[]): Promise<void> {
     for (let index = this.faces.length - 1; index >= 0; index -= 1) {
       if (this.faces[index]?.photoId === photoId) this.faces.splice(index, 1);
@@ -292,6 +318,11 @@ export class MemoryDatabase implements Database {
     return this.faces.filter((face) => face.photoId === photoId).map((face) => face.externalId);
   }
 
+  async listExternalIdsForPhotos(photoIds: string[]): Promise<string[]> {
+    const ids = new Set(photoIds);
+    return this.faces.filter((face) => ids.has(face.photoId)).map((face) => face.externalId);
+  }
+
   async findFaceByExternalId(
     eventId: string,
     externalId: string,
@@ -300,6 +331,17 @@ export class MemoryDatabase implements Database {
       (row) => row.eventId === eventId && row.externalId === externalId,
     );
     return face ? { id: face.id, photoId: face.photoId } : null;
+  }
+
+  async findFacesByExternalIds(
+    eventId: string,
+    externalIds: string[],
+  ): Promise<Array<{ id: string; photoId: string; externalId: string }>> {
+    if (externalIds.length === 0) return [];
+    const wanted = new Set(externalIds);
+    return this.faces
+      .filter((face) => face.eventId === eventId && wanted.has(face.externalId))
+      .map((face) => ({ id: face.id, photoId: face.photoId, externalId: face.externalId }));
   }
 
   async replaceGallery(
@@ -420,26 +462,39 @@ export class MemoryDatabase implements Database {
     };
   }
 
-  async enqueueJob(type: JobType, payload: unknown): Promise<void> {
+  async enqueueJob(type: JobType, payload: unknown): Promise<string> {
     const now = new Date();
+    const id = randomUUID();
     this.jobs.push({
-      id: randomUUID(),
+      id,
       type,
       payload,
       status: "queued",
       attempts: 0,
       runAfter: now,
       createdAt: now,
+      claimedAt: null,
     });
+    return id;
   }
 
   async claimJob(): Promise<ClaimedJob | null> {
     const now = new Date();
+    const staleBefore = now.getTime() - STALE_RUNNING_MS;
+    for (const row of this.jobs) {
+      if (row.status !== "running") continue;
+      const claimed = row.claimedAt ?? row.createdAt;
+      if (claimed.getTime() < staleBefore) {
+        row.status = "queued";
+        row.claimedAt = null;
+      }
+    }
     const job = this.jobs
       .filter((row) => row.status === "queued" && row.runAfter <= now)
       .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())[0];
     if (!job) return null;
     job.status = "running";
+    job.claimedAt = now;
     return { id: job.id, type: job.type, payload: job.payload, attempts: job.attempts };
   }
 
@@ -454,6 +509,7 @@ export class MemoryDatabase implements Database {
     if (!job) return "error";
     const next = job.attempts + 1;
     job.attempts = next;
+    job.claimedAt = null;
     if (next >= JOB_MAX_ATTEMPTS) {
       job.status = "error";
       return "error";
@@ -461,6 +517,48 @@ export class MemoryDatabase implements Database {
     job.status = "queued";
     job.runAfter = new Date(Date.now() + next * 30_000);
     return "queued";
+  }
+
+  async requeueJob(id: string, error: string): Promise<void> {
+    void error;
+    const job = this.jobs.find((row) => row.id === id);
+    if (!job) return;
+    job.status = "queued";
+    job.claimedAt = null;
+    job.runAfter = new Date(Date.now() + THROTTLE_REQUEUE_SECONDS * 1000);
+  }
+
+  jobView(id: string): {
+    status: string;
+    attempts: number;
+    claimedAt: Date | null;
+    runAfter: Date;
+  } | null {
+    const job = this.jobs.find((row) => row.id === id);
+    if (!job) return null;
+    return {
+      status: job.status,
+      attempts: job.attempts,
+      claimedAt: job.claimedAt,
+      runAfter: job.runAfter,
+    };
+  }
+
+  makeJobDue(id: string): void {
+    const job = this.jobs.find((row) => row.id === id);
+    if (job) job.runAfter = new Date(0);
+  }
+
+  forceRunning(id: string, claimedAt: Date): void {
+    const job = this.jobs.find((row) => row.id === id);
+    if (!job) throw new Error("missing job");
+    job.status = "running";
+    job.claimedAt = claimedAt;
+  }
+
+  setPhotoCreatedAt(id: string, createdAt: Date): void {
+    const photo = this.photos.get(id);
+    if (photo) photo.createdAt = createdAt;
   }
 }
 

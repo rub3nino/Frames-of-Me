@@ -1,5 +1,6 @@
 import {
   CreateCollectionCommand,
+  DeleteCollectionCommand,
   DeleteFacesCommand,
   IndexFacesCommand,
   RekognitionClient,
@@ -15,7 +16,10 @@ import type {
 } from "./types.ts";
 
 const INDEX_MAX_FACES = 50;
-const SEARCH_MAX_FACES = 50;
+/** SearchFacesByImage allows MaxFaces up to 4096. 500 covers one person in many photos. */
+const DEFAULT_SEARCH_MAX_FACES = 500;
+const SEARCH_MAX_FACES_CAP = 4096;
+const DELETE_FACES_CHUNK = 4096;
 
 export interface RekognitionBoundingBox {
   Left?: number;
@@ -53,6 +57,15 @@ export interface RekognitionFaceClient {
     }>;
   }>;
   deleteFaces(input: { CollectionId: string; FaceIds: string[] }): Promise<void>;
+  deleteCollection(input: { CollectionId: string }): Promise<void>;
+}
+
+/** Throughput errors are requeued by the worker and do not include image bytes. */
+export class RekognitionThrottleError extends Error {
+  constructor() {
+    super("Rekognition throughput exceeded");
+    this.name = "RekognitionThrottleError";
+  }
 }
 
 export interface RekognitionFaceEngineOptions {
@@ -67,6 +80,7 @@ export interface RekognitionFaceEngineOptions {
 export class RekognitionFaceEngine implements FaceEngine {
   private readonly region: string;
   private readonly minSimilarity: number;
+  private readonly searchMaxFaces: number;
   private readonly collectionPrefix: string;
   private client: RekognitionFaceClient | undefined;
   private readonly readyCollections = new Set<string>();
@@ -78,6 +92,7 @@ export class RekognitionFaceEngine implements FaceEngine {
       throw new Error("AWS_REGION must be eu-central-1");
     }
     this.minSimilarity = readMinSimilarity(env.REKOGNITION_MIN_SIMILARITY);
+    this.searchMaxFaces = readSearchMaxFaces(env.REKOGNITION_SEARCH_MAX_FACES);
     this.collectionPrefix = env.REKOGNITION_COLLECTION_PREFIX ?? "rephoto-";
     this.client = options.client;
   }
@@ -96,7 +111,7 @@ export class RekognitionFaceEngine implements FaceEngine {
         QualityFilter: "AUTO",
       });
     } catch (error) {
-      throw sanitizeRekognitionError(error, input.imageBytes);
+      throw rethrowRekognition(error, input.imageBytes);
     }
     return mapIndexedFaces(response.FaceRecords);
   }
@@ -109,12 +124,12 @@ export class RekognitionFaceEngine implements FaceEngine {
       response = await client.searchFacesByImage({
         CollectionId: collectionId,
         Image: { Bytes: input.imageBytes },
-        MaxFaces: SEARCH_MAX_FACES,
+        MaxFaces: this.searchMaxFaces,
         FaceMatchThreshold: this.minSimilarity,
       });
     } catch (error) {
       if (isErrorNamed(error, "ResourceNotFoundException")) return [];
-      throw sanitizeRekognitionError(error, input.imageBytes);
+      throw rethrowRekognition(error, input.imageBytes);
     }
     const hits: SearchHit[] = [];
     for (const match of response.FaceMatches ?? []) {
@@ -132,14 +147,29 @@ export class RekognitionFaceEngine implements FaceEngine {
     if (externalFaceIds.length === 0) return;
     const collectionId = rekognitionCollectionId(eventId, this.collectionPrefix);
     const client = this.resolveClient();
+    for (let offset = 0; offset < externalFaceIds.length; offset += DELETE_FACES_CHUNK) {
+      const faceIds = externalFaceIds.slice(offset, offset + DELETE_FACES_CHUNK);
+      try {
+        await client.deleteFaces({
+          CollectionId: collectionId,
+          FaceIds: faceIds,
+        });
+      } catch (error) {
+        if (isErrorNamed(error, "ResourceNotFoundException")) return;
+        throw rethrowRekognition(error);
+      }
+    }
+  }
+
+  async deleteCollection(eventId: string): Promise<void> {
+    const collectionId = rekognitionCollectionId(eventId, this.collectionPrefix);
+    this.readyCollections.delete(collectionId);
+    const client = this.resolveClient();
     try {
-      await client.deleteFaces({
-        CollectionId: collectionId,
-        FaceIds: externalFaceIds,
-      });
+      await client.deleteCollection({ CollectionId: collectionId });
     } catch (error) {
       if (isErrorNamed(error, "ResourceNotFoundException")) return;
-      throw sanitizeRekognitionError(error);
+      throw rethrowRekognition(error);
     }
   }
 
@@ -160,11 +190,20 @@ export class RekognitionFaceEngine implements FaceEngine {
       await client.createCollection({ CollectionId: collectionId });
     } catch (error) {
       if (!isErrorNamed(error, "ResourceAlreadyExistsException")) {
-        throw sanitizeRekognitionError(error, imageBytes);
+        throw rethrowRekognition(error, imageBytes);
       }
     }
     this.readyCollections.add(collectionId);
   }
+}
+
+function readSearchMaxFaces(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === "") return DEFAULT_SEARCH_MAX_FACES;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1 || value > SEARCH_MAX_FACES_CAP) {
+    throw new Error("REKOGNITION_SEARCH_MAX_FACES must be an integer from 1 to 4096");
+  }
+  return value;
 }
 
 function readMinSimilarity(raw: string | undefined): number {
@@ -218,6 +257,19 @@ function isErrorNamed(error: unknown, name: string): boolean {
   return found === name || found.endsWith(`#${name}`);
 }
 
+function isThrottleError(error: unknown): boolean {
+  return (
+    isErrorNamed(error, "ProvisionedThroughputExceededException") ||
+    isErrorNamed(error, "ThrottlingException") ||
+    isErrorNamed(error, "TooManyRequestsException")
+  );
+}
+
+function rethrowRekognition(error: unknown, imageBytes?: Uint8Array): Error {
+  if (isThrottleError(error)) throw new RekognitionThrottleError();
+  return sanitizeRekognitionError(error, imageBytes);
+}
+
 function sanitizeRekognitionError(error: unknown, imageBytes?: Uint8Array): Error {
   const name = errorName(error) || "Error";
   let message = "Rekognition request failed";
@@ -255,6 +307,9 @@ function createAwsRekognitionClient(region: string): RekognitionFaceClient {
     },
     async deleteFaces(input) {
       await sdk.send(new DeleteFacesCommand(input));
+    },
+    async deleteCollection(input) {
+      await sdk.send(new DeleteCollectionCommand(input));
     },
   };
 }

@@ -1,25 +1,84 @@
 import { z } from "zod";
 
-export const envSchema = z.object({
-  DATABASE_URL: z.string().min(1),
-  S3_ENDPOINT: z.string().url(),
-  S3_BUCKET: z.string().min(1),
-  S3_ACCESS_KEY: z.string().min(1),
-  S3_SECRET_KEY: z.string().min(1),
-  S3_REGION: z.literal("eu-central-1"),
-  S3_FORCE_PATH_STYLE: z
-    .enum(["true", "false"])
-    .default("true")
-    .transform((value) => value === "true"),
-  SESSION_SECRET: z.string().min(16),
-  FACE_ENGINE: z.enum(["fake", "rekognition"]),
-  AWS_REGION: z.literal("eu-central-1").default("eu-central-1"),
-  REKOGNITION_COLLECTION_PREFIX: z.string().min(1).default("rephoto-"),
-  SMTP_HOST: z.string().min(1),
-  SMTP_PORT: z.coerce.number().int().positive(),
-  SMTP_FROM: z.string().min(1),
-  WEB_ORIGIN: z.string().url(),
-  API_ORIGIN: z.string().url(),
-});
+function blankToUndefined(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  const trimmed = value.trim();
+  return trimmed === "" ? undefined : trimmed;
+}
+
+const optionalText = z.preprocess(blankToUndefined, z.string().min(1).optional());
+
+export const envSchema = z
+  .object({
+    DATABASE_URL: z.string().min(1),
+    S3_ENDPOINT: z.preprocess(blankToUndefined, z.string().url().optional()),
+    S3_BUCKET: z.string().min(1),
+    S3_ACCESS_KEY: optionalText,
+    S3_SECRET_KEY: optionalText,
+    S3_REGION: z.literal("eu-central-1"),
+    S3_FORCE_PATH_STYLE: z.preprocess(
+      blankToUndefined,
+      z.enum(["true", "false"]).optional(),
+    ),
+    SESSION_SECRET: z.string().min(16),
+    FACE_ENGINE: z.enum(["fake", "rekognition"]),
+    AWS_REGION: z.literal("eu-central-1").default("eu-central-1"),
+    REKOGNITION_COLLECTION_PREFIX: z.string().min(1).default("rephoto-"),
+    REKOGNITION_SEARCH_MAX_FACES: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().int().min(1).max(4096).default(500),
+    ),
+    MAIL_TRANSPORT: z.enum(["smtp", "ses"]).default("smtp"),
+    SMTP_HOST: optionalText,
+    SMTP_PORT: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().int().positive().optional(),
+    ),
+    SMTP_FROM: z.string().min(1),
+    WEB_ORIGIN: z.string().url(),
+    API_ORIGIN: z.string().url(),
+    SEED_DEMO: z.preprocess(blankToUndefined, z.enum(["true", "false"]).optional()),
+  })
+  .superRefine((env, ctx) => {
+    if (env.S3_ENDPOINT) {
+      if (!env.S3_ACCESS_KEY) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["S3_ACCESS_KEY"],
+          message: "required when S3_ENDPOINT is set",
+        });
+      }
+      if (!env.S3_SECRET_KEY) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["S3_SECRET_KEY"],
+          message: "required when S3_ENDPOINT is set",
+        });
+      }
+    }
+    if (env.MAIL_TRANSPORT === "smtp") {
+      if (!env.SMTP_HOST) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["SMTP_HOST"],
+          message: "required when MAIL_TRANSPORT is smtp",
+        });
+      }
+      if (!env.SMTP_PORT) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["SMTP_PORT"],
+          message: "required when MAIL_TRANSPORT is smtp",
+        });
+      }
+    }
+  })
+  .transform((env) => ({
+    ...env,
+    S3_FORCE_PATH_STYLE:
+      env.S3_FORCE_PATH_STYLE === undefined
+        ? Boolean(env.S3_ENDPOINT)
+        : env.S3_FORCE_PATH_STYLE === "true",
+  }));
 
 export type Env = z.infer<typeof envSchema>;

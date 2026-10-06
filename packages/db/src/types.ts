@@ -121,19 +121,27 @@ export interface Database {
   findPhoto(id: string): Promise<PhotoRow | null>;
   listPhotosByPhotographer(photographerId: string): Promise<PhotoRow[]>;
   setPhotoStatus(id: string, status: PhotoStatus): Promise<void>;
-  listPhotosCreatedBefore(eventId: string, cutoff: Date): Promise<PhotoRow[]>;
+  listPhotosCreatedBefore(eventId: string, cutoff: Date, limit?: number): Promise<PhotoRow[]>;
+  countPhotos(eventId: string): Promise<number>;
+  listPhotosByIds(ids: string[]): Promise<PhotoRow[]>;
   upsertDerivative(input: {
     photoId: string;
     kind: "thumb" | "web";
     s3Key: string;
   }): Promise<void>;
   listDerivatives(photoId: string): Promise<Array<{ kind: "thumb" | "web"; s3Key: string }>>;
+  listDerivativeKeys(photoIds: string[]): Promise<string[]>;
   replaceFaces(photoId: string, eventId: string, faces: FaceInsert[]): Promise<void>;
   listExternalIds(photoId: string): Promise<string[]>;
+  listExternalIdsForPhotos(photoIds: string[]): Promise<string[]>;
   findFaceByExternalId(
     eventId: string,
     externalId: string,
   ): Promise<{ id: string; photoId: string } | null>;
+  findFacesByExternalIds(
+    eventId: string,
+    externalIds: string[],
+  ): Promise<Array<{ id: string; photoId: string; externalId: string }>>;
   replaceGallery(
     userId: string,
     eventId: string,
@@ -166,8 +174,10 @@ export interface Database {
     users: number;
     jobsQueued: number;
   }>;
-  enqueueJob(type: JobType, payload: unknown): Promise<void>;
+  enqueueJob(type: JobType, payload: unknown): Promise<string>;
   claimJob(): Promise<ClaimedJob | null>;
   completeJob(id: string): Promise<void>;
   failJob(id: string, error: string): Promise<"queued" | "error">;
+  /** Return a job to queued without incrementing attempts. */
+  requeueJob(id: string, error: string): Promise<void>;
 }

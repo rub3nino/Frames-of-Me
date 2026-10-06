@@ -5,7 +5,18 @@ import { PostgresDatabase } from "./postgres.js";
 import { createSql } from "./sql.js";
 import type { Database } from "./types.js";
 
-export async function seedDemo(db: Database): Promise<void> {
+/** Local compose seeds. Production and SEED_DEMO=false do not insert demo users. */
+export function shouldSeedDemo(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env.SEED_DEMO === "false") return false;
+  if (env.NODE_ENV === "production") return false;
+  return true;
+}
+
+export async function seedDemo(
+  db: Database,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<void> {
+  if (!shouldSeedDemo(env)) return;
   await db.seedDemo();
 }
 

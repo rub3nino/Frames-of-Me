@@ -13,6 +13,7 @@ Il confronto volti di produzione è l'adattatore `FaceEngine` con `FACE_ENGINE=r
 - **ECS su Fargate**, due servizi: `api` e `worker`. Nessuna istanza GPU.
 - **RDS PostgreSQL** `db.t4g.medium`. Un solo Postgres, come il contratto (§9). La classe d'istanza è la scelta di questa nota di fase 0, non un campo del contratto.
 - **S3**, bucket privato (in contratto il nome locale è `rephoto`). Nessuna policy pubblica. Letture solo con URL firmati, TTL **15 minuti** (`CONTRACTS.md` §4: thumb, web, originale). Il deploy mette **CloudFront** davanti al bucket per quegli URL. I PoP fuori dall'UE sono un punto aperto della DPIA (`docs/DPIA.md`), non una pratica già accettata.
+- Lifecycle sui selfie: sul bucket AWS va messa una regola di scadenza a **2 giorni** sul prefisso `selfies/`. L'app non la crea, e MinIO nel compose non la applica. È una rete di sicurezza: il worker cancella il selfie quando la ricerca finisce. Non è configurata finché qualcuno non la aggiunge sul bucket.
 - **SES** nella stessa region, solo a production access concesso. Fino ad allora l'account è in sandbox. Procedura: `docs/ses-produzione.md`.
 - **Rekognition**, collection per evento, create alla prima indicizzazione se manca.
 - **SQS** coda `rephoto-jobs`. Il body è lo stesso JSON di `jobs.payload` (`derive`, `index`, `search`, `email`). Non si usa ElasticMQ.

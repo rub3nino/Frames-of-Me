@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const jobTypeSchema = z.enum(["derive", "index", "match", "email"]);
+export const jobTypeSchema = z.enum(["derive", "index", "match", "email", "retention"]);
 export type JobType = z.infer<typeof jobTypeSchema>;
 
 export const jobStatusSchema = z.enum(["queued", "running", "done", "error"]);
@@ -42,4 +42,19 @@ export type IndexPayload = z.infer<typeof indexPayloadSchema>;
 export type MatchPayload = z.infer<typeof matchPayloadSchema>;
 export type EmailPayload = z.infer<typeof emailPayloadSchema>;
 
+export const retentionPayloadSchema = z
+  .object({
+    eventId: z.string().uuid(),
+    actorId: z.string().uuid(),
+  })
+  .strict();
+
+export type RetentionPayload = z.infer<typeof retentionPayloadSchema>;
+
 export const JOB_MAX_ATTEMPTS = 5;
+
+/** A `running` job older than this returns to `queued` without counting as a failure. */
+export const STALE_RUNNING_MS = 10 * 60 * 1000;
+
+/** Wait before claiming a throttled job again. Attempts are not incremented. */
+export const THROTTLE_REQUEUE_SECONDS = 5;
