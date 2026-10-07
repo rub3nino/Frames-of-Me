@@ -101,6 +101,7 @@ export type PublicGalleryItem = {
   webKey: string;
   originalReady: boolean;
 };
+export type PublicGalleryCursor = { createdAt: Date; photoId: string };
 
 export type AnchoredGallery = {
   id: string;
@@ -200,6 +201,7 @@ export interface Database {
   }): Promise<{ id: string; grantedAt: Date }>;
   hasActiveConsent(userId: string, eventId: string): Promise<boolean>;
   countMatchJobsSince(userId: string, since: Date): Promise<number>;
+  countUploadsSince(userId: string, eventId: string, since: Date): Promise<number>;
   findPhotoBySha(eventId: string, sha256: string): Promise<PhotoRow | null>;
   /** Like `findPhotoBySha`, restricted to the caller's own photos. */
   findOwnPhotoBySha(photographerId: string, eventId: string, sha256: string): Promise<PhotoRow | null>;
@@ -262,7 +264,8 @@ export interface Database {
   listPhotosCreatedBefore(eventId: string, cutoff: Date, limit?: number): Promise<PhotoRow[]>;
   countPhotos(eventId: string): Promise<number>;
   listPhotosByIds(ids: string[]): Promise<PhotoRow[]>;
-  listPublicGallery(eventId: string, input: { limit: number; offset: number }): Promise<PublicGalleryItem[]>;
+  listPublicPhotosByIds(eventId: string, photoIds: string[]): Promise<PhotoRow[]>;
+  listPublicGallery(eventId: string, input: { limit: number; cursor?: PublicGalleryCursor }): Promise<PublicGalleryItem[]>;
   /** Photos among `photoIds` that are in the caller's gallery for the event. One query. */
   listOwnedPhotos(userId: string, eventId: string, photoIds: string[]): Promise<PhotoRow[]>;
   upsertDerivative(input: {

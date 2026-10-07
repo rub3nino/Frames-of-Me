@@ -15,6 +15,7 @@ export const SELFIE_LIVENESS_FIELD = "liveness";
 export const selfieLivenessSchema = z.enum(["challenge", "file"]);
 export type SelfieLiveness = z.infer<typeof selfieLivenessSchema>;
 export const SELFIE_RATE_LIMIT = { max: 5, windowSeconds: 60 * 60 } as const;
+export const PUBLIC_UPLOAD_RATE_LIMIT = { max: 20, windowSeconds: 60 * 60 } as const;
 /** 10 MiB: the largest body the api accepts (selfie multipart of 8 MiB plus overhead). */
 export const API_BODY_MAX_BYTES = 10_485_760;
 export const MAGIC_LINK_RATE_LIMIT = { perEmail: 3, perIp: 20, windowSeconds: 60 * 60 } as const;
@@ -156,10 +157,28 @@ export const galleryQuerySchema = z
 
 export const publicGalleryQuerySchema = z
   .object({
-    offset: z.coerce.number().int().min(0).default(0),
+    cursor: z.string().min(1).optional(),
     limit: z.coerce.number().int().min(1).max(GALLERY_PAGE_MAX).default(GALLERY_PAGE_DEFAULT),
   })
   .strict();
+
+export function encodePublicGalleryCursor(input: { createdAt: Date; photoId: string }): string {
+  return Buffer.from(`${input.createdAt.toISOString()}|${input.photoId}`, "utf8").toString("base64url");
+}
+
+export function decodePublicGalleryCursor(raw: string): { createdAt: Date; photoId: string } | null {
+  try {
+    const text = Buffer.from(raw, "base64url").toString("utf8");
+    const separator = text.indexOf("|");
+    if (separator <= 0) return null;
+    const createdAt = new Date(text.slice(0, separator));
+    const photoId = text.slice(separator + 1);
+    if (!Number.isFinite(createdAt.getTime()) || !z.string().uuid().safeParse(photoId).success) return null;
+    return { createdAt, photoId };
+  } catch {
+    return null;
+  }
+}
 
 export const galleryItemSchema = z
   .object({

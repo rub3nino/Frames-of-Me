@@ -43,6 +43,7 @@ import type {
   PhotoAdminRow,
   PhotoDetail,
   PublicGalleryItem,
+  PublicGalleryCursor,
   ClaimOptions,
   GalleryMatchPatch,
   MatchHitInsert,
@@ -308,6 +309,12 @@ export class MemoryDatabase implements Database {
     }).length;
   }
 
+  async countUploadsSince(userId: string, eventId: string, since: Date): Promise<number> {
+    return [...this.uploads.values()].filter(
+      (upload) => upload.photographerId === userId && upload.eventId === eventId && upload.createdAt >= since,
+    ).length;
+  }
+
   async findPhotoBySha(eventId: string, sha256: string): Promise<PhotoRow | null> {
     for (const photo of this.photos.values()) {
       if (photo.eventId === eventId && photo.sha256 === sha256) return photo;
@@ -522,14 +529,22 @@ export class MemoryDatabase implements Database {
     return rows;
   }
 
+  async listPublicPhotosByIds(eventId: string, photoIds: string[]): Promise<PhotoRow[]> {
+    const wanted = new Set(photoIds);
+    return [...this.photos.values()].filter(
+      (photo) => photo.eventId === eventId && photo.collection === "public" && wanted.has(photo.id),
+    );
+  }
+
   async listPublicGallery(
     eventId: string,
-    input: { limit: number; offset: number },
+    input: { limit: number; cursor?: PublicGalleryCursor },
   ): Promise<PublicGalleryItem[]> {
     return [...this.photos.values()]
       .filter((photo) => photo.eventId === eventId && photo.collection === "public" && photo.status === "indexed")
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id))
-      .slice(input.offset, input.offset + input.limit)
+      .filter((photo) => !input.cursor || photo.createdAt < input.cursor.createdAt || (photo.createdAt.getTime() === input.cursor.createdAt.getTime() && photo.id < input.cursor.photoId))
+      .slice(0, input.limit)
       .flatMap((photo) => {
         const thumb = this.derivatives.find((row) => row.photoId === photo.id && row.kind === "thumb");
         const web = this.derivatives.find((row) => row.photoId === photo.id && row.kind === "web");

@@ -21,7 +21,9 @@ import {
   galleryFeedbackBodySchema,
   consentBodySchema,
   decodeGalleryCursor,
+  decodePublicGalleryCursor,
   encodeGalleryCursor,
+  encodePublicGalleryCursor,
   eventPatchBodySchema,
   galleryDownloadBodySchema,
   galleryQuerySchema,
@@ -30,6 +32,7 @@ import {
   invitePhotographerBodySchema,
   MAGIC_LINK_RATE_LIMIT,
   MULTIPART_THRESHOLD_BYTES,
+  PUBLIC_UPLOAD_RATE_LIMIT,
   objectKeys,
   participantsImportBodySchema,
   publicGalleryQuerySchema,
@@ -291,7 +294,9 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     await requireParticipantAccess(deps, user, event);
     const query = publicGalleryQuerySchema.safeParse(c.req.query());
     if (!query.success) throw new ApiError(400, MESSAGES.validation);
-    const page = await deps.db.listPublicGallery(event.id, query.data);
+    const cursor = query.data.cursor ? decodePublicGalleryCursor(query.data.cursor) : undefined;
+    if (query.data.cursor && !cursor) throw new ApiError(400, MESSAGES.validation);
+    const page = await deps.db.listPublicGallery(event.id, { limit: query.data.limit, ...(cursor ? { cursor } : {}) });
     const items = await Promise.all(
       page.map(async (row) => ({
         photoId: row.photoId,
@@ -301,7 +306,12 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
         originalReady: row.originalReady,
       })),
     );
-    return c.json({ offset: query.data.offset, limit: query.data.limit, items });
+    const last = page[page.length - 1];
+    return c.json({
+      limit: query.data.limit,
+      items,
+      nextCursor: page.length === query.data.limit && last ? encodePublicGalleryCursor(last) : null,
+    });
   });
 
   app.post("/v1/events/:slug/gallery/download", async (c) => {
@@ -312,6 +322,24 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const body = galleryDownloadBodySchema.safeParse(await readJson(c));
     if (!body.success) throw new ApiError(400, MESSAGES.validation);
     const photos = await ownedPhotos(deps, user, event, body.data.photoIds);
+    const urls = await Promise.all(
+      photos.map(async (photo) => ({
+        photoId: photo.id,
+        url: await deps.objects.presignGet(variantKey(photo, body.data.variant)),
+      })),
+    );
+    return c.json({ urls });
+  });
+
+  app.post("/v1/events/:slug/public-gallery/download", async (c) => {
+    const user = requireUser(c);
+    requireRole(user, ["participant"]);
+    const event = await loadEvent(deps, c.req.param("slug"));
+    await requireParticipantAccess(deps, user, event);
+    const body = galleryDownloadBodySchema.safeParse(await readJson(c));
+    if (!body.success) throw new ApiError(400, MESSAGES.validation);
+    const photos = await deps.db.listPublicPhotosByIds(event.id, body.data.photoIds);
+    if (photos.length !== new Set(body.data.photoIds).size) throw new ApiError(404, MESSAGES.notFound);
     const urls = await Promise.all(
       photos.map(async (photo) => ({
         photoId: photo.id,
@@ -402,6 +430,10 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       // Anonymous uploads would make the 150k-photo target an unauditable abuse surface.
       requireRole(user, ["participant"]);
       await requireParticipantAccess(deps, user, event);
+      if (!rateLimitExempt(deps, c.get("ip"))) {
+        const recent = await deps.db.countUploadsSince(user.id, event.id, since(PUBLIC_UPLOAD_RATE_LIMIT.windowSeconds));
+        if (recent >= PUBLIC_UPLOAD_RATE_LIMIT.max) throw new ApiError(429, MESSAGES.rateLimited);
+      }
     }
     const uploadId = randomUUID();
     if (input.stage === "web") {

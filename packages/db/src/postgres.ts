@@ -45,6 +45,7 @@ import type {
   PhotoAdminRow,
   PhotoDetail,
   PublicGalleryItem,
+  PublicGalleryCursor,
   BBox,
   ClaimOptions,
   GalleryMatchPatch,
@@ -275,6 +276,14 @@ export class PostgresDatabase implements Database {
     const rows = await this.sql<{ count: number }[]>`
       select count(*)::int as count from jobs
       where type = 'match' and payload->>'userId' = ${userId} and created_at >= ${since}
+    `;
+    return rows[0]?.count ?? 0;
+  }
+
+  async countUploadsSince(userId: string, eventId: string, since: Date): Promise<number> {
+    const rows = await this.sql<{ count: number }[]>`
+      select count(*)::int as count from upload_sessions
+      where photographer_id = ${userId} and event_id = ${eventId} and created_at >= ${since}
     `;
     return rows[0]?.count ?? 0;
   }
@@ -536,9 +545,18 @@ export class PostgresDatabase implements Database {
     return rows.map(mapPhoto);
   }
 
+  async listPublicPhotosByIds(eventId: string, photoIds: string[]): Promise<PhotoRow[]> {
+    if (photoIds.length === 0) return [];
+    const rows = await this.sql<PhotoSql[]>`
+      select ${this.sql.unsafe(PHOTO_COLUMNS)} from photos
+      where event_id = ${eventId} and collection = 'public' and id = any(${photoIds}::uuid[])
+    `;
+    return rows.map(mapPhoto);
+  }
+
   async listPublicGallery(
     eventId: string,
-    input: { limit: number; offset: number },
+    input: { limit: number; cursor?: PublicGalleryCursor },
   ): Promise<PublicGalleryItem[]> {
     const rows = await this.sql<{
       photo_id: string;
@@ -553,8 +571,9 @@ export class PostgresDatabase implements Database {
       join derivatives t on t.photo_id = p.id and t.kind = 'thumb'
       join derivatives w on w.photo_id = p.id and w.kind = 'web'
       where p.event_id = ${eventId} and p.collection = 'public' and p.status = 'indexed'
+        ${input.cursor ? this.sql`and (p.created_at, p.id) < (${input.cursor.createdAt}, ${input.cursor.photoId}::uuid)` : this.sql``}
       order by p.created_at desc, p.id desc
-      limit ${input.limit} offset ${input.offset}
+      limit ${input.limit}
     `;
     return rows.map((row) => ({
       photoId: row.photo_id,
