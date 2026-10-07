@@ -1,0 +1,460 @@
+<!doctype html>
+<html lang="it" data-resolution="landscape">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      :root {
+        --canvas: #f5f5f7;
+        --surface: #ffffff;
+        --ink: #1d1d1f;
+        --ink-2: #6e6e73;
+        --ink-3: #86868b;
+        --line: #d2d2d7;
+        --accent: #0071e3;
+        --accent-soft: #e8f1fd;
+        --dot: #5b7cfa;
+        --butter: #eef0c2;
+        --sky: #dbeaf7;
+        --mint: #daeee1;
+        --serif: "Instrument Serif", "Iowan Old Style", Georgia, serif;
+        --sans: "Geist", -apple-system, system-ui, sans-serif;
+        --mono: "Geist Mono", ui-monospace, monospace;
+      }
+      html, body {
+        width: 1920px; height: 1080px; overflow: hidden;
+        background: var(--canvas);
+      }
+      #root {
+        position: relative; width: 100%; height: 100%;
+        background: var(--canvas);
+        font-family: var(--sans);
+        color: var(--ink);
+      }
+      .scene { position: absolute; inset: 0; }
+      .serif { font-family: var(--serif); font-weight: 400; letter-spacing: -0.01em; }
+      .mono { font-family: var(--mono); }
+
+      /* ---------- photo tiles ---------- */
+      .ptile {
+        position: relative; width: 100%; height: 100%;
+        border-radius: 10px; overflow: hidden;
+      }
+      .ptile svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+      .ptile::after {
+        content: ""; position: absolute; inset: 0;
+        background: radial-gradient(ellipse at 50% 30%, transparent 40%, rgba(0,0,0,0.18));
+      }
+      .ring {
+        position: absolute; inset: 0; border: 5px solid var(--accent);
+        border-radius: 10px; box-shadow: 0 0 0 5px rgba(0,113,227,0.22);
+        opacity: 0;
+      }
+      .chk {
+        position: absolute; top: 8px; right: 8px; width: 30px; height: 30px;
+        border-radius: 50%; background: var(--accent); display: grid; place-items: center;
+        opacity: 0;
+      }
+      .chk svg { position: static; width: 18px; height: 18px; }
+
+      /* ---------- Scene 1: wall ---------- */
+      #s1-grid {
+        position: absolute; inset: 0; display: grid;
+        grid-template-columns: repeat(10, 1fr);
+        grid-template-rows: repeat(6, 1fr);
+        gap: 10px; padding: 26px;
+      }
+      #s1-scrim {
+        position: absolute; inset: 0; opacity: 0;
+        background: radial-gradient(ellipse at center, rgba(245,245,247,0.9) 30%, rgba(245,245,247,0.74));
+      }
+      #s1-pill {
+        position: absolute; top: 54px; left: 50%; transform: translateX(-50%);
+        display: inline-flex; align-items: center; gap: 10px;
+        background: var(--surface); border: 1px solid var(--line);
+        color: var(--ink-2); font-size: 22px; font-weight: 500;
+        padding: 11px 20px; border-radius: 980px; box-shadow: 0 2px 10px rgba(0,0,0,0.06);
+        opacity: 0;
+      }
+      #s1-pill .pdot { width: 9px; height: 9px; border-radius: 50%; background: var(--dot); }
+      #s1-hook {
+        position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+        text-align: center; opacity: 0;
+      }
+      #s1-hook h1 { font-size: 104px; line-height: 1.04; max-width: 17ch; color: var(--ink); }
+
+      /* ---------- Scene 2: common gallery ---------- */
+      #s2 { display: flex; align-items: center; justify-content: center; }
+      .s2-card {
+        width: 1480px; background: var(--surface); border: 1px solid var(--line);
+        border-radius: 28px; box-shadow: 0 24px 60px rgba(0,0,0,0.10);
+        padding: 44px 48px 48px;
+      }
+      .s2-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+      .s2-head h2 { font-size: 46px; color: var(--ink); }
+      .s2-chips { display: flex; gap: 10px; }
+      .s2-chip {
+        display: inline-flex; align-items: center; gap: 9px; background: var(--canvas);
+        border: 1px solid var(--line); border-radius: 980px; padding: 8px 15px 8px 9px;
+        font-size: 19px; color: var(--ink-2); opacity: 0;
+      }
+      .s2-av { width: 26px; height: 26px; border-radius: 50%; }
+      .s2-grid {
+        margin-top: 26px; display: grid; grid-template-columns: repeat(8, 1fr);
+        grid-auto-rows: 150px; gap: 14px;
+      }
+      #s2-line {
+        text-align: center; margin-top: 34px; font-size: 34px; color: var(--ink);
+        opacity: 0;
+      }
+      #s2-line b { font-weight: 600; }
+
+      /* ---------- Scene 3: selfie ---------- */
+      #s3 { display: flex; align-items: center; justify-content: center; }
+      .s3-card {
+        width: 760px; background: var(--surface); border: 1px solid var(--line);
+        border-radius: 32px; box-shadow: 0 30px 70px rgba(0,0,0,0.12);
+        padding: 46px 56px 50px; text-align: center; opacity: 0;
+      }
+      .s3-kicker { font-size: 20px; color: var(--ink-2); letter-spacing: 0.02em; }
+      .s3-kicker b { color: var(--ink); font-weight: 600; }
+      .s3-oval-wrap { position: relative; width: 330px; height: 420px; margin: 26px auto 8px; }
+      .s3-oval {
+        position: absolute; inset: 0; border-radius: 50%; overflow: hidden;
+        border: 3px solid rgba(0,113,227,0.35);
+      }
+      .s3-oval .ptile { border-radius: 0; }
+      .s3-flash { position: absolute; inset: 0; border-radius: 50%; background: #fff; opacity: 0; }
+      .s3-reticle {
+        position: absolute; inset: -14px; border-radius: 50%;
+        border: 3px solid var(--accent); opacity: 0;
+      }
+      .s3-hint { font-size: 23px; color: var(--ink-2); margin: 16px auto 0; max-width: 30ch; }
+      .s3-btn {
+        display: inline-flex; align-items: center; gap: 12px; margin-top: 26px;
+        background: var(--accent); color: #fff; font-size: 26px; font-weight: 600;
+        padding: 16px 34px; border-radius: 980px;
+      }
+      .s3-btn svg { width: 24px; height: 24px; }
+
+      /* ---------- Scene 4: recognition ---------- */
+      #s4-wall {
+        position: absolute; top: 116px; left: 70px; width: 900px; height: 788px;
+        display: grid; grid-template-columns: repeat(5, 1fr); grid-template-rows: repeat(4, 1fr);
+        gap: 14px;
+      }
+      #s4-scan {
+        position: absolute; top: 116px; left: 70px; width: 900px; height: 6px;
+        background: linear-gradient(90deg, transparent, var(--accent), transparent);
+        box-shadow: 0 0 22px 6px rgba(0,113,227,0.35); opacity: 0;
+      }
+      .s4-gal {
+        position: absolute; top: 150px; right: 90px; width: 760px;
+        background: var(--surface); border: 1px solid var(--line); border-radius: 28px;
+        box-shadow: 0 24px 60px rgba(0,0,0,0.12); padding: 36px 40px 40px; opacity: 0;
+      }
+      .s4-gal-head { display: flex; align-items: baseline; justify-content: space-between; }
+      .s4-gal-head h2 { font-size: 44px; color: var(--ink); }
+      .s4-count { font-size: 22px; color: var(--accent); }
+      .s4-sub { font-size: 21px; color: var(--ink-2); margin-top: 4px; }
+      .s4-thumbs {
+        margin-top: 24px; display: grid; grid-template-columns: repeat(3, 1fr);
+        grid-auto-rows: 168px; gap: 14px;
+      }
+      .s4-thumb { opacity: 0; }
+      #s4-line {
+        position: absolute; left: 70px; bottom: 54px; width: 900px;
+        font-size: 58px; color: var(--ink); opacity: 0;
+      }
+
+      /* ---------- Scene 5: privacy ---------- */
+      #s5 { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+      #s5-shield { width: 128px; height: 128px; color: var(--accent); opacity: 0; }
+      #s5-h { font-size: 88px; color: var(--ink); margin-top: 20px; opacity: 0; }
+      #s5-sub { font-size: 30px; color: var(--ink-2); margin-top: 20px; max-width: 30ch; opacity: 0; }
+
+      /* ---------- Scene 6: outro ---------- */
+      #s6 { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+      #s6-mark { width: 150px; height: 150px; color: var(--ink); opacity: 0; }
+      #s6-word { font-size: 92px; color: var(--ink); margin-top: 14px; opacity: 0; }
+      #s6-word .dot { color: var(--dot); }
+      #s6-tag { font-size: 30px; color: var(--ink-2); margin-top: 18px; opacity: 0; }
+      #s6-url { font-size: 24px; color: var(--accent); margin-top: 22px; letter-spacing: 0.02em; opacity: 0; }
+    </style>
+  </head>
+  <body>
+    <div
+      id="root"
+      data-composition-id="main"
+      data-start="0"
+      data-duration="22.6"
+      data-width="1920"
+      data-height="1080"
+    >
+      <!-- ============ SCENE 1 — WALL / HOOK ============ -->
+      <section id="s1" class="scene clip" data-start="0" data-duration="3.9">
+        <div id="s1-grid"></div>
+        <div id="s1-scrim"></div>
+        <div id="s1-pill"><span class="pdot"></span>Biruitori 2026 · 4.000+ scatti</div>
+        <div id="s1-hook"><h1 class="serif">Dove sei, tra tutte queste foto?</h1></div>
+      </section>
+
+      <!-- ============ SCENE 2 — GALLERIA COMUNE ============ -->
+      <section id="s2" class="scene clip" data-start="3.3" data-duration="4.6">
+        <div class="s2-card">
+          <div class="s2-head">
+            <h2 class="serif">La galleria comune</h2>
+            <div class="s2-chips">
+              <span class="s2-chip" id="s2-chip0"><span class="s2-av" style="background:linear-gradient(135deg,#E8B06A,#B5703A)"></span>Marco</span>
+              <span class="s2-chip" id="s2-chip1"><span class="s2-av" style="background:linear-gradient(135deg,#5B7CFA,#2E4FB0)"></span>Elena</span>
+              <span class="s2-chip" id="s2-chip2"><span class="s2-av" style="background:linear-gradient(135deg,#6FAE88,#35664B)"></span>Ioana</span>
+            </div>
+          </div>
+          <div class="s2-grid" id="s2-grid"></div>
+          <div id="s2-line"><b>Tutti caricano.</b> Un unico album.</div>
+        </div>
+      </section>
+
+      <!-- ============ SCENE 3 — SELFIE ============ -->
+      <section id="s3" class="scene clip" data-start="7.3" data-duration="5.0">
+        <div class="s3-card">
+          <div class="s3-kicker"><b>Frames of Me</b> · trova le tue foto</div>
+          <div class="s3-oval-wrap">
+            <div class="s3-reticle"></div>
+            <div class="s3-oval" id="s3-oval"></div>
+            <div class="s3-flash"></div>
+          </div>
+          <div class="s3-hint">Tieni il viso nell'ovale, a circa 40&nbsp;cm.</div>
+          <div class="s3-btn" id="s3-btn">
+            Scatta un selfie
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h3l2-2h6l2 2h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ SCENE 4 — RICONOSCIMENTO → LE TUE FOTO ============ -->
+      <section id="s4" class="scene clip" data-start="11.8" data-duration="5.0">
+        <div id="s4-wall"></div>
+        <div id="s4-scan"></div>
+        <div class="s4-gal">
+          <div class="s4-gal-head">
+            <h2 class="serif">Le tue foto</h2>
+            <span class="s4-count"><span id="s4-count">0</span> foto trovate</span>
+          </div>
+          <div class="s4-sub">Solo quelle in cui compari.</div>
+          <div class="s4-thumbs" id="s4-thumbs"></div>
+        </div>
+        <div id="s4-line"><span class="serif">Solo le foto in cui compari.</span></div>
+      </section>
+
+      <!-- ============ SCENE 5 — PRIVACY ============ -->
+      <section id="s5" class="scene clip" data-start="16.3" data-duration="3.9">
+        <svg id="s5-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l8 3.5v6c0 5-3.5 8.6-8 10-4.5-1.4-8-5-8-10v-6L12 2Z"/><path d="M8.5 12l2.4 2.4L16 9"/></svg>
+        <h2 id="s5-h" class="serif">Il tuo viso resta tuo.</h2>
+        <p id="s5-sub">Il selfie si cancella dopo la ricerca. Hosting in Europa.</p>
+      </section>
+
+      <!-- ============ SCENE 6 — OUTRO ============ -->
+      <section id="s6" class="scene clip" data-start="19.8" data-duration="2.8">
+        <svg id="s6-mark" viewBox="0 0 100 100" fill="none" aria-hidden="true"><g stroke="currentColor" stroke-width="3.6" stroke-linecap="round"><path d="M22 36 V28 a6 6 0 0 1 6-6 H36"/><path d="M64 22 H72 a6 6 0 0 1 6 6 V36"/><path d="M78 64 V72 a6 6 0 0 1-6 6 H64"/><path d="M36 78 H28 a6 6 0 0 1-6-6 V64"/></g><circle cx="50" cy="50" r="7.5" fill="#5B7CFA"/></svg>
+        <h1 id="s6-word" class="serif">Frames of Me<span class="dot">.</span></h1>
+        <p id="s6-tag">Le tue foto dell'evento, trovate in un selfie.</p>
+        <p id="s6-url" class="mono">framesofme.com</p>
+      </section>
+
+      <!-- ============ AUDIO ============ -->
+      <audio id="a-music" data-start="0" data-duration="22.6" data-volume="0.8" data-fade-in="0.4" data-fade-out="1.4" src="assets/music/music.mp3"></audio>
+      <!-- S2 soft photo joins -->
+      <audio id="a-join1" data-start="4.40" data-duration="0.5" data-volume="0.22" src="assets/sfx/tick.ogg"></audio>
+      <audio id="a-join2" data-start="4.90" data-duration="0.5" data-volume="0.22" src="assets/sfx/tick.ogg"></audio>
+      <audio id="a-join3" data-start="5.40" data-duration="0.5" data-volume="0.22" src="assets/sfx/tick.ogg"></audio>
+      <!-- S3 shutter (strong cue 10.54) -->
+      <audio id="a-press" data-start="10.50" data-duration="0.5" data-volume="0.5" src="assets/sfx/press.ogg"></audio>
+      <audio id="a-capture" data-start="10.62" data-duration="0.6" data-volume="0.4" src="assets/sfx/capture.ogg"></audio>
+      <!-- S4 recognition payoff (strong cue 12.65) + thumbnail ticks -->
+      <audio id="a-reveal" data-start="12.65" data-duration="0.7" data-volume="0.5" src="assets/sfx/reveal.ogg"></audio>
+      <audio id="a-tick1" data-start="13.00" data-duration="0.4" data-volume="0.30" src="assets/sfx/tick.ogg"></audio>
+      <audio id="a-tick2" data-start="13.45" data-duration="0.4" data-volume="0.30" src="assets/sfx/tick.ogg"></audio>
+      <audio id="a-tick3" data-start="13.90" data-duration="0.4" data-volume="0.30" src="assets/sfx/tick.ogg"></audio>
+      <audio id="a-tick4" data-start="14.35" data-duration="0.4" data-volume="0.30" src="assets/sfx/tick.ogg"></audio>
+      <audio id="a-tick5" data-start="14.80" data-duration="0.4" data-volume="0.30" src="assets/sfx/tick.ogg"></audio>
+      <audio id="a-tick6" data-start="15.25" data-duration="0.4" data-volume="0.30" src="assets/sfx/tick.ogg"></audio>
+      <!-- S6 logo settle -->
+      <audio id="a-settle" data-start="20.35" data-duration="0.6" data-volume="0.30" src="assets/sfx/settle.ogg"></audio>
+    </div>
+
+    <script>
+      /* ---------- deterministic variety ---------- */
+      function mulberry32(a) {
+        return function () {
+          a |= 0; a = (a + 0x6d2b79f5) | 0;
+          let t = Math.imul(a ^ (a >>> 15), 1 | a);
+          t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+          return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+        };
+      }
+      const PAL = [
+        ["#E8B06A", "#B5703A"], ["#3C7D86", "#1E4A54"], ["#B5578B", "#6E2E57"],
+        ["#F0C88A", "#C98B4B"], ["#5B7CFA", "#2E4FB0"], ["#E79BA6", "#B5606E"],
+        ["#6FAE88", "#35664B"], ["#8A7BD8", "#4E3F9E"], ["#D98E5A", "#8A4F2B"],
+        ["#4FA3C7", "#276386"],
+      ];
+      function tileHTML(rng, extra) {
+        const p = PAL[Math.floor(rng() * PAL.length)];
+        const cx = 34 + Math.floor(rng() * 32);
+        const hr = 12 + rng() * 3;
+        const sx = 24 + rng() * 8;
+        return (
+          '<div class="ptile ' + (extra || "") + '" style="background:linear-gradient(145deg,' + p[0] + ',' + p[1] + ')">' +
+          '<svg viewBox="0 0 100 100" preserveAspectRatio="xMidYMax meet">' +
+          '<ellipse cx="' + cx + '" cy="112" rx="' + sx + '" ry="34" fill="rgba(255,255,255,0.20)"/>' +
+          '<circle cx="' + cx + '" cy="44" r="' + hr + '" fill="rgba(255,255,255,0.26)"/>' +
+          "</svg></div>"
+        );
+      }
+      function fill(el, n, rng, extra) {
+        let h = "";
+        for (let i = 0; i < n; i++) h += tileHTML(rng, extra);
+        el.innerHTML = h;
+      }
+
+      const rng = mulberry32(1337);
+      fill(document.getElementById("s1-grid"), 60, rng, "wall-tile");
+      fill(document.getElementById("s2-grid"), 24, rng, "s2-tile");
+
+      // S3 single portrait inside the oval
+      document.getElementById("s3-oval").innerHTML = tileHTML(mulberry32(7), "");
+
+      // S4 left wall (20) with 5 matches carrying a ring + check
+      (function () {
+        const r4 = mulberry32(99);
+        const matches = { 2: 1, 6: 1, 9: 1, 13: 1, 17: 1 };
+        let h = "";
+        for (let i = 0; i < 20; i++) {
+          const inner =
+            '<div class="ring"></div>' +
+            '<div class="chk"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-9"/></svg></div>';
+          const base = tileHTML(r4, "s4-wtile" + (matches[i] ? " s4-match" : ""));
+          h += base.replace("</div>", inner + "</div>");
+        }
+        document.getElementById("s4-wall").innerHTML = h;
+      })();
+
+      // S4 gallery thumbnails (6) — fixed varied palettes so matches look distinct
+      (function () {
+        const idx = [0, 1, 5, 3, 7, 2];
+        const rg = mulberry32(555);
+        let h = "";
+        for (let i = 0; i < 6; i++) {
+          const p = PAL[idx[i]];
+          const cx = 34 + Math.floor(rg() * 32);
+          const hr = 12 + rg() * 3;
+          const sx = 24 + rg() * 8;
+          h +=
+            '<div class="ptile s4-thumb" style="background:linear-gradient(145deg,' + p[0] + ',' + p[1] + ')">' +
+            '<svg viewBox="0 0 100 100" preserveAspectRatio="xMidYMax meet">' +
+            '<ellipse cx="' + cx + '" cy="112" rx="' + sx + '" ry="34" fill="rgba(255,255,255,0.20)"/>' +
+            '<circle cx="' + cx + '" cy="44" r="' + hr + '" fill="rgba(255,255,255,0.26)"/>' +
+            "</svg></div>";
+        }
+        document.getElementById("s4-thumbs").innerHTML = h;
+      })();
+
+      /* ---------- timeline ---------- */
+      window.__timelines = window.__timelines || {};
+      const tl = gsap.timeline({ paused: true });
+
+      // baseline
+      gsap.set(["#s2", "#s3", "#s4", "#s5", "#s6"], { opacity: 0 });
+      gsap.set("#s1", { opacity: 1 });
+      gsap.set(".wall-tile", { opacity: 0, scale: 0.8 });
+      gsap.set(".s2-tile", { opacity: 0, scale: 0.9 });
+      gsap.set(["#s2-grid > .ptile:nth-child(22)", "#s2-grid > .ptile:nth-child(23)", "#s2-grid > .ptile:nth-child(24)"], { opacity: 0, scale: 0.6 });
+      gsap.set(".s4-match .ring", { opacity: 0 });
+      gsap.set(".s4-match .chk", { opacity: 0, scale: 0.5 });
+      gsap.set(".s4-thumb", { opacity: 0, y: 16, scale: 0.92 });
+
+      // ---- S1 (0 - 3.5) ----
+      tl.to(".wall-tile", { opacity: 1, scale: 1, duration: 0.5, stagger: { each: 0.012, from: "center" } }, 0.1);
+      tl.to("#s1-pill", { opacity: 1, duration: 0.5 }, 0.35);
+      tl.to("#s1-scrim", { opacity: 1, duration: 0.55 }, 1.0);
+      tl.fromTo("#s1-hook", { opacity: 0, y: 26 }, { opacity: 1, y: 0, duration: 0.7, ease: "power3.out" }, 1.25);
+      tl.to("#s1", { opacity: 0, duration: 0.4 }, 3.5);
+
+      // ---- S2 (3.3 - 7.9) ----
+      tl.to("#s2", { opacity: 1, duration: 0.4 }, 3.4);
+      tl.to(".s2-tile", { opacity: 1, scale: 1, duration: 0.45, stagger: { each: 0.02, from: "start" } }, 3.6);
+      // chips drop photos in (ticks at 4.40 / 4.90 / 5.40)  // beat-grid: ~every other beat
+      tl.fromTo("#s2-chip0", { opacity: 0, y: -10 }, { opacity: 1, y: 0, duration: 0.3 }, 4.30);
+      tl.to("#s2-grid > .ptile:nth-child(22)", { opacity: 1, scale: 1, duration: 0.35, ease: "back.out(1.6)" }, 4.40);
+      tl.fromTo("#s2-chip1", { opacity: 0, y: -10 }, { opacity: 1, y: 0, duration: 0.3 }, 4.80);
+      tl.to("#s2-grid > .ptile:nth-child(23)", { opacity: 1, scale: 1, duration: 0.35, ease: "back.out(1.6)" }, 4.90);
+      tl.fromTo("#s2-chip2", { opacity: 0, y: -10 }, { opacity: 1, y: 0, duration: 0.3 }, 5.30);
+      tl.to("#s2-grid > .ptile:nth-child(24)", { opacity: 1, scale: 1, duration: 0.35, ease: "back.out(1.6)" }, 5.40);
+      tl.fromTo("#s2-line", { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.5 }, 5.55);
+      tl.to("#s2", { opacity: 0, duration: 0.4 }, 7.5);
+
+      // ---- S3 (7.3 - 12.3) ----
+      tl.to("#s3", { opacity: 1, duration: 0.45 }, 7.4);
+      tl.fromTo(".s3-card", { opacity: 0, y: 34, scale: 0.97 }, { opacity: 1, y: 0, scale: 1, duration: 0.6, ease: "power3.out" }, 7.55);
+      // shutter press — beat-locked: 10.54s
+      tl.to("#s3-btn", { scale: 0.95, duration: 0.1 }, 10.50);
+      tl.to("#s3-btn", { scale: 1, duration: 0.18, ease: "power2.out" }, 10.60);
+      tl.fromTo(".s3-flash", { opacity: 0 }, { opacity: 0.85, duration: 0.08 }, 10.56);
+      tl.to(".s3-flash", { opacity: 0, duration: 0.45, ease: "power2.out" }, 10.64);
+      tl.fromTo(".s3-reticle", { opacity: 0, scale: 0.9 }, { opacity: 1, scale: 1.02, duration: 0.5, ease: "power2.out" }, 10.60);
+      tl.to(".s3-reticle", { opacity: 0, duration: 0.4 }, 11.2);
+      tl.to("#s3", { opacity: 0, duration: 0.4 }, 11.9);
+
+      // ---- S4 (11.8 - 16.8) ----
+      tl.to("#s4", { opacity: 1, duration: 0.4 }, 11.9);
+      // scan sweep
+      tl.fromTo("#s4-scan", { opacity: 0.9, y: 0 }, { opacity: 0.9, y: 782, duration: 0.7, ease: "none" }, 12.0);
+      tl.to("#s4-scan", { opacity: 0, duration: 0.2 }, 12.6);
+      // dim non-matches, light the 5 matches
+      tl.to("#s4-wall .ptile:not(.s4-match)", { opacity: 0.28, duration: 0.5 }, 12.35);
+      tl.to(".s4-match .ring", { opacity: 1, duration: 0.4, stagger: 0.06 }, 12.4);
+      tl.to(".s4-match .chk", { opacity: 1, scale: 1, duration: 0.3, ease: "back.out(2)", stagger: 0.06 }, 12.5);
+      // gallery assembles — beat-locked: 12.65s
+      tl.fromTo(".s4-gal", { opacity: 0, x: 40, scale: 0.97 }, { opacity: 1, x: 0, scale: 1, duration: 0.5, ease: "power3.out" }, 12.65);
+      tl.fromTo("#s4-line", { opacity: 0, y: 18 }, { opacity: 1, y: 0, duration: 0.5 }, 12.85);
+      // thumbnails pop one by one  // beat-grid: 13.00..15.25 (~0.45s apart)
+      const thumbT = [13.0, 13.45, 13.9, 14.35, 14.8, 15.25];
+      document.querySelectorAll(".s4-thumb").forEach((el, i) => {
+        tl.to(el, { opacity: 1, y: 0, scale: 1, duration: 0.35, ease: "back.out(1.5)" }, thumbT[i]);
+      });
+      // count ticks 0 -> 24
+      const counter = { v: 0 };
+      tl.to(counter, {
+        v: 24, duration: 1.8, ease: "power1.out",
+        onUpdate: () => { document.getElementById("s4-count").textContent = Math.round(counter.v); },
+      }, 12.9);
+      tl.to("#s4", { opacity: 0, duration: 0.4 }, 16.3);
+
+      // ---- S5 (16.3 - 20.2) ----
+      tl.to("#s5", { opacity: 1, duration: 0.5 }, 16.4);
+      tl.fromTo("#s5-shield", { opacity: 0, scale: 0.8, y: 10 }, { opacity: 1, scale: 1, y: 0, duration: 0.6, ease: "power3.out" }, 16.6);
+      tl.fromTo("#s5-h", { opacity: 0, y: 20 }, { opacity: 1, y: 0, duration: 0.6, ease: "power3.out" }, 16.9);
+      tl.fromTo("#s5-sub", { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.6 }, 17.25);
+      tl.to("#s5", { opacity: 0, duration: 0.4 }, 19.7);
+
+      // ---- S6 (19.8 - 22.6) ----
+      tl.to("#s6", { opacity: 1, duration: 0.5 }, 19.9);
+      tl.fromTo("#s6-mark", { opacity: 0, scale: 0.7 }, { opacity: 1, scale: 1, duration: 0.6, ease: "back.out(1.6)" }, 20.0);
+      tl.fromTo("#s6-word", { opacity: 0, y: 18 }, { opacity: 1, y: 0, duration: 0.55, ease: "power3.out" }, 20.35);
+      tl.fromTo("#s6-tag", { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.5 }, 20.7);
+      tl.fromTo("#s6-url", { opacity: 0, y: 12 }, { opacity: 1, y: 0, duration: 0.5 }, 21.0);
+
+      window.__timelines["main"] = tl;
+      tl.seek(0);
+    </script>
+  </body>
+</html>
