@@ -1,4 +1,4 @@
-# RePhoto — Vetrina / Showcase: Information Architecture & Content Spec
+# Frames of Me — Vetrina / Showcase: Information Architecture & Content Spec
 
 > **Status:** deep analysis / content & IA reference, pre-design. This is the spec that decides *what the
 > public-facing showcase website must contain and say* for a real event of the
@@ -25,14 +25,14 @@
 ## 0. The one thing to understand first
 
 The real conference site **has no photo gallery and no media section at all**. That absence is not a
-gap to patch — it is the entire reason RePhoto's vetrina exists. The conference already has an
-authoritative site for *registration and logistics*. RePhoto's showcase is not a clone of it; it is the
+gap to patch — it is the entire reason Frames of Me's vetrina exists. The conference already has an
+authoritative site for *registration and logistics*. Frames of Me's showcase is not a clone of it; it is the
 **memory layer** the conference never had: *"4000 persone, tre giorni, migliaia di foto — ritrova le tue
 in dieci secondi con un selfie."*
 
 Everything below optimises for that wedge: a showcase that (a) tells the story of the event and its
 community, (b) previews past-edition photography as proof, and (c) funnels every visitor into the one
-action only RePhoto can offer — **«Trova le tue foto»**.
+action only Frames of Me can offer — **«Trova le tue foto»**.
 
 ---
 
@@ -44,11 +44,11 @@ The vetrina is a **hybrid event-showcase + photo-service landing**, but the two 
 
 | Layer | Weight | What it does |
 | --- | --- | --- |
-| **Event showcase** (the story) | ~40% | Legitimises RePhoto by speaking the event's own language: theme BIRUITORI, community stats, past editions, organisers. Makes a diaspora family trust it in 5 seconds. |
-| **Photo service** (the action) | ~60% | Converts that trust into the single action RePhoto owns: selfie → match → gallery → download. This is the business. |
+| **Event showcase** (the story) | ~40% | Legitimises Frames of Me by speaking the event's own language: theme BIRUITORI, community stats, past editions, organisers. Makes a diaspora family trust it in 5 seconds. |
+| **Photo service** (the action) | ~60% | Converts that trust into the single action Frames of Me owns: selfie → match → gallery → download. This is the business. |
 
 **Why both and not one.** A pure service landing ("upload a selfie") has no reason to be believed by a
-religious-community, family audience that has never heard of RePhoto. A pure event clone competes with
+religious-community, family audience that has never heard of Frames of Me. A pure event clone competes with
 the real conference site and loses. The hybrid borrows the event's credibility to sell the service.
 
 > **Boundary rule (critical).** The vetrina must **never present itself as the official registration
@@ -96,7 +96,7 @@ The nav is deliberately short; the photo action is a **button**, visually distin
 
 | # | IT label (nav) | RO | EN | Route | Note |
 | --- | --- | --- | --- | --- | --- |
-| 1 | **Le tue foto** *(CTA, pill accent)* | **Pozele tale** | **Your photos** | `/e/{slug}` (or `/foto`) | The primary action. Always visible, right-aligned, accent. This is RePhoto's reason to exist. |
+| 1 | **Le tue foto** *(CTA, pill accent)* | **Pozele tale** | **Your photos** | `/e/{slug}` (or `/foto`) | The primary action. Always visible, right-aligned, accent. This is Frames of Me's reason to exist. |
 | 2 | La conferenza | Conferința | The conference | `/conferenza` | What it is, theme BIRUITORI 2026. Dropdown → Tema, Giornate, Ospiti. |
 | 3 | Programma | Program | Programme | `/programma` | Conference days / agenda. |
 | 4 | Ospiti | Invitați | Guests | `/ospiti` | Speakers / special guests. |
@@ -132,12 +132,12 @@ on the homepage and the "prima" phase.
 | Real conference site section | In the vetrina | How it changes |
 | --- | --- | --- |
 | Homepage | `/` | Re-composed to lead with the photo promise (see §3). |
-| 2026 Conference (Biruitori) → Tema, Giornate, Ospiti, Alloggio & prezzi, Iscrizioni | `/conferenza`, `/programma`, `/ospiti`, `/info` | Kept, but Iscrizioni **links to / mirrors** the official registration (not RePhoto's job). |
+| 2026 Conference (Biruitori) → Tema, Giornate, Ospiti, Alloggio & prezzi, Iscrizioni | `/conferenza`, `/programma`, `/ospiti`, `/info` | Kept, but Iscrizioni **links to / mirrors** the official registration (not Frames of Me's job). |
 | Previous Editions (2019→2025) | `/edizioni` | **Upgraded**: each edition gains a photo gallery — the single biggest add. |
 | FAQ | `/faq` | Extended with a dedicated **photo-service / privacy FAQ**. |
 | Contacts | `/contatti` | Kept. |
 | Newsletter | footer + `/` + `/community` | Kept; repurposed as "ti avvisiamo quando le foto sono pronte". |
-| Organizers (Philadelphia Mansue, Dept. for Romanians Abroad) | `/community` (Organizzatori/About) | Kept; add RePhoto as the photo-service provider + data processor note. |
+| Organizers (Philadelphia Mansue, Dept. for Romanians Abroad) | `/community` (Organizzatori/About) | Kept; add Frames of Me as the photo-service provider + data processor note. |
 | *(none)* **Photo gallery / media** | **`/e/{slug}` + `/edizioni/*` galleries** | **New — the whole opportunity.** |
 
 ---
@@ -158,7 +158,7 @@ Design intent (DESIGN.md): photo-led, Apple/Pic-Time calm, **one** blue CTA, the
 | 7 | **Per i capigruppo** *(conditional, if `access=list`)* | Short block: "Organizzi un gruppo? Ecco come i tuoi far accedere alle foto." → `/info#capigruppo`. | The allowlist model needs a human explanation somewhere prominent. |
 | 8 | **Trust & privacy (famiglie e minori)** | Calm band: "Pensato per famiglie. Consenso dei genitori per i minori di 18 anni. Il selfie non si conserva. Puoi cancellare i tuoi dati quando vuoi." Links → Informativa minori, Gestisci i miei dati. | The youth/family + religious audience needs this *before* converting. Given the minors angle, it earns a homepage slot, not just the footer. |
 | 9 | **Newsletter** | Email capture: «Ti avvisiamo quando le foto sono pronte» (prima) / «Resta aggiornato sulle prossime edizioni» (dopo). Consent checkbox, link informativa. | Captures the "prima" visitor who can't convert yet. |
-| 10 | **Organizzatori / sostenitori** | Logos: Philadelphia Mansue, Department for Romanians Abroad, RePhoto as photo partner. | Credibility + funding transparency. |
+| 10 | **Organizzatori / sostenitori** | Logos: Philadelphia Mansue, Department for Romanians Abroad, Frames of Me as photo partner. | Credibility + funding transparency. |
 | 11 | **Footer** | Full footer (§2.2). | |
 
 **Where the CTA lives:** persistent in the top nav (pill) + hero (primary) + repeated after §2 ("Come
@@ -266,7 +266,7 @@ site.
 
 **Content blocks:** cos'è la conferenza europea (storia, missione); stats (4000+, 15+ paesi, 7 edizioni);
 **Organizzatori**: Philadelphia Mansue, con il sostegno del Department for Romanians Abroad (logo +
-nota sul finanziamento); **RePhoto** come fornitore del servizio foto e responsabile del trattamento dei
+nota sul finanziamento); **Frames of Me** come fornitore del servizio foto e responsabile del trattamento dei
 dati (link informativa + DPIA); testimonianze/foto di community; newsletter.
 
 ### 4.9 `/faq` — FAQ (evento + **FAQ foto/privacy** dedicata)
@@ -276,7 +276,7 @@ dati (link informativa + DPIA); testimonianze/foto di community; newsletter.
 **A. FAQ evento** (mirror the real site): chi può partecipare, età minima 14, minori e consenso,
 iscrizione a gruppi, scadenze/pagamento, alloggio e pasti, cosa portare, lingue, contatti.
 
-**B. FAQ foto & privacy (dedicated — RePhoto's own):**
+**B. FAQ foto & privacy (dedicated — Frames of Me's own):**
 - *Come fa a trovarmi tra migliaia di foto?* — face matching sull'evento, spiegato semplice.
 - *Il mio selfie viene conservato?* — **No.** Viene usato solo per il confronto e poi cancellato
   (CONTRACTS: selfie deleted after `search`).
@@ -432,14 +432,14 @@ face matching on minors is **special-category data (Art. 9)** *and* triggers **A
 | `/e/{slug}` selfie | Consenso biometrico esplicito; "selfie non conservato"; minors path. |
 | `/e/{slug}` gallery | Link «Gestisci i miei dati». |
 | `/minori` | Full minors notice + parental consent mechanism. |
-| `/privacy` | Full informativa: titolare/responsabile (organizzatori + RePhoto), finalità, base giuridica (Art. 6 consenso + Art. 9 consenso esplicito + Art. 8 minori), categorie di dati (immagine, template facciale, email), conservazione (`retention_days`, selfie cancellato), destinatari/sub-responsabili (hosting VPS, SMTP provider), trasferimenti (none off-VPS by design), **diritti dell'interessato** (accesso, rettifica, cancellazione, revoca, opposizione, portabilità, reclamo al Garante/ANSPDCP), **riferimento alla DPIA** ([`docs/DPIA.md`](../DPIA.md)), contatto DPO/privacy. |
+| `/privacy` | Full informativa: titolare/responsabile (organizzatori + Frames of Me), finalità, base giuridica (Art. 6 consenso + Art. 9 consenso esplicito + Art. 8 minori), categorie di dati (immagine, template facciale, email), conservazione (`retention_days`, selfie cancellato), destinatari/sub-responsabili (hosting VPS, SMTP provider), trasferimenti (none off-VPS by design), **diritti dell'interessato** (accesso, rettifica, cancellazione, revoca, opposizione, portabilità, reclamo al Garante/ANSPDCP), **riferimento alla DPIA** ([`docs/DPIA.md`](../DPIA.md)), contatto DPO/privacy. |
 | `/cookie` | Technical-cookie notice; if no analytics, a minimal banner or none (privacy-friendly default, DESIGN/ux-flows §7). |
 | `/termini` | Terms of use of the photo service, acceptable use, liability, takedown of a contested photo. |
 | `/contatti` | Privacy channel. |
 
 ### 6.5 DPIA reference
 
-The privacy page and the minors page must **reference the DPIA** (RePhoto maintains
+The privacy page and the minors page must **reference the DPIA** (Frames of Me maintains
 [`docs/DPIA.md`](../DPIA.md)) — not publish it in full, but state that a Data Protection Impact
 Assessment was carried out for the biometric processing, available on request. This is expected for
 Art. 35 high-risk (biometrics + minors + large scale) processing.
@@ -448,7 +448,7 @@ Art. 35 high-risk (biometrics + minors + large scale) processing.
 
 ## 7. Content inventory table — what the client must provide
 
-Legend: **C** = client/organiser must supply · **R** = RePhoto provides/templated · **L** = legal/counsel.
+Legend: **C** = client/organiser must supply · **R** = Frames of Me provides/templated · **L** = legal/counsel.
 
 | # | Content element | Type | Owner | Page(s) | Notes |
 | --- | --- | --- | --- | --- | --- |
@@ -468,7 +468,7 @@ Legend: **C** = client/organiser must supply · **R** = RePhoto provides/templat
 | 14 | **Foto edizioni precedenti 2019→2025** | Image sets | C | /edizioni | **Consented**, curated for public ones. |
 | 15 | Temi/luoghi edizioni precedenti | Copy | C | /edizioni | |
 | 16 | FAQ evento (Q&A) | Copy | C | /faq A | |
-| 17 | FAQ foto & privacy (Q&A) | Copy | R | /faq B | Templated by RePhoto. |
+| 17 | FAQ foto & privacy (Q&A) | Copy | R | /faq B | Templated by Frames of Me. |
 | 18 | Contatti (email, +39, social) | Data | C | /contatti, footer | Event + privacy channel. |
 | 19 | Testo newsletter + consenso | Copy | R+C | footer, home | |
 | 20 | Email templates (magic link, ready, new) RO/IT/EN | Copy | R | — | Subjects fixed by spec. |
@@ -549,16 +549,16 @@ languages** before launch.
 - **Photos lead; chrome recedes** — big, clean, aligned grids, generous gaps, rounded corners, hover
   lift (exactly DESIGN.md §5).
 - **Fast, obvious selection + download** — select all / per-group, ZIP of a selection, single-photo
-  download, quality choice (originals / web). RePhoto already matches this.
+  download, quality choice (originals / web). Frames of Me already matches this.
 - **Lightbox/viewer** with keyboard nav and next/prev.
-- **Favouriting / grouping** — RePhoto's score split «Le tue foto» / «Forse sei tu» is the analogue.
+- **Favouriting / grouping** — Frames of Me's score split «Le tue foto» / «Forse sei tu» is the analogue.
 - **Fast delivery + smart image loading** (lazy, responsive, cached thumbnails).
 - **A delivery mechanism that feels private and personal** — a per-user gallery, email when ready
-  ("le tue foto sono pronte"), and a "new photos added" notification (RePhoto's `attach` + email kind
-  `new`). This is where RePhoto *beats* a generic conference site: the face-match entry replaces
+  ("le tue foto sono pronte"), and a "new photos added" notification (Frames of Me's `attach` + email kind
+  `new`). This is where Frames of Me *beats* a generic conference site: the face-match entry replaces
   "find your gallery by access code".
 - **Clear privacy posture** — the differentiator for this audience: Pixieset/Pic-Time don't do biometric
-  matching, so RePhoto must over-communicate the "selfie not kept / minors protected" story that those
+  matching, so Frames of Me must over-communicate the "selfie not kept / minors protected" story that those
   platforms never have to.
 
 ---
@@ -570,7 +570,7 @@ languages** before launch.
    launch or RO+IT+EN in priority order.
 3. **Past-edition galleries:** curated-public highlights vs selfie-gated per edition (safeguarding).
 4. **Parental consent mechanism for minors:** organiser-collected form (allowlist-linked) vs in-flow
-   guardian confirmation — and who is joint controller (organisers + RePhoto).
+   guardian confirmation — and who is joint controller (organisers + Frames of Me).
 5. **`access` default:** push `list` for minor-heavy events?
 6. **GDPR self-service erasure** (`/i-miei-dati`): build the self-service endpoint (ux-flows §9 gap #4) or
    route via admin at launch?

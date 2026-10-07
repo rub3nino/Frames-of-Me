@@ -1,4 +1,4 @@
-# RePhoto — Portale Fotografo (spec esaustiva)
+# Frames of Me — Portale Fotografo (spec esaustiva)
 
 > **Stato:** spec di prodotto/UX per il *portale fotografo*. Non è design (niente colori/componenti),
 > ma definisce **menu completo, ogni schermata, ogni funzione, gli stati/guardie e cosa serve all'API**.
@@ -45,7 +45,7 @@ più eventi — `event_photographers`). Su mobile le sezioni collassano in un me
 
 | Elemento | Etichetta IT | Note strutturali |
 | --- | --- | --- |
-| Logo | RePhoto | link alla workspace |
+| Logo | Frames of Me | link alla workspace |
 | Selettore evento | «Evento attivo» (dropdown) | popolato da **[GAP] `GET /v1/photographer/events`**; se uno solo, preselezionato e non interattivo |
 | Chip utente | email + iniziale | menu: «Profilo & accessi», «Aiuto», «Esci» (`POST /v1/auth/logout`) |
 | Indicatore stato caricamento | «▲ 1.248 / 3.500 · 18 MB/s» | globale, sempre visibile mentre una coda è attiva |

@@ -1,6 +1,6 @@
-# RePhoto — Specifica del back-office admin (console di amministrazione)
+# Frames of Me — Specifica del back-office admin (console di amministrazione)
 
-> **Scopo.** Spec di prodotto/design esaustiva della **console admin** di RePhoto: menu completo, ogni schermata,
+> **Scopo.** Spec di prodotto/design esaustiva della **console admin** di Frames of Me: menu completo, ogni schermata,
 > ogni funzione, stati ed errori, regole di conferma, e soprattutto **cosa deve fare in più** rispetto al prototipo v1.
 > Non è design visivo (colori/componenti li decide il design system); è *cosa esiste, chi lo usa, con quali dati, quali
 > azioni, quali guardie e quali endpoint lo sostengono*.
@@ -115,7 +115,7 @@ Lo *switcher evento* resta in testa perché la maggior parte delle sezioni è ev
 Legenda: **(v1)** = già nel prototipo · **(NEW)** = da aggiungere · icona = idea d'icona (stile line, coerente col set v1).
 
 ```
-RePhoto admin
+Frames of Me admin
 │  [▼ Selettore evento]  ← header, resta su tutte le sezioni event-scoped
 │
 ├─ Panoramica
@@ -390,7 +390,7 @@ con **anteprima**. Modello dati nuovo (`site_pages`, `content_blocks`, `translat
 ### 3.12 Notifiche / Email  (NEW)
 
 - **Scopo.** Controllare i template (RO/IT/EN), vedere gli invii, gestire limiti.
-- **Dati.** Template dei 4 canali email (ux-flows §6): magic-link «Accedi a RePhoto», invito fotografo «Invito a caricare
+- **Dati.** Template dei 4 canali email (ux-flows §6): magic-link «Accedi a Frames of Me», invito fotografo «Invito a caricare
   foto: {evento}», galleria `ready` «Le tue foto sono pronte», galleria `new` «Ci sono nuove foto per te»; stato invii
   (dalla coda `jobs` type `email`), errori SMTP/SES, rate/throttle.
 - **Azioni.** Modifica testo template per lingua (oggetti di `ready`/`new` sono **fissati dalla spec** → sola lettura o

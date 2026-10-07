@@ -19,7 +19,7 @@ export function Mark() {
 export function AppBar() {
   return (
     <header className="appbar-c">
-      <span className="brand"><Mark /> RePhoto</span>
+      <span className="brand"><Mark /> Frames of Me</span>
     </header>
   );
 }

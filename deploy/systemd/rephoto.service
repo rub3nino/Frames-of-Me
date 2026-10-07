@@ -1,4 +1,4 @@
-# RePhoto production stack — brings deploy/compose.yml up at boot and down at shutdown.
+# Frames of Me production stack — brings deploy/compose.yml up at boot and down at shutdown.
 #
 #   sudo cp deploy/systemd/rephoto.service /etc/systemd/system/
 #   sudo systemctl daemon-reload && sudo systemctl enable --now rephoto
@@ -6,7 +6,7 @@
 # bootstrap.sh installs it with the right paths. Logs: journalctl -u rephoto, scripts/logs.sh.
 
 [Unit]
-Description=RePhoto (Docker Compose stack)
+Description=Frames of Me (Docker Compose stack)
 Documentation=file:///srv/rephoto/app/deploy/README.md
 Requires=docker.service
 After=docker.service network-online.target

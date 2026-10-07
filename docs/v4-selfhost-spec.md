@@ -1,6 +1,6 @@
-# RePhoto v4 — self-hosted face engine and deployment
+# Frames of Me v4 — self-hosted face engine and deployment
 
-Goal: run RePhoto without AWS. Face matching with **InsightFace** (SCRFD detector + ArcFace 512-d embeddings, `buffalo_l` model pack, CPU, onnxruntime) exposed by a small Python service; vectors stored in **Postgres + pgvector**; objects in **MinIO**; TLS and routing with **Caddy**; transactional mail via any SMTP provider; everything on one VPS with Docker Compose. Rekognition stays available as `FACE_ENGINE=rekognition`; nothing AWS-specific is deleted.
+Goal: run Frames of Me without AWS. Face matching with **InsightFace** (SCRFD detector + ArcFace 512-d embeddings, `buffalo_l` model pack, CPU, onnxruntime) exposed by a small Python service; vectors stored in **Postgres + pgvector**; objects in **MinIO**; TLS and routing with **Caddy**; transactional mail via any SMTP provider; everything on one VPS with Docker Compose. Rekognition stays available as `FACE_ENGINE=rekognition`; nothing AWS-specific is deleted.
 
 Language: code/comments English, UI Italian, docs Italian except `CONTRACTS.md`.
 

@@ -1,4 +1,4 @@
-# RePhoto — Brand & Design System (v2, Apple-grade, light-only)
+# Frames of Me — Brand & Design System (v2, Apple-grade, light-only)
 
 > This file is the **single reference for the whole visual identity**: color, space, type,
 > photo treatment, motion (where and why), and the rules every page must obey. It replaces the
@@ -29,7 +29,7 @@ the craft bar — not a softened version of them.
 
 ## 1. Essence
 
-**RePhoto makes finding yourself in thousands of photos feel instant and certain.**
+**Frames of Me makes finding yourself in thousands of photos feel instant and certain.**
 The feeling to engineer: **precision + calm confidence**. Not cozy, not playful — *trustworthy
 and exact*, the way Apple hardware feels. Photos are the subject; the interface is a quiet,
 precise frame around them (impeccable **Experience** mode for the gallery, **Operate** for

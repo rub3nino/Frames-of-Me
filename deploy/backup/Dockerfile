@@ -1,4 +1,4 @@
-# RePhoto backup sidecar: pg_dump (matching the pgvector/pg16 server) + MinIO client.
+# Frames of Me backup sidecar: pg_dump (matching the pgvector/pg16 server) + MinIO client.
 # `mc` is a static Go binary; it is copied from the same MinIO image the stack runs.
 FROM cgr.dev/chainguard/minio:latest AS mc
 

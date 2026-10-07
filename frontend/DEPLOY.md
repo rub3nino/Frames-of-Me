@@ -1,4 +1,4 @@
-# RePhoto frontend — deploy & backend wiring
+# Frames of Me frontend — deploy & backend wiring
 
 Four apps, one `main`, independent deploys per subdomain. Nobody develops on per-surface branches;
 CI decides what to ship from `main`.
@@ -7,11 +7,11 @@ CI decides what to ship from `main`.
 
 | App | Subdomain | Kind | Cadence |
 | --- | --- | --- | --- |
-| `apps/landing` | `rephoto.it` (+ `www`) | static (CDN) | rare — "frozen" |
-| `apps/partecipanti` | `app.rephoto.it` | dynamic (SSR/SPA) | frequent during the event |
-| `apps/fotografi` | `foto.rephoto.it` | dynamic | frequent during the event |
-| `apps/admin` | `admin.rephoto.it` | dynamic | as needed |
-| backend | `api.rephoto.it` | `../apps/api` | — |
+| `apps/landing` | `framesofme.com` (+ `www`) | static (CDN) | rare — "frozen" |
+| `apps/partecipanti` | `app.framesofme.com` | dynamic (SSR/SPA) | frequent during the event |
+| `apps/fotografi` | `foto.framesofme.com` | dynamic | frequent during the event |
+| `apps/admin` | `admin.framesofme.com` | dynamic | as needed |
+| backend | `api.framesofme.com` | `../apps/api` | — |
 
 Each app's host (or a shared edge/reverse proxy) routes **`/v1/*` → the API** so the browser sees
 the API as same-origin and the session cookie (`rephoto_session`, httpOnly, SameSite=Lax) works
@@ -33,7 +33,7 @@ jobs:
     steps: [ build apps/landing, deploy to the landing CDN target ]
   partecipanti:
     if: needs.changes.outputs.partecipanti == 'true' || needs.changes.outputs.ui == 'true' || needs.changes.outputs.api-client == 'true'
-    steps: [ build, deploy to app.rephoto.it ]
+    steps: [ build, deploy to app.framesofme.com ]
   # …fotografi, admin the same way
 ```
 
@@ -103,7 +103,7 @@ So a shared-package change fans out to exactly the apps that consume it, and an 
 
 ### Build/prod notes
 
-- The build is **origin-agnostic**: `packages/api-client` defaults to `/v1`, and in prod a reverse proxy routes `/v1/*` → `api.rephoto.it` (same-origin, so the `rephoto_session` cookie works without CORS). There is **no build-time API URL** to set — do not bake an absolute API origin into the bundle. (`API_PROXY_TARGET` only matters for the local Vite dev proxy, not the production build.)
+- The build is **origin-agnostic**: `packages/api-client` defaults to `/v1`, and in prod a reverse proxy routes `/v1/*` → `api.framesofme.com` (same-origin, so the `rephoto_session` cookie works without CORS). There is **no build-time API URL** to set — do not bake an absolute API origin into the bundle. (`API_PROXY_TARGET` only matters for the local Vite dev proxy, not the production build.)
 - Each app is standalone (its own `package.json` + lockfile, not a root npm workspace). Vite still bundles the shared packages via the `@ui`/`@api` aliases + `server.fs.allow` already set in each `vite.config.ts`.
 
 ### Secrets to set (repo → Settings → Secrets and variables → Actions)
@@ -116,4 +116,4 @@ The deploy steps are clearly-marked **TODO placeholders** (an rsync-over-ssh ske
 | `DEPLOY_USER` | SSH user for rsync/scp. |
 | `DEPLOY_KEY` | Private SSH key (PEM) for `DEPLOY_USER`. |
 
-Per-app document roots are the `DEPLOY_PATH` env in each deploy job (e.g. `/srv/www/app.rephoto.it`); adjust them to your server layout, or swap the rsync step for your CDN/host provider's own action (Cloudflare Pages, S3+CloudFront, Netlify, …). Subdomain mapping is `rephoto.it` (landing), `app.` (partecipanti), `foto.` (fotografi), `admin.` (admin).
+Per-app document roots are the `DEPLOY_PATH` env in each deploy job (e.g. `/srv/www/app.framesofme.com`); adjust them to your server layout, or swap the rsync step for your CDN/host provider's own action (Cloudflare Pages, S3+CloudFront, Netlify, …). Subdomain mapping is `framesofme.com` (landing), `app.` (partecipanti), `foto.` (fotografi), `admin.` (admin).

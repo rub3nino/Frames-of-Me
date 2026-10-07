@@ -1,10 +1,10 @@
 import type { MetadataRoute } from "next";
 
-/** Installable "RePhoto Upload" app: opens straight on the uploader. */
+/** Installable "Frames of Me Upload" app: opens straight on the uploader. */
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "RePhoto Upload",
-    short_name: "RePhoto",
+    name: "Frames of Me Upload",
+    short_name: "Frames of Me",
     description: "Carica le foto dell'evento in automatico da una cartella.",
     start_url: "/upload",
     scope: "/",

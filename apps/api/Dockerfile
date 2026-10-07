@@ -1,4 +1,4 @@
-# RePhoto API. Build context is the repo root:
+# Frames of Me API. Build context is the repo root:
 #   docker build -f apps/api/Dockerfile -t rephoto-api .
 # Runs TypeScript directly through tsx (a runtime dependency), as in local dev.
 # Package manager: pnpm via Corepack, pinned by the root package.json `packageManager`.

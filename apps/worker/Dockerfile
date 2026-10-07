@@ -1,4 +1,4 @@
-# RePhoto worker. Build context is the repo root:
+# Frames of Me worker. Build context is the repo root:
 #   docker build -f apps/worker/Dockerfile -t rephoto-worker .
 # The worker imports @rephoto/api (env, face engine, mailer, object store), so the api
 # sources are part of this image too. sharp's native binary is installed by pnpm for the

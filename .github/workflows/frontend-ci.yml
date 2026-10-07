@@ -1,4 +1,4 @@
-# Frontend CI — build check for the four RePhoto apps.
+# Frontend CI — build check for the four Frames of Me apps.
 #
 # Runs on every PR and on pushes that touch `frontend/**`. For each Vite app
 # whose files changed (its own dir, or a shared package it imports), we run a

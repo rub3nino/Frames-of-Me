@@ -1,4 +1,4 @@
-# RePhoto — Analisi di prontezza per la campagna di test
+# Frames of Me — Analisi di prontezza per la campagna di test
 
 Data: 2026-10-08. Stato del codice: `main` (`ae1bfe5`, stack self-hosted v4).
 Obiettivo della campagna: caricare decine di migliaia di foto su un server di test, fare molte scansioni (selfie) e verificare che ogni persona riceva **esattamente e solo** le foto in cui compare, osservando il comportamento del sistema.

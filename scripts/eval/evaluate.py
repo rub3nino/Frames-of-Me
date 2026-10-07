@@ -375,7 +375,7 @@ def main() -> None:
 
     # report
     lines = []
-    lines.append("# RePhoto — evaluation report\n")
+    lines.append("# Frames of Me — evaluation report\n")
     lines.append(f"Labels: {len(labels)} pairs, {len(labelled_photos)} labelled photos, {len(all_subjects)} subjects"
                  + (f", {unresolved} label rows without a manifest match" if unresolved else "") + ".  ")
     lines.append(f"Galleries: {len(galleries)} rows, {sum(len(p) for p in pred.values())} judged pairs, {unverified} unverified (photo not labelled)"

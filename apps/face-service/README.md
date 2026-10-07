@@ -1,6 +1,6 @@
 # face-service
 
-Motore facce self-hosted di RePhoto: [InsightFace](https://github.com/deepinsight/insightface) su CPU (detector SCRFD + embedding ArcFace 512-d, pacchetto `buffalo_l`, onnxruntime) dietro una piccola API FastAPI. Nessuna persistenza; i byte delle immagini non vengono mai loggati. Lo usa `packages/face-engine` quando `FACE_ENGINE=insightface`.
+Motore facce self-hosted di Frames of Me: [InsightFace](https://github.com/deepinsight/insightface) su CPU (detector SCRFD + embedding ArcFace 512-d, pacchetto `buffalo_l`, onnxruntime) dietro una piccola API FastAPI. Nessuna persistenza; i byte delle immagini non vengono mai loggati. Lo usa `packages/face-engine` quando `FACE_ENGINE=insightface`.
 
 ## Endpoint (porta 8090)
 

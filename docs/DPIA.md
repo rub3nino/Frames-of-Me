@@ -1,4 +1,4 @@
-# DPIA — photo-matching RePhoto (v5, self-hosted)
+# DPIA — photo-matching Frames of Me (v5, self-hosted)
 
 **BOZZA** per il consulente e il DPO. Non è una DPIA firmata. Non c'è sign-off. Non è stata chiesta una consultazione preventiva.
 
@@ -16,7 +16,7 @@ Redazione tecnica: 2026-10-07, aggiornata lo stesso giorno al codice v4 (motore 
 
 Titolare del trattamento: **[organizzatore della conferenza]**.
 
-Non è stato indicato un nome societario, una sede, un rappresentante né un DPO. Quei dati vanno scritti qui prima del go-live. RePhoto è il sistema; non è, in questa bozza, il titolare.
+Non è stato indicato un nome societario, una sede, un rappresentante né un DPO. Quei dati vanno scritti qui prima del go-live. Frames of Me è il sistema; non è, in questa bozza, il titolare.
 
 ## 2. Trattamento
 
@@ -26,7 +26,7 @@ Photo-matching di un solo evento, una conferenza europea di tre giorni: circa **
 
 Dalla v3 il fotografo può scegliere l'invio **a due stadi** («Prima il web, poi gli originali», pagina `/upload`, Chrome/Edge anche da una cartella sorvegliata che la pagina rilegge ogni 10 s): il browser genera in locale la versione da 1600 px e la carica per prima su `web/{photoId}.jpg`; il worker ricava da questa la miniatura e indicizza subito; l'originale arriva in seguito sulla stessa chiave e il job `verify` lo legge **una sola volta** per confrontarne sha256 e dimensione. Non cambia la categoria di dato né la sua collocazione. Finché l'originale non c'è, il rilevamento parte dal derivato `web`; l'originale non viene mai re-indicizzato quando arriva.
 
-**Partecipanti** (`role = participant`). Entrano con un magic link (`POST /v1/auth/request-link`, e-mail con oggetto `Accedi a RePhoto` e il solo URL `/verifica?token=…`, scadenza **20 minuti**, un solo uso; la pagina web consuma il token solo al clic di un bottone). La sessione dura **30 giorni** (cookie `rephoto_session`, `HttpOnly`, `SameSite=Lax`, `Secure`). Il consenso è una chiamata separata, `POST /v1/events/:slug/consent`, con `textVersion` e `accepted: true`. Poi inviano un selfie JPEG o PNG, al massimo **8 MiB**, campo multipart `selfie` (`POST /v1/events/:slug/selfie`), in uno di due modi:
+**Partecipanti** (`role = participant`). Entrano con un magic link (`POST /v1/auth/request-link`, e-mail con oggetto `Accedi a Frames of Me` e il solo URL `/verifica?token=…`, scadenza **20 minuti**, un solo uso; la pagina web consuma il token solo al clic di un bottone). La sessione dura **30 giorni** (cookie `rephoto_session`, `HttpOnly`, `SameSite=Lax`, `Secure`). Il consenso è una chiamata separata, `POST /v1/events/:slug/consent`, con `textVersion` e `accepted: true`. Poi inviano un selfie JPEG o PNG, al massimo **8 MiB**, campo multipart `selfie` (`POST /v1/events/:slug/selfie`), in uno di due modi:
 
 - **camera con challenge** (default dove c'è una camera e la pagina è servita in `https`): la pagina `/selfie` apre la camera frontale e guida la persona («Guarda la camera», «Gira la testa a sinistra», «a destra», «Sbatti le palpebre», poi lo scatto frontale automatico), 15 secondi per passo. Il riconoscimento dei punti del volto (MediaPipe Face Landmarker) gira **nel browser**, con file serviti dal nostro dominio; **nessun fotogramma lascia il telefono** prima dello scatto finale, e solo quello (JPEG, lato lungo 1280 px) viene inviato, con il campo `liveness = challenge`;
 - **file** (camera negata o assente, o scelta esplicita «Usa un file invece»): il selettore di file, campo `liveness = file`.

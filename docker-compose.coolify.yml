@@ -1,6 +1,6 @@
 name: rephoto
 
-# RePhoto on Coolify (project "RePhoto", environment "test"). Public exposure is through a
+# Frames of Me on Coolify (project "Frames of Me", environment "test"). Public exposure is through a
 # Cloudflare Tunnel -> Coolify's Traefik, so NO service publishes a host port: each one only
 # `expose`s its internal port and you map the FQDN in Coolify's UI (Service -> Domains).
 #

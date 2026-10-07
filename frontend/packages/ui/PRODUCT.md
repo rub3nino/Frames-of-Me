@@ -1,4 +1,4 @@
-# RePhoto — Product context
+# Frames of Me — Product context
 
 > Durable product knowledge for anyone (human or AI) designing or building the UI.
 > Style of this file follows the impeccable convention: audience, purpose,
@@ -6,7 +6,7 @@
 > [`brand/DESIGN.md`](brand/DESIGN.md); flows live in [`../docs/ux-flows.md`](../docs/ux-flows.md).
 
 ## What it is
-RePhoto lets people **find the event photos they appear in, by selfie, and download them** —
+Frames of Me lets people **find the event photos they appear in, by selfie, and download them** —
 and lets photographers upload the shoot and admins run the whole thing. Built for one
 conference: 3 days, ~12 photographers, ~150k photos, ~6.000 participants.
 

@@ -1,5 +1,5 @@
 /* ============================================================================
-   RePhoto — Vetrina shared behaviour (dependency-free, light only)
+   Frames of Me — Vetrina shared behaviour (dependency-free, light only)
    Quiet, functional feedback only (motion plan §4): mobile nav toggle,
    language switcher (visual stub — content stays Italian), newsletter submit.
    Accordions use native <details>/<summary>; no JS needed for them.

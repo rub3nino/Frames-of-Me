@@ -1,4 +1,4 @@
-# RePhoto v2 — implementation spec
+# Frames of Me v2 — implementation spec
 
 Target: one conference, 12 photographers, ~150k JPEG over 3 days, ~6,000 participants searching by selfie, browsing their matches, picking photos and downloading them. This document is the single source of truth for the v2 changes. `CONTRACTS.md` is updated at the end of the work to match this spec; where they differ during the work, this file wins.
 

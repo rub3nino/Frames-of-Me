@@ -1,4 +1,4 @@
-# RePhoto — Studio dei flussi UX/UI (pre-design)
+# Frames of Me — Studio dei flussi UX/UI (pre-design)
 
 > Stato: **studio dei flussi, non design**. Qui non si decidono colori, componenti o layout.
 > Si decide *chi fa cosa, in che ordine, su quali pagine, con quali stati ed errori*, e
@@ -372,7 +372,7 @@ Tutte in italiano. `WEB_ORIGIN` è la base dei link.
 
 | # | Trigger | Oggetto | Corpo (contenuto minimo) | Destinatario |
 | --- | --- | --- | --- | --- |
-| 1 | `POST request-link` (participant/admin) | "Accedi a RePhoto" | bottone/link `/verify?token=…` + "vale X minuti, non condividerlo" | chi chiede il link |
+| 1 | `POST request-link` (participant/admin) | "Accedi a Frames of Me" | bottone/link `/verify?token=…` + "vale X minuti, non condividerlo" | chi chiede il link |
 | 2 | `POST admin/photographers/invite` | "Sei stato invitato come fotografo" | link `/invito?token=…` + nome evento | fotografo |
 | 3 | job `email` kind `ready` | **"Le tue foto sono pronte"** | solo link galleria `/e/{slug}` | partecipante dopo match |
 | 4 | job `email` kind `new` | **"Ci sono nuove foto per te"** | solo link galleria `/e/{slug}` | partecipante quando `attach` aggiunge foto (max 1 ogni 6h, `notified_at`) |
