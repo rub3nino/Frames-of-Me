@@ -7,7 +7,7 @@ export type Role = z.infer<typeof roleSchema>;
 export const imageContentTypeSchema = z.enum(["image/jpeg", "image/png"]);
 
 /** Version of the consent text the API accepts. Bump together with the text shown by the web. */
-export const CONSENT_TEXT_VERSION = "2026-10-06";
+export const CONSENT_TEXT_VERSION = "2026-10-08";
 export const SESSION_COOKIE_NAME = "rephoto_session";
 export const SELFIE_FIELD_NAME = "selfie";
 /** Multipart field next to the selfie: how it was captured. Stored in audit_log, meta.liveness. */
@@ -468,6 +468,19 @@ export const retentionBodySchema = z
 
 export const retentionResponseSchema = z
   .object({ jobId: z.string().uuid() })
+  .strict();
+
+/** `POST /v1/admin/photos/requeue`: photos of the event in `status` (only `error` today), optionally narrowed by `error ilike '%errorLike%'`. */
+export const adminRequeueBodySchema = z
+  .object({
+    eventId: z.string().uuid(),
+    status: z.literal("error").default("error"),
+    errorLike: z.string().min(1).max(200).optional(),
+  })
+  .strict();
+
+export const adminRequeueResponseSchema = z
+  .object({ requeued: z.number().int().nonnegative() })
   .strict();
 
 // ---- admin and participant tooling v5 (agent D) ------------------------------------------

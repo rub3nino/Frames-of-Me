@@ -14,6 +14,7 @@ import {
   adminMatchRunsQuerySchema,
   adminNeighboursQuerySchema,
   adminPhotosQuerySchema,
+  adminRequeueBodySchema,
   adminResetBodySchema,
   galleryFeedbackBodySchema,
   consentBodySchema,
@@ -702,8 +703,11 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const actor = requireUser(c);
     requireRole(actor, ["admin"]);
     const userId = parseUuid(c.req.param("id"));
+    // Selfie objects kept with KEEP_SELFIES go with the galleries (their keys live on the rows).
+    const selfieKeys = await deps.db.listGallerySelfieKeysByUser(userId);
     const deleted = await deps.db.deleteParticipant(userId);
     if (!deleted) throw new ApiError(404, MESSAGES.notFound);
+    for (const key of selfieKeys) await deps.objects.delete(key);
     await deps.db.insertAudit({
       actorId: actor.id,
       action: "participant.deleted",
@@ -731,13 +735,14 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
   app.post("/v1/admin/photos/requeue", async (c) => {
     const actor = requireUser(c);
     requireRole(actor, ["admin"]);
-    const body = parseRequeueBody(await readJson(c));
-    const event = await deps.db.findEventById(body.eventId);
+    const body = adminRequeueBodySchema.safeParse(await readJson(c));
+    if (!body.success) throw new ApiError(400, MESSAGES.validation);
+    const event = await deps.db.findEventById(body.data.eventId);
     if (!event) throw new ApiError(404, MESSAGES.notFound);
     const photos = await deps.db.resetPhotosForRequeue({
       eventId: event.id,
-      status: body.status,
-      ...(body.errorLike === undefined ? {} : { errorLike: body.errorLike }),
+      status: body.data.status,
+      ...(body.data.errorLike === undefined ? {} : { errorLike: body.data.errorLike }),
     });
     for (const photo of photos) {
       const type = photo.webReady ? "index" : "derive";
@@ -750,7 +755,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       actorId: actor.id,
       action: "photos.requeued",
       target: `event:${event.id}`,
-      meta: { status: body.status, errorLike: body.errorLike ?? null, requeued: photos.length },
+      meta: { status: body.data.status, errorLike: body.data.errorLike ?? null, requeued: photos.length },
     });
     return c.json({ requeued: photos.length });
   });
@@ -976,8 +981,10 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     requireRole(actor, ["admin"]);
     const userId = parseUuid(c.req.param("userId"));
     const eventId = parseUuid(c.req.param("eventId"));
+    const selfieKey = await deps.db.findGallerySelfieKey(userId, eventId);
     const deleted = await deps.db.deleteGallery(userId, eventId);
     if (!deleted) throw new ApiError(404, MESSAGES.notFound);
+    if (selfieKey) await deps.objects.delete(selfieKey);
     await deps.db.insertAudit({
       actorId: actor.id,
       action: "gallery.deleted",
@@ -1000,12 +1007,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const jobId = await deps.queue.enqueue("reset", payload, {
       dedupeKey: jobDedupeKey("reset", payload) ?? `reset:${event.id}`,
     });
-    await deps.db.insertAudit({
-      actorId: actor.id,
-      action: "event.reset",
-      target: `event:${event.id}`,
-      meta: { jobId },
-    });
+    // The worker writes the one `event.reset` audit row, with the counts, when the job runs.
     return c.json({ jobId }, 202);
   });
 
@@ -1242,27 +1244,6 @@ async function probeFaceService(deps: AppDeps): Promise<{ ok: boolean | null; ms
 }
 
 /** `{ eventId, status?: "error", errorLike?: string }` without a shared schema (routes-local). */
-function parseRequeueBody(raw: unknown): { eventId: string; status: "error"; errorLike?: string } {
-  if (!raw || typeof raw !== "object") throw new ApiError(400, MESSAGES.validation);
-  const body = raw as Record<string, unknown>;
-  const allowed = new Set(["eventId", "status", "errorLike"]);
-  for (const key of Object.keys(body)) {
-    if (!allowed.has(key)) throw new ApiError(400, MESSAGES.validation);
-  }
-  if (typeof body.eventId !== "string") throw new ApiError(400, MESSAGES.validation);
-  const eventId = parseUuid(body.eventId);
-  if (body.status !== undefined && body.status !== "error") {
-    throw new ApiError(400, MESSAGES.validation);
-  }
-  if (body.errorLike !== undefined) {
-    if (typeof body.errorLike !== "string" || body.errorLike.length === 0 || body.errorLike.length > 200) {
-      throw new ApiError(400, MESSAGES.validation);
-    }
-    return { eventId, status: "error", errorLike: body.errorLike };
-  }
-  return { eventId, status: "error" };
-}
-
 function parseUuid(value: string): string {
   if (!UUID.test(value)) throw new ApiError(400, MESSAGES.validation);
   return value;

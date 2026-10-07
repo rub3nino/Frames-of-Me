@@ -18,6 +18,7 @@ import type {
 } from "../../../packages/face-engine/src/types.ts";
 import { FaceServiceBreaker } from "../src/breaker.js";
 import {
+  applyFinalFailure,
   selfieRejectReason,
   type JobLogEntry,
   type WorkerDeps,
@@ -405,6 +406,111 @@ test("KEEP_SELFIES keeps the selfie object and records its key on the gallery, a
   const gone = await selfie(h, [255, 0, 0]);
   assert.equal(h.objects.objects.has(gone), false);
   assert.equal((await h.db.findGalleryByUser(h.participantId, h.eventId))?.selfieKey, null);
+});
+
+test("KEEP_SELFIES: a new selfie replaces the kept object; a rematch with the stored key keeps it", async () => {
+  const f = await fixture({ KEEP_SELFIES: true });
+  await ingest(f, [255, 0, 0]);
+  const first = await selfie(f, [255, 0, 0]);
+  const second = await selfie(f, [255, 0, 0]);
+  assert.notEqual(first, second);
+  assert.equal(f.objects.objects.has(first), false, "the previously kept selfie is gone");
+  assert.equal(f.objects.objects.has(second), true);
+  assert.equal((await f.db.findGalleryByUser(f.participantId, f.eventId))?.selfieKey, second);
+
+  // Admin rematch: the job carries the stored key itself, which must survive.
+  await f.queue.enqueue("match", { userId: f.participantId, eventId: f.eventId, selfieKey: second });
+  await drain(f.deps);
+  assert.equal(f.objects.objects.has(second), true);
+  assert.equal((await f.db.findGalleryByUser(f.participantId, f.eventId))?.selfieKey, second);
+
+  // Same on a rejection: the rejected selfie is the one kept, the earlier one goes.
+  const g = await fixture({ KEEP_SELFIES: true });
+  await ingest(g, [255, 0, 0]);
+  const accepted = await selfie(g, [255, 0, 0]);
+  g.deps.faces = { ...g.faces, ...scriptedEngine({ faces: [], width: 10, height: 10 }) };
+  const rejected = await selfie(g, [255, 0, 0]);
+  assert.equal(g.objects.objects.has(accepted), false);
+  assert.equal(g.objects.objects.has(rejected), true);
+  assert.equal((await g.db.findGalleryByUser(g.participantId, g.eventId))?.selfieKey, rejected);
+});
+
+test("KEEP_SELFIES: a match that fails for good keeps its selfie and records it on the gallery", async () => {
+  const f = await fixture({ KEEP_SELFIES: true });
+  await ingest(f, [255, 0, 0]);
+  const earlier = await selfie(f, [255, 0, 0]);
+  const failedKey = objectKeys.selfie(f.eventId, f.participantId, randomUUID());
+  await f.objects.put(failedKey, new Uint8Array(await solidPng(255, 0, 0)), "image/png");
+  await applyFinalFailure(
+    { type: "match", userId: f.participantId, eventId: f.eventId, selfieKey: failedKey },
+    f.deps,
+    "Face service answered 413",
+  );
+  assert.equal(f.objects.objects.has(failedKey), true, "kept for inspection");
+  assert.equal(f.objects.objects.has(earlier), false, "the previously kept selfie is gone");
+  assert.equal((await f.db.findGalleryByUser(f.participantId, f.eventId))?.selfieKey, failedKey);
+
+  // Without KEEP_SELFIES the failed job's selfie is deleted and nothing is recorded.
+  const g = await fixture();
+  const dropped = objectKeys.selfie(g.eventId, g.participantId, randomUUID());
+  await g.objects.put(dropped, new Uint8Array(await solidPng(255, 0, 0)), "image/png");
+  await applyFinalFailure(
+    { type: "match", userId: g.participantId, eventId: g.eventId, selfieKey: dropped },
+    g.deps,
+    "Face service answered 413",
+  );
+  assert.equal(g.objects.objects.has(dropped), false);
+  assert.equal(await g.db.findGalleryByUser(g.participantId, g.eventId), null);
+});
+
+test("reset deletes the selfies kept with KEEP_SELFIES", async () => {
+  const f = await fixture({ KEEP_SELFIES: true });
+  await ingest(f, [255, 0, 0]);
+  const selfieKey = await selfie(f, [255, 0, 0]);
+  assert.equal(f.objects.objects.has(selfieKey), true);
+  const admin = await f.db.findUserByEmailRole("admin@rephoto.local", "admin");
+  assert.ok(admin);
+  await f.queue.enqueue("reset", { eventId: f.eventId, actorId: admin.id });
+  await drain(f.deps);
+  assert.equal(f.objects.objects.has(selfieKey), false);
+  assert.equal(f.objects.objects.size, 0, "originals, derivatives and kept selfie all gone");
+  assert.equal(await f.db.findGalleryByUser(f.participantId, f.eventId), null);
+});
+
+test("retention clears the selfie vector, anchors and kept selfie of galleries matched before the cutoff", async () => {
+  const f = await fixture({ KEEP_SELFIES: true });
+  await ingest(f, [255, 0, 0]);
+  const oldKey = await selfie(f, [255, 0, 0]);
+  const recent = await f.db.createUser({ email: "recent@example.com", role: "participant" });
+  const recentKey = objectKeys.selfie(f.eventId, recent.id, randomUUID());
+  await f.objects.put(recentKey, new Uint8Array(await solidPng(255, 0, 0)), "image/png");
+  await f.queue.enqueue("match", { userId: recent.id, eventId: f.eventId, selfieKey: recentKey });
+  await drain(f.deps);
+  const before = await f.db.findGalleryByUser(f.participantId, f.eventId);
+  assert.equal(before?.hasQueryVector, true);
+  assert.equal(before?.anchorFaceIds.length, 1);
+  assert.equal(before?.selfieKey, oldKey);
+  f.db.setGalleryMatchedAt(f.participantId, f.eventId, new Date(0));
+
+  const admin = await f.db.findUserByEmailRole("admin@rephoto.local", "admin");
+  assert.ok(admin);
+  await f.queue.enqueue("retention", { eventId: f.eventId, actorId: admin.id });
+  await drain(f.deps);
+  const expired = await f.db.findGalleryByUser(f.participantId, f.eventId);
+  assert.ok(expired, "the gallery row stays");
+  assert.equal(expired.hasQueryVector, false);
+  assert.deepEqual(expired.anchorFaceIds, []);
+  assert.equal(expired.selfieKey, null);
+  assert.equal(f.objects.objects.has(oldKey), false, "the kept selfie object is deleted");
+  // A gallery matched today keeps everything (and so does the photo: it is younger than the cutoff).
+  const kept = await f.db.findGalleryByUser(recent.id, f.eventId);
+  assert.equal(kept?.hasQueryVector, true);
+  assert.equal(kept?.anchorFaceIds.length, 1);
+  assert.equal(kept?.selfieKey, recentKey);
+  assert.equal(f.objects.objects.has(recentKey), true);
+  assert.equal(await f.db.countPhotos(f.eventId), 1);
+  // Memory parity with the SQL: nothing to expire returns no keys.
+  assert.deepEqual(await f.db.expireGalleryMatches(f.eventId, new Date(0)), []);
 });
 
 // ---- A2 / A3: re-index and detection source -------------------------------------------------

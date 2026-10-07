@@ -21,14 +21,14 @@ import { contentTypeOf } from "@/lib/upload";
 import type { GalleryResponse } from "@/lib/types";
 import type { FaceLandmarker } from "@mediapipe/tasks-vision";
 
-const CONSENT_TEXT_VERSION = "2026-10-06";
+const CONSENT_TEXT_VERSION = "2026-10-08";
 const SELFIE_FIELD_NAME = "selfie";
 /** Mirrors SELFIE_LIVENESS_FIELD / selfieLivenessSchema in the contracts. */
 const SELFIE_LIVENESS_FIELD = "liveness";
 type Liveness = "challenge" | "file";
 
 const CONSENT_TEXT =
-  "Acconsento al confronto temporaneo del mio volto con le foto dell'evento per trovare gli scatti in cui compaio. Il selfie viene cancellato subito dopo la ricerca. Le foto restano disponibili per 90 giorni.";
+  "Acconsento al confronto del mio volto con le foto dell'evento per trovare gli scatti in cui compaio. Il selfie viene cancellato subito dopo la ricerca; un modello numerico del mio volto resta per la durata dell'evento, solo per agganciare le foto caricate in seguito, e viene cancellato con le foto. Le foto restano disponibili per 90 giorni.";
 
 type Phase = "consent" | "capture" | "result";
 /** Capture phase: the camera challenge, or the file picker when the camera is out. */

@@ -369,6 +369,16 @@ export interface Database {
   touchJob(id: string): Promise<void>;
   /** `reset` job: drops every gallery (and items) of the event; returns how many. */
   deleteGalleriesByEvent(eventId: string): Promise<number>;
+  /** KEEP_SELFIES: the `selfie_key` of every gallery of the event, so `reset` deletes the objects. */
+  listGallerySelfieKeys(eventId: string): Promise<string[]>;
+  /** KEEP_SELFIES: the `selfie_key` of every gallery of the user, so deleting the participant deletes the objects. */
+  listGallerySelfieKeysByUser(userId: string): Promise<string[]>;
+  /**
+   * Retention: galleries of the event with `matched_at < cutoff` lose `query_embedding`,
+   * `anchor_face_ids` and `selfie_key` (the gallery row and its items stay). Returns the
+   * selfie keys that were set, so the caller deletes the objects.
+   */
+  expireGalleryMatches(eventId: string, cutoff: Date): Promise<string[]>;
   /** `reset` job: drops the match log of the event; returns how many runs. */
   deleteMatchRunsByEvent(eventId: string): Promise<number>;
   /**

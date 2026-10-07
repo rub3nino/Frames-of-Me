@@ -15,7 +15,7 @@ import { Trend, Counter } from "k6/metrics";
 const BASE_URL = (__ENV.BASE_URL || "http://localhost:8787").replace(/\/$/, "");
 const EVENT_SLUG = __ENV.EVENT_SLUG || "demo";
 const COOKIES = (__ENV.PARTICIPANT_COOKIES || "").split(",").map((s) => s.trim()).filter(Boolean);
-const CONSENT_TEXT_VERSION = __ENV.CONSENT_TEXT_VERSION || "2026-10-06";
+const CONSENT_TEXT_VERSION = __ENV.CONSENT_TEXT_VERSION || "2026-10-08";
 const TOTAL = Number(__ENV.SELFIES || 1000);
 const DURATION_MIN = Number(__ENV.DURATION_MINUTES || 10);
 const POLL_SECONDS = Number(__ENV.POLL_SECONDS || 2);

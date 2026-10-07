@@ -1384,6 +1384,16 @@ test("admin requeue resets error photos and enqueues derive or index depending o
   // Validation and authorization.
   assert.equal((await h.app.request(json("POST", "/v1/admin/photos/requeue", { eventId: "nope" }, { cookie }))).status, 400);
   assert.equal(
+    (await h.app.request(json("POST", "/v1/admin/photos/requeue", { eventId: h.event.id, errorLike: "" }, { cookie }))).status,
+    400,
+  );
+  assert.equal(
+    (await h.app.request(json("POST", "/v1/admin/photos/requeue", { eventId: h.event.id, errorLike: "x".repeat(201) }, { cookie }))).status,
+    400,
+  );
+  assert.equal((await h.app.request(json("POST", "/v1/admin/photos/requeue", "nope", { cookie }))).status, 400);
+  assert.deepEqual(adminRequeueBodySchema.parse({ eventId: h.event.id }), { eventId: h.event.id, status: "error" });
+  assert.equal(
     (await h.app.request(json("POST", "/v1/admin/photos/requeue", { eventId: h.event.id, status: "indexed" }, { cookie }))).status,
     400,
   );
@@ -1428,6 +1438,7 @@ test("deleting a photo drops it from the anchors of every gallery", async () => 
 
 import {
   adminEventsResponseSchema,
+  adminRequeueBodySchema,
   adminGalleriesListResponseSchema,
   adminGalleryByEmailResponseSchema,
   adminMagicLinkResponseSchema,
@@ -1810,6 +1821,52 @@ test("rematch needs KEEP_SELFIES and a stored selfie; delete gallery removes it"
   assert.equal(again.status, 404);
 });
 
+test("deleting a gallery or a participant also deletes the selfie kept with KEEP_SELFIES", async () => {
+  const h = await harness({ env: { ...env, KEEP_SELFIES: true } });
+  const cookie = await adminCookie(h);
+  const { id: participantId } = await participantCookie(h, "p@example.com");
+  await seedGallery(h, participantId, 1);
+  const selfieKey = objectKeys.selfie(h.event.id, participantId, "kept");
+  await h.objects.put(selfieKey, Buffer.from("selfie"), "image/jpeg");
+  h.db.setGallerySelfieKey(participantId, h.event.id, selfieKey);
+  const deleted = await h.app.request(
+    new Request(`http://api.local/v1/admin/galleries/${participantId}/${h.event.id}`, { method: "DELETE", headers: { cookie } }),
+  );
+  assert.equal(deleted.status, 204);
+  assert.equal(h.objects.objects.has(selfieKey), false);
+
+  const { id: other } = await participantCookie(h, "q@example.com");
+  await h.db.replaceGallery(other, h.event.id, [], []);
+  const otherKey = objectKeys.selfie(h.event.id, other, "kept");
+  await h.objects.put(otherKey, Buffer.from("selfie"), "image/jpeg");
+  h.db.setGallerySelfieKey(other, h.event.id, otherKey);
+  const audits: string[] = [];
+  const db: Database = h.db;
+  const insertAudit = db.insertAudit.bind(db);
+  db.insertAudit = async (input) => {
+    audits.push(input.action);
+    return insertAudit(input);
+  };
+  const removed = await h.app.request(
+    new Request(`http://api.local/v1/admin/participants/${other}`, { method: "DELETE", headers: { cookie } }),
+  );
+  assert.equal(removed.status, 204);
+  assert.equal(h.objects.objects.has(otherKey), false);
+  assert.equal(await h.db.findUserById(other), null);
+  assert.deepEqual(audits, ["participant.deleted"]);
+  const missing = await h.app.request(
+    new Request(`http://api.local/v1/admin/participants/${randomUUID()}`, { method: "DELETE", headers: { cookie } }),
+  );
+  assert.equal(missing.status, 404);
+  // Not a participant: 404, and the admin's own account is untouched.
+  const admin = await h.db.findUserByEmailRole("admin@rephoto.local", "admin");
+  assert.ok(admin);
+  const refused = await h.app.request(
+    new Request(`http://api.local/v1/admin/participants/${admin.id}`, { method: "DELETE", headers: { cookie } }),
+  );
+  assert.equal(refused.status, 404);
+});
+
 test("event reset needs the slug as confirmation and enqueues one reset job", async () => {
   const h = await harness();
   const cookie = await adminCookie(h);
@@ -1817,8 +1874,14 @@ test("event reset needs the slug as confirmation and enqueues one reset job", as
   assert.equal(wrong.status, 400);
   const missing = await h.app.request(json("POST", `/v1/admin/events/${randomUUID()}/reset`, { confirm: "demo" }, { cookie }));
   assert.equal(missing.status, 404);
+  const audits: string[] = [];
+  const db: Database = h.db;
+  db.insertAudit = async (input) => {
+    audits.push(input.action);
+  };
   const ok = await h.app.request(json("POST", `/v1/admin/events/${h.event.id}/reset`, { confirm: "demo" }, { cookie }));
   assert.equal(ok.status, 202);
+  assert.deepEqual(audits, [], "the worker writes the one event.reset audit row, with the counts");
   const { jobId } = (await ok.json()) as { jobId: string };
   const job = h.db.jobView(jobId);
   assert.equal(job?.status, "queued");

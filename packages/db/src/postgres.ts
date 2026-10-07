@@ -1247,6 +1247,37 @@ export class PostgresDatabase implements Database {
     });
   }
 
+  async listGallerySelfieKeys(eventId: string): Promise<string[]> {
+    const rows = await this.sql<{ selfie_key: string }[]>`
+      select selfie_key from galleries where event_id = ${eventId} and selfie_key is not null
+    `;
+    return rows.map((row) => row.selfie_key);
+  }
+
+  async listGallerySelfieKeysByUser(userId: string): Promise<string[]> {
+    const rows = await this.sql<{ selfie_key: string }[]>`
+      select selfie_key from galleries where user_id = ${userId} and selfie_key is not null
+    `;
+    return rows.map((row) => row.selfie_key);
+  }
+
+  async expireGalleryMatches(eventId: string, cutoff: Date): Promise<string[]> {
+    const vectors = await this.queryVectorAvailable();
+    const rows = await this.sql<{ selfie_key: string | null }[]>`
+      update galleries
+      set anchor_face_ids = '{}'::text[],
+          selfie_key = null
+          ${vectors ? this.sql`, query_embedding = null` : this.sql``}
+      where event_id = ${eventId}
+        and matched_at < ${cutoff}
+        and (cardinality(anchor_face_ids) > 0
+             or selfie_key is not null
+             ${vectors ? this.sql`or query_embedding is not null` : this.sql``})
+      returning selfie_key
+    `;
+    return rows.map((row) => row.selfie_key).filter((key): key is string => key !== null);
+  }
+
   async deleteMatchRunsByEvent(eventId: string): Promise<number> {
     const result = await this.sql`delete from match_runs where event_id = ${eventId}`;
     return result.count;

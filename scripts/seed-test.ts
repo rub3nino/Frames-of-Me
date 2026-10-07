@@ -39,7 +39,7 @@ Options:
   --participants <n>       Participants to create, with consent (default 20)
   --domain <domain>        E-mail domain of generated users (default test.rephoto.local)
   --prefix <text>          Local-part prefix: <prefix>photographer-1@…, <prefix>participant-1@… (default "")
-  --consent-version <v>    consents.text_version (default 2026-10-06, as the web client sends)
+  --consent-version <v>    consents.text_version (default 2026-10-08, as the web client sends)
   --no-consent             Skip consent rows (participants will have to accept in the UI)
   --session-days <n>       Session lifetime (default 30)
   --out <dir>              Where to write the cookie/CSV files (default .)
@@ -71,7 +71,7 @@ async function main(): Promise<void> {
       participants: { type: "string", default: "20" },
       domain: { type: "string", default: "test.rephoto.local" },
       prefix: { type: "string", default: "" },
-      "consent-version": { type: "string", default: "2026-10-06" },
+      "consent-version": { type: "string", default: "2026-10-08" },
       "no-consent": { type: "boolean", default: false },
       "session-days": { type: "string", default: "30" },
       out: { type: "string", default: "." },

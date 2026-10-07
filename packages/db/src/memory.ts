@@ -1092,6 +1092,33 @@ export class MemoryDatabase implements Database {
     return ids.size;
   }
 
+  async listGallerySelfieKeys(eventId: string): Promise<string[]> {
+    return this.galleries
+      .filter((gallery) => gallery.eventId === eventId)
+      .map(gallerySelfieKey)
+      .filter((key): key is string => key !== null);
+  }
+
+  async listGallerySelfieKeysByUser(userId: string): Promise<string[]> {
+    return this.galleries
+      .filter((gallery) => gallery.userId === userId)
+      .map(gallerySelfieKey)
+      .filter((key): key is string => key !== null);
+  }
+
+  async expireGalleryMatches(eventId: string, cutoff: Date): Promise<string[]> {
+    const keys: string[] = [];
+    for (const gallery of this.galleries) {
+      if (gallery.eventId !== eventId || !gallery.matchedAt || gallery.matchedAt >= cutoff) continue;
+      const key = gallerySelfieKey(gallery);
+      if (key) keys.push(key);
+      gallery.queryEmbedding = null;
+      gallery.anchorFaceIds = [];
+      gallery.selfieKey = null;
+    }
+    return keys;
+  }
+
   async deleteMatchRunsByEvent(eventId: string): Promise<number> {
     const ids = new Set(
       this.matchRunRows.filter((run) => run.eventId === eventId).map((run) => run.id),
@@ -1563,6 +1590,13 @@ export class MemoryDatabase implements Database {
     const gallery = this.galleryOf(userId, eventId);
     if (!gallery) throw new Error("missing gallery");
     (gallery as { selfieKey?: string | null }).selfieKey = selfieKey;
+  }
+
+  /** Test helper: backdates a match so retention (`expireGalleryMatches`) picks the gallery up. */
+  setGalleryMatchedAt(userId: string, eventId: string, matchedAt: Date | null): void {
+    const gallery = this.galleryOf(userId, eventId);
+    if (!gallery) throw new Error("missing gallery");
+    gallery.matchedAt = matchedAt;
   }
 
   /** Test helper: what the worker records with MATCH_LOG (agent A's match_runs / match_hits). */

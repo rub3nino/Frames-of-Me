@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 import { Shell } from "@/components/shell";
 import { ApiError, api } from "@/lib/api";
@@ -63,6 +64,11 @@ export default function HomePage() {
               {pending ? "Invio…" : "Mandami il link"}
             </button>
           </div>
+          <p className="note">
+            <Link className="linkish" href="/staff">
+              Sei fotografo o staff?
+            </Link>
+          </p>
         </form>
       )}
     </Shell>

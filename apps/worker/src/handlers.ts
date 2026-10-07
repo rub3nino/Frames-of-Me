@@ -440,7 +440,8 @@ type MatchContext = {
  * before any search: a rejected selfie gets an empty gallery, a reason and no mail. On a
  * successful match the selfie vector is stored on the gallery so later uploads attach even
  * when nothing matched yet (`no_photos_yet`). The selfie object is deleted unless
- * `KEEP_SELFIES=true`, in which case its key is recorded on the gallery.
+ * `KEEP_SELFIES=true`, in which case its key is recorded on the gallery and the object kept
+ * by the previous run (if any, and if different) is deleted so no selfie goes untracked.
  */
 async function matchSelfie(
   job: { type: "match" } & MatchPayload,
@@ -448,6 +449,7 @@ async function matchSelfie(
 ): Promise<JobNote | undefined> {
   const selfie = await deps.objects.get(job.selfieKey);
   if (!selfie) throw new Error("Selfie object missing");
+  const previousSelfieKey = await keptSelfieKey(job, deps);
   const imageBytes = await fitJpeg(selfie.body, REKOGNITION_MAX_IMAGE_BYTES);
   const event = await deps.db.findEventById(job.eventId);
   if (!event) throw new Error("Event missing");
@@ -457,7 +459,7 @@ async function matchSelfie(
     const verdict = await liveness({ imageBytes, contentType: "image/jpeg" });
     context.liveness = verdict.live === false ? "rejected" : "live";
     if (verdict.live === false) {
-      await emptyGallery(context, deps, "liveness", null);
+      await emptyGallery(context, deps, "liveness", null, previousSelfieKey);
       await logMatchRun(context, deps, { reason: "liveness", selfieFaces: null, engineMs: null, hits: [] });
       await enqueue(deps, "email", {
         userId: job.userId,
@@ -479,7 +481,7 @@ async function matchSelfie(
     selfieFaces = embedded.faces.length;
     const reason = selfieRejectReason(embedded, deps.env);
     if (reason) {
-      await emptyGallery(context, deps, reason, null);
+      await emptyGallery(context, deps, reason, null, previousSelfieKey);
       await logMatchRun(context, deps, { reason, selfieFaces, engineMs: Date.now() - started, hits: [] });
       return { match: "rejected", reason };
     }
@@ -560,7 +562,7 @@ async function matchSelfie(
       kept: kept.get(hit.photoId) === hit.externalFaceId,
     })),
   });
-  if (!deps.env.KEEP_SELFIES) await deps.objects.delete(job.selfieKey);
+  await settleSelfie(job, deps, previousSelfieKey);
   await enqueue(deps, "email", {
     userId: job.userId,
     eventId: job.eventId,
@@ -576,6 +578,7 @@ async function emptyGallery(
   deps: WorkerDeps,
   reason: SelfieRejectReason | "liveness",
   queryEmbedding: number[] | null,
+  previousSelfieKey: string | null,
 ): Promise<void> {
   const { job } = context;
   await deps.db.replaceGallery(job.userId, job.eventId, [], []);
@@ -584,7 +587,35 @@ async function emptyGallery(
     lastMatchReason: reason,
     selfieKey: deps.env.KEEP_SELFIES ? job.selfieKey : null,
   });
-  if (!deps.env.KEEP_SELFIES) await deps.objects.delete(job.selfieKey);
+  await settleSelfie(job, deps, previousSelfieKey);
+}
+
+/**
+ * KEEP_SELFIES: the selfie object the gallery currently tracks, when it is not the one of
+ * this job (a rematch reuses the stored key). Null otherwise, and always when selfies are
+ * not kept.
+ */
+async function keptSelfieKey(job: MatchPayload, deps: WorkerDeps): Promise<string | null> {
+  if (!deps.env.KEEP_SELFIES) return null;
+  const gallery = await deps.db.findGalleryByUser(job.userId, job.eventId);
+  const key = gallery?.selfieKey ?? null;
+  return key !== null && key !== job.selfieKey ? key : null;
+}
+
+/**
+ * After the gallery records this job's selfie: without KEEP_SELFIES the object goes; with it,
+ * the previously kept object (now untracked) goes instead.
+ */
+async function settleSelfie(
+  job: MatchPayload,
+  deps: WorkerDeps,
+  previousSelfieKey: string | null,
+): Promise<void> {
+  if (!deps.env.KEEP_SELFIES) {
+    await deps.objects.delete(job.selfieKey);
+    return;
+  }
+  if (previousSelfieKey) await deps.objects.delete(previousSelfieKey);
 }
 
 async function logMatchRun(
@@ -669,6 +700,11 @@ async function retainEvent(
   if (!event) return;
   const cutoff = new Date(Date.now() - event.retentionDays * 24 * 60 * 60 * 1000);
   await deletePhotosBefore(event, cutoff, job.actorId, { retention: true }, deps);
+  // Galleries matched before the cutoff lose their biometric part (selfie vector, anchors)
+  // and the kept selfie object, if any: the match itself is as old as the photos it found.
+  for (const key of await deps.db.expireGalleryMatches(event.id, cutoff)) {
+    await deps.objects.delete(key);
+  }
   if ((await deps.db.countPhotos(event.id)) === 0) {
     await deps.faces.deleteCollection(event.id);
   }
@@ -677,7 +713,8 @@ async function retainEvent(
 /**
  * `reset` (v5, D): the event goes back to empty. Every photo leaves through the retention
  * loop (faces, anchors, objects, rows, one audit row per photo), then the galleries, the
- * match log and the engine collection are dropped. Participants and photographers stay.
+ * match log and the engine collection are dropped, and so are the selfie objects kept with
+ * `KEEP_SELFIES` (`galleries.selfie_key`). Participants and photographers stay.
  */
 async function resetEvent(job: { type: "reset" } & ResetPayload, deps: WorkerDeps): Promise<void> {
   const event = await deps.db.findEventById(job.eventId);
@@ -685,6 +722,9 @@ async function resetEvent(job: { type: "reset" } & ResetPayload, deps: WorkerDep
   // One second ahead of `now`: a photo inserted in the same millisecond must go too.
   const cutoff = new Date(Date.now() + 1000);
   const photos = await deletePhotosBefore(event, cutoff, job.actorId, { reset: true }, deps);
+  for (const key of await deps.db.listGallerySelfieKeys(event.id)) {
+    await deps.objects.delete(key);
+  }
   const galleries = await deps.db.deleteGalleriesByEvent(event.id);
   const matchRuns = await deps.db.deleteMatchRunsByEvent(event.id);
   await deps.faces.deleteCollection(event.id);
@@ -771,8 +811,16 @@ export async function applyFinalFailure(
     await deps.db.setPhotoError(photo.id, reason);
     return;
   }
-  if (job.type === "match" && !deps.env.KEEP_SELFIES) {
-    await deps.objects.delete(job.selfieKey);
+  if (job.type === "match") {
+    if (!deps.env.KEEP_SELFIES) {
+      await deps.objects.delete(job.selfieKey);
+      return;
+    }
+    // Kept for inspection: record it on the gallery (and drop the previously kept object) so
+    // the admin tooling, `reset` and retention can find it.
+    const previousSelfieKey = await keptSelfieKey(job, deps);
+    await deps.db.updateGalleryMatch(job.userId, job.eventId, { selfieKey: job.selfieKey });
+    await settleSelfie(job, deps, previousSelfieKey);
   }
   // `verify`: nothing to undo; the photo keeps serving its web derivative.
 }

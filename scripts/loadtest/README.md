@@ -58,7 +58,7 @@ Con `FACE_ENGINE=rekognition` ogni selfie è una `SearchFacesByImage` e ogni upl
 | `PARTICIPANT_COOKIES` | — | `selfie.js` |
 | `SELFIES` / `DURATION_MINUTES` | `1000` / `10` | `selfie.js` |
 | `POLL_SECONDS` / `READY_TIMEOUT_SECONDS` | `2` / `300` | `selfie.js` |
-| `CONSENT_TEXT_VERSION` | `2026-10-06` | `selfie.js` |
+| `CONSENT_TEXT_VERSION` | `2026-10-08` | `selfie.js` |
 
 Soglie (`thresholds`) nei file: `upload_init` p95 < 500 ms, `upload_complete` p95 < 1 s, `selfie_post` p95 < 1 s, `time_to_ready` p95 < 60 s. k6 esce con codice diverso da zero se una soglia non regge.
 
