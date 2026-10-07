@@ -135,6 +135,9 @@ export const envSchema = z
     ),
     /** Comma-separated IPs or CIDRs that skip both limits (the test room's NAT). */
     RATE_LIMIT_EXEMPT_IPS: z.preprocess(blankToUndefined, z.string().default("")),
+    /** Optional shared limiter for horizontally scaled API instances. */
+    UPSTASH_REDIS_REST_URL: z.preprocess(blankToUndefined, z.string().url().optional()),
+    UPSTASH_REDIS_REST_TOKEN: optionalText,
     /** Comma-separated emails upserted as admin when the api boots. */
     BOOTSTRAP_ADMINS: z.preprocess(blankToUndefined, z.string().default("")),
     WEB_ORIGIN: z.string().url(),
@@ -190,6 +193,9 @@ export const envSchema = z
           message: "required when S3_ENDPOINT is set",
         });
       }
+    }
+    if (env.UPSTASH_REDIS_REST_URL && !env.UPSTASH_REDIS_REST_TOKEN) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["UPSTASH_REDIS_REST_TOKEN"], message: "required when UPSTASH_REDIS_REST_URL is set" });
     }
     if (env.MAIL_TRANSPORT === "smtp") {
       if (!env.SMTP_HOST) {

@@ -1,4 +1,4 @@
-import type { JobType, PhotoStatus, Role } from "@rephoto/contracts";
+import type { JobType, PhotoCollection, PhotoStatus, Role } from "@rephoto/contracts";
 
 export type ImageContentType = "image/jpeg" | "image/png";
 
@@ -37,7 +37,9 @@ export type EventRow = {
 export type PhotoRow = {
   id: string;
   eventId: string;
-  photographerId: string;
+  photographerId: string | null;
+  uploaderId: string | null;
+  collection: PhotoCollection;
   sha256: string;
   status: PhotoStatus;
   originalKey: string;
@@ -52,7 +54,9 @@ export type PhotoRow = {
 export type UploadSessionRow = {
   id: string;
   eventId: string;
-  photographerId: string;
+  photographerId: string | null;
+  uploaderId: string | null;
+  collection: PhotoCollection;
   s3UploadId: string | null;
   objectKey: string;
   sha256: string;
@@ -91,6 +95,16 @@ export type GalleryPageItem = {
 export type GalleryCursor = { score: number; photoId: string };
 
 export type GalleryPage = { total: number; items: GalleryPageItem[] };
+
+export type PublicGalleryItem = {
+  photoId: string;
+  createdAt: Date;
+  thumbKey: string;
+  webKey: string;
+  originalReady: boolean;
+};
+export type PublicGalleryCursor = { createdAt: Date; photoId: string };
+export type ModerationStatus = "approved" | "pending" | "blocked";
 
 export type AnchoredGallery = {
   id: string;
@@ -190,13 +204,16 @@ export interface Database {
   }): Promise<{ id: string; grantedAt: Date }>;
   hasActiveConsent(userId: string, eventId: string): Promise<boolean>;
   countMatchJobsSince(userId: string, since: Date): Promise<number>;
+  countUploadsSince(userId: string, eventId: string, since: Date): Promise<number>;
   findPhotoBySha(eventId: string, sha256: string): Promise<PhotoRow | null>;
   /** Like `findPhotoBySha`, restricted to the caller's own photos. */
   findOwnPhotoBySha(photographerId: string, eventId: string, sha256: string): Promise<PhotoRow | null>;
   insertUploadSession(input: {
     id: string;
     eventId: string;
-    photographerId: string;
+    photographerId: string | null;
+    uploaderId?: string;
+    collection?: PhotoCollection;
     s3UploadId: string | null;
     objectKey: string;
     sha256: string;
@@ -226,7 +243,9 @@ export interface Database {
   insertPhoto(input: {
     id: string;
     eventId: string;
-    photographerId: string;
+    photographerId: string | null;
+    uploaderId?: string;
+    collection?: PhotoCollection;
     sha256: string;
     originalKey: string;
     contentType: ImageContentType;
@@ -250,6 +269,10 @@ export interface Database {
   listPhotosCreatedBefore(eventId: string, cutoff: Date, limit?: number): Promise<PhotoRow[]>;
   countPhotos(eventId: string): Promise<number>;
   listPhotosByIds(ids: string[]): Promise<PhotoRow[]>;
+  listPublicPhotosByIds(eventId: string, photoIds: string[]): Promise<PhotoRow[]>;
+  reportPhoto(input: { photoId: string; reporterId: string; reason: string }): Promise<boolean>;
+  setPhotoModeration(input: { photoId: string; status: ModerationStatus; reason: string | null; actorId: string }): Promise<void>;
+  listPublicGallery(eventId: string, input: { limit: number; cursor?: PublicGalleryCursor }): Promise<PublicGalleryItem[]>;
   /** Photos among `photoIds` that are in the caller's gallery for the event. One query. */
   listOwnedPhotos(userId: string, eventId: string, photoIds: string[]): Promise<PhotoRow[]>;
   upsertDerivative(input: {
@@ -435,7 +458,11 @@ export interface Database {
     verdict: FeedbackVerdict;
     scoreAtTime: number | null;
   }): Promise<void>;
-  listFeedback(userId: string, eventId: string): Promise<Array<{ photoId: string; verdict: FeedbackVerdict }>>;
+  listFeedback(
+    userId: string,
+    eventId: string,
+    photoIds?: string[],
+  ): Promise<Array<{ photoId: string; verdict: FeedbackVerdict }>>;
   /** Newest first; `email` narrows to one participant. Reads agent A's match_runs/match_hits (006). */
   listMatchRuns(
     eventId: string,

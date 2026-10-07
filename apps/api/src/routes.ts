@@ -21,7 +21,9 @@ import {
   galleryFeedbackBodySchema,
   consentBodySchema,
   decodeGalleryCursor,
+  decodePublicGalleryCursor,
   encodeGalleryCursor,
+  encodePublicGalleryCursor,
   eventPatchBodySchema,
   galleryDownloadBodySchema,
   galleryQuerySchema,
@@ -30,8 +32,12 @@ import {
   invitePhotographerBodySchema,
   MAGIC_LINK_RATE_LIMIT,
   MULTIPART_THRESHOLD_BYTES,
+  PUBLIC_UPLOAD_RATE_LIMIT,
   objectKeys,
   participantsImportBodySchema,
+  publicGalleryQuerySchema,
+  publicPhotoReportSchema,
+  photoModerationSchema,
   requestLinkBodySchema,
   retentionBodySchema,
   SELFIE_FIELD_NAME,
@@ -72,6 +78,7 @@ import {
 } from "./http.js";
 import { ipMatches, parseIpList } from "./net.js";
 import { purgePhoto } from "./purge.js";
+import { incrementSharedLimit } from "./distributed-rate-limit.js";
 
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -180,6 +187,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const user = requireUser(c);
     requireRole(user, ["participant"]);
     const event = await loadEvent(deps, c.req.param("slug"));
+    await requireParticipantAccess(deps, user, event);
     const body = consentBodySchema.safeParse(await readJson(c));
     if (!body.success) throw new ApiError(400, MESSAGES.validation);
     const consent = await deps.db.insertConsent({
@@ -199,12 +207,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const user = requireUser(c);
     requireRole(user, ["participant"]);
     const event = await loadEvent(deps, c.req.param("slug"));
-    if (
-      event.access === "list" &&
-      !(await deps.db.isEventParticipant(event.id, user.email.toLowerCase()))
-    ) {
-      throw new ApiError(403, MESSAGES.notOnList);
-    }
+    await requireParticipantAccess(deps, user, event);
     if (!(await deps.db.hasActiveConsent(user.id, event.id))) {
       throw new ApiError(403, MESSAGES.consentRequired);
     }
@@ -245,18 +248,22 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const cursor = query.data.cursor ? decodeGalleryCursor(query.data.cursor) : undefined;
     if (cursor === null) throw new ApiError(400, MESSAGES.validation);
     const limit = query.data.limit;
-    const [latest, gallery, page, feedbackRows] = await Promise.all([
+    await requireParticipantAccess(deps, user, event);
+    const [latest, gallery, page] = await Promise.all([
       deps.db.latestMatchJob(user.id, event.id),
       deps.db.findGalleryByUser(user.id, event.id),
       deps.db.listGalleryPage(user.id, event.id, { limit, ...(cursor ? { cursor } : {}) }),
-      deps.db.listFeedback(user.id, event.id),
     ]);
+    const feedbackRows = await deps.db.listFeedback(
+      user.id,
+      event.id,
+      page.items.map((item) => item.photoId),
+    );
     const status = galleryStatus(latest?.status ?? null, gallery !== null, page.total);
     // v5 (D): `not_me` items stay in the page with the flag; the web hides them under "Nascoste".
     const feedbackByPhoto = new Map(feedbackRows.map((row) => [row.photoId, row.verdict]));
-    const items = [];
-    for (const row of page.items) {
-      items.push({
+    const items = await Promise.all(
+      page.items.map(async (row) => ({
         photoId: row.photoId,
         thumbUrl: await deps.objects.presignGet(row.thumbKey),
         webUrl: await deps.objects.presignGet(row.webKey),
@@ -265,8 +272,8 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
         createdAt: row.createdAt.toISOString(),
         originalReady: row.originalReady,
         feedback: feedbackByPhoto.get(row.photoId) ?? null,
-      });
-    }
+      })),
+    );
     const last = page.items[page.items.length - 1];
     const nextCursor =
       page.items.length === limit && last
@@ -283,21 +290,70 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     });
   });
 
+  app.get("/v1/events/:slug/public-gallery", async (c) => {
+    const user = requireUser(c);
+    requireRole(user, ["participant"]);
+    const event = await loadEvent(deps, c.req.param("slug"));
+    await requireParticipantAccess(deps, user, event);
+    const query = publicGalleryQuerySchema.safeParse(c.req.query());
+    if (!query.success) throw new ApiError(400, MESSAGES.validation);
+    const cursor = query.data.cursor ? decodePublicGalleryCursor(query.data.cursor) : undefined;
+    if (query.data.cursor && !cursor) throw new ApiError(400, MESSAGES.validation);
+    const page = await deps.db.listPublicGallery(event.id, { limit: query.data.limit, ...(cursor ? { cursor } : {}) });
+    const items = await Promise.all(
+      page.map(async (row) => ({
+        photoId: row.photoId,
+        thumbUrl: await deps.objects.presignGet(row.thumbKey),
+        webUrl: await deps.objects.presignGet(row.webKey),
+        createdAt: row.createdAt.toISOString(),
+        originalReady: row.originalReady,
+      })),
+    );
+    const last = page[page.length - 1];
+    return c.json({
+      limit: query.data.limit,
+      items,
+      nextCursor: page.length === query.data.limit && last ? encodePublicGalleryCursor(last) : null,
+    });
+  });
+
   app.post("/v1/events/:slug/gallery/download", async (c) => {
     const user = requireUser(c);
     requireRole(user, ["participant"]);
     const event = await loadEvent(deps, c.req.param("slug"));
+    await requireParticipantAccess(deps, user, event);
     const body = galleryDownloadBodySchema.safeParse(await readJson(c));
     if (!body.success) throw new ApiError(400, MESSAGES.validation);
     const photos = await ownedPhotos(deps, user, event, body.data.photoIds);
-    const urls = [];
-    for (const photo of photos) {
-      urls.push({
-        photoId: photo.id,
-        url: await deps.objects.presignGet(variantKey(photo, body.data.variant)),
-      });
-    }
+    const urls = await presignVariantUrls(deps, photos, body.data.variant);
     return c.json({ urls });
+  });
+
+  app.post("/v1/events/:slug/public-gallery/download", async (c) => {
+    const user = requireUser(c);
+    requireRole(user, ["participant"]);
+    const event = await loadEvent(deps, c.req.param("slug"));
+    await requireParticipantAccess(deps, user, event);
+    const body = galleryDownloadBodySchema.safeParse(await readJson(c));
+    if (!body.success) throw new ApiError(400, MESSAGES.validation);
+    const photos = await deps.db.listPublicPhotosByIds(event.id, body.data.photoIds);
+    if (photos.length !== new Set(body.data.photoIds).size) throw new ApiError(404, MESSAGES.notFound);
+    const urls = await presignVariantUrls(deps, photos, body.data.variant);
+    return c.json({ urls });
+  });
+
+  app.post("/v1/events/:slug/public-gallery/:photoId/report", async (c) => {
+    const user = requireUser(c);
+    requireRole(user, ["participant"]);
+    const event = await loadEvent(deps, c.req.param("slug"));
+    await requireParticipantAccess(deps, user, event);
+    const body = publicPhotoReportSchema.safeParse(await readJson(c));
+    if (!body.success) throw new ApiError(400, MESSAGES.validation);
+    const photos = await deps.db.listPublicPhotosByIds(event.id, [parseUuid(c.req.param("photoId"))]);
+    if (photos.length === 0) throw new ApiError(404, MESSAGES.notFound);
+    await deps.db.reportPhoto({ photoId: photos[0]!.id, reporterId: user.id, reason: body.data.reason });
+    await deps.db.insertAudit({ actorId: user.id, action: "photo.reported", target: `photo:${photos[0]!.id}`, meta: { eventId: event.id, reason: body.data.reason } });
+    return c.json({ status: "received" as const }, 202);
   });
 
   app.post("/v1/events/:slug/gallery/zip", async (c) => {
@@ -305,6 +361,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     requireRole(user, ["participant"]);
     if (!isTrustedFormOrigin(c, deps)) throw new ApiError(403, MESSAGES.forbidden);
     const event = await loadEvent(deps, c.req.param("slug"));
+    await requireParticipantAccess(deps, user, event);
     const request = await readZipRequest(c);
     const photos = await ownedPhotos(deps, user, event, request.photoIds);
     const entries = photos.map((photo, index) => ({
@@ -365,15 +422,39 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
 
   app.post("/v1/uploads/init", async (c) => {
     const user = requireUser(c);
-    requireRole(user, ["photographer"]);
     const body = uploadInitBodySchema.safeParse(await readJson(c));
     if (!body.success) throw new ApiError(400, MESSAGES.validation);
     const event = await deps.db.findEventById(body.data.eventId);
     if (!event) throw new ApiError(404, MESSAGES.notFound);
-    if (!(await deps.db.isEventPhotographer(event.id, user.id))) {
-      throw new ApiError(403, MESSAGES.forbidden);
-    }
     const input = body.data;
+    if (input.collection === "official") {
+      requireRole(user, ["photographer"]);
+      if (!(await deps.db.isEventPhotographer(event.id, user.id))) {
+        throw new ApiError(403, MESSAGES.forbidden);
+      }
+    } else {
+      // Public contributions still require an authenticated participant and event access.
+      // Anonymous uploads would make the 150k-photo target an unauditable abuse surface.
+      requireRole(user, ["participant"]);
+      await requireParticipantAccess(deps, user, event);
+      if (!rateLimitExempt(deps, c.get("ip"))) {
+        let recent: number | null = null;
+        try {
+          recent = await incrementSharedLimit({
+            url: deps.env.UPSTASH_REDIS_REST_URL,
+            token: deps.env.UPSTASH_REDIS_REST_TOKEN,
+            key: `rephoto:public-upload:${event.id}:${user.id}`,
+            windowSeconds: PUBLIC_UPLOAD_RATE_LIMIT.windowSeconds,
+          });
+        } catch (error) {
+          console.error(`shared upload limiter unavailable: ${String(error)}`);
+        }
+        if (recent === null) {
+          recent = (await deps.db.countUploadsSince(user.id, event.id, since(PUBLIC_UPLOAD_RATE_LIMIT.windowSeconds))) + 1;
+        }
+        if (recent > PUBLIC_UPLOAD_RATE_LIMIT.max) throw new ApiError(429, MESSAGES.rateLimited);
+      }
+    }
     const uploadId = randomUUID();
     if (input.stage === "web") {
       // Web stage: the 1600 px JPEG goes straight to the web derivative key; the photo row
@@ -385,7 +466,9 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       await deps.db.insertUploadSession({
         id: uploadId,
         eventId: event.id,
-        photographerId: user.id,
+        photographerId: input.collection === "official" ? user.id : null,
+        uploaderId: user.id,
+        collection: input.collection,
         s3UploadId: null,
         objectKey,
         sha256: input.sha256,
@@ -412,7 +495,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     if (input.photoId) {
       // Original stage of a web-first photo: the row exists and still waits for its bytes.
       const photo = await deps.db.findPhoto(input.photoId);
-      if (!photo || photo.photographerId !== user.id || photo.eventId !== event.id) {
+      if (!photo || photo.uploaderId !== user.id || photo.eventId !== event.id) {
         throw new ApiError(404, MESSAGES.notFound);
       }
       // An original that already arrived is a conflict, not a validation error: the client treats it as sent.
@@ -434,7 +517,9 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     await deps.db.insertUploadSession({
       id: uploadId,
       eventId: event.id,
-      photographerId: user.id,
+      photographerId: input.collection === "official" ? user.id : null,
+      uploaderId: user.id,
+      collection: input.collection,
       s3UploadId,
       objectKey,
       sha256: input.sha256,
@@ -469,8 +554,8 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
 
   app.post("/v1/uploads/:id/parts", async (c) => {
     const user = requireUser(c);
-    requireRole(user, ["photographer"]);
     const session = await ownUpload(deps, c.req.param("id"), user.id);
+    requireRole(user, session.collection === "public" ? ["participant"] : ["photographer"]);
     if (!session.s3UploadId) throw new ApiError(400, MESSAGES.validation);
     const body = uploadPartBodySchema.safeParse(await readJson(c));
     if (!body.success) throw new ApiError(400, MESSAGES.validation);
@@ -484,8 +569,8 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
 
   app.post("/v1/uploads/:id/complete", async (c) => {
     const user = requireUser(c);
-    requireRole(user, ["photographer"]);
     const session = await ownUpload(deps, c.req.param("id"), user.id);
+    requireRole(user, session.collection === "public" ? ["participant"] : ["photographer"]);
     if (session.status !== "open") throw new ApiError(409, MESSAGES.conflict);
     const body = uploadCompleteBodySchema.safeParse(await readJson(c));
     if (!body.success) throw new ApiError(400, MESSAGES.validation);
@@ -501,6 +586,11 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     }
     const stored = await deps.objects.head(session.objectKey);
     if (!stored || stored.bytes <= 0) throw new ApiError(400, MESSAGES.validation);
+    if (stored.contentType !== session.contentType) {
+      await deps.db.markUploadSession(session.id, "aborted");
+      await deps.objects.delete(session.objectKey);
+      throw new ApiError(400, MESSAGES.validation);
+    }
     const discard = async (status: 400 | 404, message: string): Promise<never> => {
       await deps.db.markUploadSession(session.id, "aborted");
       await deps.objects.delete(session.objectKey);
@@ -511,7 +601,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       // The row is read right before the flip so a repeated complete (same session retried,
       // or a second session for the same photo) sees the status the earlier one left.
       const photo = await deps.db.findPhoto(session.photoId);
-      if (!photo || photo.photographerId !== user.id) await discard(404, MESSAGES.notFound);
+      if (!photo || photo.uploaderId !== user.id) await discard(404, MESSAGES.notFound);
       else if (stored.bytes !== photo.bytes) await discard(400, MESSAGES.sizeMismatch);
       else if (photo.originalStatus !== "pending") {
         // Already received: same answer, no second verify (the object key is the same one).
@@ -548,7 +638,9 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       await deps.db.insertPhoto({
         id: photoId,
         eventId: session.eventId,
-        photographerId: user.id,
+        photographerId: session.collection === "official" ? user.id : null,
+        uploaderId: user.id,
+        collection: session.collection,
         sha256: session.sha256,
         originalKey: web ? objectKeys.original(session.eventId, photoId) : session.objectKey,
         contentType: web ? session.originalContentType ?? session.contentType : session.contentType,
@@ -568,6 +660,14 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       await deps.db.markUploadSession(session.id, "aborted");
       await deps.objects.delete(session.objectKey);
       throw new ApiError(409, MESSAGES.conflict);
+    }
+    if (session.collection === "public") {
+      await deps.db.setPhotoModeration({
+        photoId,
+        status: "pending",
+        reason: null,
+        actorId: user.id,
+      });
     }
     if (web) {
       await deps.db.upsertDerivative({ photoId, kind: "web", s3Key: session.objectKey });
@@ -711,6 +811,18 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       meta: { eventId: photo.eventId },
     });
     return c.body(null, 204);
+  });
+
+  app.patch("/v1/admin/photos/:id/moderation", async (c) => {
+    const user = requireUser(c);
+    requireRole(user, ["admin"]);
+    const body = photoModerationSchema.safeParse(await readJson(c));
+    if (!body.success) throw new ApiError(400, MESSAGES.validation);
+    const photo = await deps.db.findPhoto(parseUuid(c.req.param("id")));
+    if (!photo) throw new ApiError(404, MESSAGES.notFound);
+    await deps.db.setPhotoModeration({ photoId: photo.id, status: body.data.status, reason: body.data.reason, actorId: user.id });
+    await deps.db.insertAudit({ actorId: user.id, action: "photo.moderation_changed", target: `photo:${photo.id}`, meta: { status: body.data.status, reason: body.data.reason } });
+    return c.json({ status: body.data.status });
   });
 
   app.delete("/v1/admin/participants/:id", async (c) => {
@@ -1145,6 +1257,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const user = requireUser(c);
     requireRole(user, ["participant"]);
     const event = await loadEvent(deps, c.req.param("slug"));
+    await requireParticipantAccess(deps, user, event);
     const body = galleryFeedbackBodySchema.safeParse(await readJson(c));
     if (!body.success) throw new ApiError(400, MESSAGES.validation);
     // Only photos of the caller's own gallery can be judged.
@@ -1308,9 +1421,25 @@ async function loadEvent(deps: AppDeps, slug: string) {
   return event;
 }
 
-async function ownUpload(deps: AppDeps, id: string, photographerId: string) {
+/** Enforces event allowlists consistently for every participant-facing route. */
+async function requireParticipantAccess(
+  deps: AppDeps,
+  user: UserRow,
+  event: EventRow,
+): Promise<void> {
+  if (
+    event.access === "list" &&
+    !(await deps.db.isEventParticipant(event.id, user.email.toLowerCase()))
+  ) {
+    throw new ApiError(403, MESSAGES.notOnList);
+  }
+}
+
+async function ownUpload(deps: AppDeps, id: string, userId: string) {
   const session = await deps.db.findUploadSession(parseUuid(id));
-  if (!session || session.photographerId !== photographerId) {
+  // Ownership follows uploader_id (the actor who started the upload); photographer_id is kept
+  // only for backwards compatibility and equals uploader_id for rows created before 010.
+  if (!session || (session.uploaderId ?? session.photographerId) !== userId) {
     throw new ApiError(404, MESSAGES.notFound);
   }
   return session;
@@ -1351,6 +1480,20 @@ async function ownedPhotos(
 function variantKey(photo: PhotoRow, variant: DownloadVariant): string {
   if (variant === "web" || photo.originalStatus === "pending") return objectKeys.web(photo.id);
   return photo.originalKey;
+}
+
+/** Presigned download URLs for the given photos, in request order. */
+function presignVariantUrls(
+  deps: AppDeps,
+  photos: PhotoRow[],
+  variant: DownloadVariant,
+): Promise<Array<{ photoId: string; url: string }>> {
+  return Promise.all(
+    photos.map(async (photo) => ({
+      photoId: photo.id,
+      url: await deps.objects.presignGet(variantKey(photo, variant)),
+    })),
+  );
 }
 
 /** The extension follows the object actually served (see `variantKey`). */

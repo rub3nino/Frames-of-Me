@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { JobType, PhotoStatus, Role } from "@rephoto/contracts";
+import type { JobType, PhotoCollection, PhotoStatus, Role } from "@rephoto/contracts";
 import {
   JOB_MAX_ATTEMPTS,
   JOB_PRIORITY,
@@ -42,6 +42,8 @@ import type {
   PhotoAdminFilters,
   PhotoAdminRow,
   PhotoDetail,
+  PublicGalleryItem,
+  PublicGalleryCursor,
   ClaimOptions,
   GalleryMatchPatch,
   MatchHitInsert,
@@ -128,6 +130,8 @@ export class MemoryDatabase implements Database {
   private readonly invites: Invite[] = [];
   private readonly eventPhotographers = new Set<string>();
   private readonly eventParticipants = new Set<string>();
+  private readonly moderation = new Map<string, { status: "approved" | "pending" | "blocked"; reason: string | null; updatedBy: string }>();
+  private readonly reports = new Set<string>();
   // v5 (agent D): photos.filename/tags, gallery_feedback, and a read model of match_runs/match_hits.
   private readonly photoMeta = new Map<string, { filename: string | null; tags: string[] }>();
   private readonly feedback: FeedbackRow[] = [];
@@ -307,6 +311,15 @@ export class MemoryDatabase implements Database {
     }).length;
   }
 
+  async countUploadsSince(userId: string, eventId: string, since: Date): Promise<number> {
+    return [...this.uploads.values()].filter(
+      (upload) =>
+        (upload.uploaderId ?? upload.photographerId) === userId &&
+        upload.eventId === eventId &&
+        upload.createdAt >= since,
+    ).length;
+  }
+
   async findPhotoBySha(eventId: string, sha256: string): Promise<PhotoRow | null> {
     for (const photo of this.photos.values()) {
       if (photo.eventId === eventId && photo.sha256 === sha256) return photo;
@@ -326,7 +339,9 @@ export class MemoryDatabase implements Database {
   async insertUploadSession(input: {
     id: string;
     eventId: string;
-    photographerId: string;
+    photographerId: string | null;
+    uploaderId?: string;
+    collection?: PhotoCollection;
     s3UploadId: string | null;
     objectKey: string;
     sha256: string;
@@ -345,6 +360,8 @@ export class MemoryDatabase implements Database {
       id: input.id,
       eventId: input.eventId,
       photographerId: input.photographerId,
+      uploaderId: input.uploaderId ?? input.photographerId,
+      collection: input.collection ?? "official",
       s3UploadId: input.s3UploadId,
       objectKey: input.objectKey,
       sha256: input.sha256,
@@ -424,7 +441,9 @@ export class MemoryDatabase implements Database {
   async insertPhoto(input: {
     id: string;
     eventId: string;
-    photographerId: string;
+    photographerId: string | null;
+    uploaderId?: string;
+    collection?: PhotoCollection;
     sha256: string;
     originalKey: string;
     contentType: ImageContentType;
@@ -439,6 +458,8 @@ export class MemoryDatabase implements Database {
       id: input.id,
       eventId: input.eventId,
       photographerId: input.photographerId,
+      uploaderId: input.uploaderId ?? input.photographerId,
+      collection: input.collection ?? "official",
       sha256: input.sha256,
       originalKey: input.originalKey,
       contentType: input.contentType,
@@ -515,6 +536,44 @@ export class MemoryDatabase implements Database {
       if (photo) rows.push(photo);
     }
     return rows;
+  }
+
+  async listPublicPhotosByIds(eventId: string, photoIds: string[]): Promise<PhotoRow[]> {
+    const wanted = new Set(photoIds);
+    return [...this.photos.values()].filter(
+      (photo) => photo.eventId === eventId && photo.collection === "public" && wanted.has(photo.id),
+    );
+  }
+
+  async reportPhoto(input: { photoId: string; reporterId: string; reason: string }): Promise<boolean> {
+    const key = `${input.photoId}:${input.reporterId}`;
+    if (this.reports.has(key)) return false;
+    this.reports.add(key);
+    return true;
+  }
+
+  async setPhotoModeration(input: { photoId: string; status: "approved" | "pending" | "blocked"; reason: string | null; actorId: string }): Promise<void> {
+    this.moderation.set(input.photoId, { status: input.status, reason: input.reason, updatedBy: input.actorId });
+  }
+
+  async listPublicGallery(
+    eventId: string,
+    input: { limit: number; cursor?: PublicGalleryCursor },
+  ): Promise<PublicGalleryItem[]> {
+    return [...this.photos.values()]
+      .filter((photo) => photo.eventId === eventId && photo.collection === "public" && photo.status === "indexed" && (this.moderation.get(photo.id)?.status ?? "approved") === "approved")
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id))
+      .filter((photo) => !input.cursor || photo.createdAt < input.cursor.createdAt || (photo.createdAt.getTime() === input.cursor.createdAt.getTime() && photo.id < input.cursor.photoId))
+      // Mirror the postgres JOIN: drop photos without both derivatives BEFORE limiting, so a
+      // page holds up to `limit` renderable items rather than fewer.
+      .flatMap((photo) => {
+        const thumb = this.derivatives.find((row) => row.photoId === photo.id && row.kind === "thumb");
+        const web = this.derivatives.find((row) => row.photoId === photo.id && row.kind === "web");
+        return thumb && web
+          ? [{ photoId: photo.id, createdAt: photo.createdAt, thumbKey: thumb.s3Key, webKey: web.s3Key, originalReady: photo.originalStatus === "present" }]
+          : [];
+      })
+      .slice(0, input.limit);
   }
 
   async listOwnedPhotos(userId: string, eventId: string, photoIds: string[]): Promise<PhotoRow[]> {
@@ -1445,9 +1504,16 @@ export class MemoryDatabase implements Database {
   async listFeedback(
     userId: string,
     eventId: string,
+    photoIds?: string[],
   ): Promise<Array<{ photoId: string; verdict: FeedbackVerdict }>> {
+    const wanted = photoIds === undefined ? null : new Set(photoIds);
     return this.feedback
-      .filter((row) => row.userId === userId && row.eventId === eventId)
+      .filter(
+        (row) =>
+          row.userId === userId &&
+          row.eventId === eventId &&
+          (wanted === null || wanted.has(row.photoId)),
+      )
       .map((row) => ({ photoId: row.photoId, verdict: row.verdict }));
   }
 
