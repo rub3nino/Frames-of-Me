@@ -7,7 +7,11 @@ import {
   THROTTLE_REQUEUE_SECONDS,
 } from "@rephoto/contracts";
 import { isUniqueViolation, type Sql } from "./sql.js";
-import { DuplicateKeyError } from "./types.js";
+import {
+  AlbumRecognitionLockedError,
+  AlbumRecognitionNotAllowedError,
+  DuplicateKeyError,
+} from "./types.js";
 import type {
   AnchoredGallery,
   ClaimedJob,
@@ -50,15 +54,26 @@ import type {
   MatchHitInsert,
   MatchRunInsert,
   QueryVectorGallery,
+  AlbumInsert,
+  AlbumKind,
+  AlbumModeration,
+  AlbumPatch,
+  AlbumRow,
+  AlbumVisibility,
 } from "./types.js";
 
 const EVENT_ID = "00000000-0000-4000-8000-000000000001";
 const ADMIN_ID = "00000000-0000-4000-8000-000000000002";
 const PHOTOGRAPHER_ID = "00000000-0000-4000-8000-000000000003";
 const INVITE_ID = "00000000-0000-4000-8000-000000000004";
+/** v6: slug of the official album every event gets (migration 009). */
+const DEFAULT_ALBUM_SLUG = "ufficiale";
 
 const PHOTO_COLUMNS =
-  "id, event_id, photographer_id, sha256, status, original_key, content_type, bytes, original_status, indexed_at, error, created_at";
+  "id, event_id, photographer_id, sha256, status, original_key, content_type, bytes, original_status, indexed_at, error, created_at, album_id";
+/** v6: `albums` columns, in the order {@link mapAlbum} reads them. */
+const ALBUM_COLUMNS =
+  "id, event_id, slug, name, kind, recognition, moderation, visibility, max_photos_per_user, uploads_open, retention_days, first_upload_at, created_at";
 const EVENT_COLUMNS = "id, slug, name, retention_days, access, created_at";
 const UPLOAD_COLUMNS =
   "id, event_id, photographer_id, s3_upload_id, object_key, sha256, content_type, status, bytes, stage, photo_id, original_content_type, original_bytes, filename, tags, created_at";
@@ -439,17 +454,25 @@ export class PostgresDatabase implements Database {
     originalStatus?: OriginalStatus;
     filename?: string | null;
     tags?: string[];
+    albumId?: string;
   }): Promise<PhotoRow> {
     try {
+      // v6: without an explicit album the photo lands in the event's official album, which
+      // every event has (migration 009 backfills it and a trigger adds it to new events).
       const rows = await this.sql<PhotoSql[]>`
         insert into photos (
           id, event_id, photographer_id, sha256, status, original_key, content_type, bytes, original_status,
-          filename, tags
+          filename, tags, album_id
         )
         values (
           ${input.id}, ${input.eventId}, ${input.photographerId}, ${input.sha256},
           'uploaded', ${input.originalKey}, ${input.contentType}, ${input.bytes},
-          ${input.originalStatus ?? "present"}, ${input.filename ?? null}, ${input.tags ?? []}::text[]
+          ${input.originalStatus ?? "present"}, ${input.filename ?? null}, ${input.tags ?? []}::text[],
+          coalesce(
+            ${input.albumId ?? null}::uuid,
+            (select a.id from albums a
+              where a.event_id = ${input.eventId} and a.slug = ${DEFAULT_ALBUM_SLUG})
+          )
         )
         returning ${this.sql.unsafe(PHOTO_COLUMNS)}
       `;
@@ -1837,6 +1860,147 @@ export class PostgresDatabase implements Database {
       })),
     };
   }
+
+  // ---- albums and vector isolation v6 (agent A) -------------------------------------------
+
+  async createAlbum(input: AlbumInsert): Promise<AlbumRow> {
+    let row: AlbumSql | undefined;
+    try {
+      const rows = await this.sql<AlbumSql[]>`
+        insert into albums (
+          id, event_id, slug, name, kind, recognition, moderation, visibility,
+          max_photos_per_user, uploads_open, retention_days
+        )
+        values (
+          coalesce(${input.id ?? null}::uuid, gen_random_uuid()),
+          ${input.eventId}, ${input.slug}, ${input.name}, ${input.kind},
+          ${input.recognition ?? false}, ${input.moderation ?? "post"},
+          ${input.visibility ?? "participants"}, ${input.maxPhotosPerUser ?? null},
+          ${input.uploadsOpen ?? true}, ${input.retentionDays ?? null}
+        )
+        returning ${this.sql.unsafe(ALBUM_COLUMNS)}
+      `;
+      row = rows[0];
+    } catch (error) {
+      throw albumError(error);
+    }
+    if (!row) throw new Error("Album insert failed");
+    const album = mapAlbum(row);
+    if (album.recognition) await this.ensureAlbumVectorIndex(album.id);
+    return album;
+  }
+
+  async findAlbum(id: string): Promise<AlbumRow | null> {
+    const rows = await this.sql<AlbumSql[]>`
+      select ${this.sql.unsafe(ALBUM_COLUMNS)} from albums where id = ${id}
+    `;
+    return rows[0] ? mapAlbum(rows[0]) : null;
+  }
+
+  async findAlbumBySlug(eventId: string, slug: string): Promise<AlbumRow | null> {
+    const rows = await this.sql<AlbumSql[]>`
+      select ${this.sql.unsafe(ALBUM_COLUMNS)} from albums
+      where event_id = ${eventId} and slug = ${slug}
+    `;
+    return rows[0] ? mapAlbum(rows[0]) : null;
+  }
+
+  async listAlbums(eventId: string): Promise<AlbumRow[]> {
+    const rows = await this.sql<AlbumSql[]>`
+      select ${this.sql.unsafe(ALBUM_COLUMNS)} from albums
+      where event_id = ${eventId}
+      order by created_at, id
+    `;
+    return rows.map(mapAlbum);
+  }
+
+  async findDefaultAlbum(eventId: string): Promise<AlbumRow | null> {
+    return this.findAlbumBySlug(eventId, DEFAULT_ALBUM_SLUG);
+  }
+
+  async listRecognitionAlbumIds(eventId: string): Promise<string[]> {
+    const rows = await this.sql<{ id: string }[]>`
+      select id from albums
+      where event_id = ${eventId} and recognition
+      order by created_at, id
+    `;
+    return rows.map((row) => row.id);
+  }
+
+  async updateAlbum(id: string, patch: AlbumPatch): Promise<AlbumRow | null> {
+    let row: AlbumSql | undefined;
+    try {
+      // A `recognition` change after the first upload is refused by the trigger of
+      // migration 009 (SQLSTATE ALBRI), not here: no upload route can side-step it.
+      const rows = await this.sql<AlbumSql[]>`
+        update albums set
+          name = coalesce(${patch.name ?? null}, name),
+          recognition = coalesce(${patch.recognition ?? null}, recognition),
+          moderation = coalesce(${patch.moderation ?? null}, moderation),
+          visibility = coalesce(${patch.visibility ?? null}, visibility),
+          max_photos_per_user = ${
+            patch.maxPhotosPerUser === undefined
+              ? this.sql`max_photos_per_user`
+              : this.sql`${patch.maxPhotosPerUser}::int`
+          },
+          uploads_open = coalesce(${patch.uploadsOpen ?? null}, uploads_open),
+          retention_days = ${
+            patch.retentionDays === undefined
+              ? this.sql`retention_days`
+              : this.sql`${patch.retentionDays}::int`
+          }
+        where id = ${id}
+        returning ${this.sql.unsafe(ALBUM_COLUMNS)}
+      `;
+      row = rows[0];
+    } catch (error) {
+      throw albumError(error);
+    }
+    if (!row) return null;
+    const album = mapAlbum(row);
+    if (album.recognition) await this.ensureAlbumVectorIndex(album.id);
+    return album;
+  }
+
+  async markAlbumFirstUpload(albumId: string, at: Date = new Date()): Promise<void> {
+    await this.sql`
+      update albums set first_upload_at = ${at}
+      where id = ${albumId} and first_upload_at is null
+    `;
+  }
+
+  async findPhotoByAlbumSha(albumId: string, sha256: string): Promise<PhotoRow | null> {
+    const rows = await this.sql<PhotoSql[]>`
+      select ${this.sql.unsafe(PHOTO_COLUMNS)}
+      from photos where album_id = ${albumId} and sha256 = ${sha256}
+    `;
+    return rows[0] ? mapPhoto(rows[0]) : null;
+  }
+
+  /**
+   * The album's partial HNSW index over `face_vectors` (migration 011). A no-op when the
+   * function is absent (a database migrated before 011, or without pgvector).
+   */
+  private async ensureAlbumVectorIndex(albumId: string): Promise<void> {
+    const rows = await this.sql<{ present: boolean }[]>`
+      select to_regprocedure('public.face_vectors_album_index(uuid)') is not null as present
+    `;
+    if (rows[0]?.present !== true) return;
+    await this.sql`select face_vectors_album_index(${albumId})`;
+  }
+}
+
+/** Maps the album constraints of migration 009 to their typed errors. */
+function albumError(error: unknown): unknown {
+  if (isUniqueViolation(error)) return new DuplicateKeyError();
+  if (typeof error !== "object" || error === null || !("code" in error)) return error;
+  const code = (error as { code?: unknown }).code;
+  if (code === "ALBRI") return new AlbumRecognitionLockedError();
+  const constraint = (error as { constraint_name?: unknown }).constraint_name;
+  if (code === "23514" && constraint === "crowd_never_recognizes") {
+    return new AlbumRecognitionNotAllowedError();
+  }
+  return error;
 }
 
 /** Escapes `%` and `_` so a filename prefix search does not become a wildcard. */
@@ -1865,6 +2029,22 @@ type PhotoSql = {
   original_status: OriginalStatus;
   indexed_at: Date | null;
   error: string | null;
+  created_at: Date;
+  album_id: string;
+};
+type AlbumSql = {
+  id: string;
+  event_id: string;
+  slug: string;
+  name: string;
+  kind: AlbumKind;
+  recognition: boolean;
+  moderation: AlbumModeration;
+  visibility: AlbumVisibility;
+  max_photos_per_user: number | null;
+  uploads_open: boolean;
+  retention_days: number | null;
+  first_upload_at: Date | null;
   created_at: Date;
 };
 type UploadSql = {
@@ -1941,6 +2121,24 @@ function mapPhoto(row: PhotoSql): PhotoRow {
     originalStatus: row.original_status,
     indexedAt: row.indexed_at,
     error: row.error,
+    createdAt: row.created_at,
+    albumId: row.album_id,
+  };
+}
+function mapAlbum(row: AlbumSql): AlbumRow {
+  return {
+    id: row.id,
+    eventId: row.event_id,
+    slug: row.slug,
+    name: row.name,
+    kind: row.kind,
+    recognition: row.recognition,
+    moderation: row.moderation,
+    visibility: row.visibility,
+    maxPhotosPerUser: row.max_photos_per_user === null ? null : Number(row.max_photos_per_user),
+    uploadsOpen: row.uploads_open,
+    retentionDays: row.retention_days === null ? null : Number(row.retention_days),
+    firstUploadAt: row.first_upload_at,
     createdAt: row.created_at,
   };
 }

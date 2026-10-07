@@ -254,6 +254,16 @@ async function indexPhoto(photoId: string, deps: WorkerDeps): Promise<void> {
   if (photo.originalKey.startsWith("selfies/")) {
     throw new Error("Refusing to index a selfie");
   }
+  const album = await deps.db.findAlbum(photo.albumId);
+  if (!album) throw new Error("Album missing");
+  if (!album.recognition) {
+    // v6 (decision 2, second half): an album without recognition is never embedded. No
+    // bytes reach the face service, no vector is computed and none is stored; the photo
+    // still completes its pipeline so it is served, counted and retained like any other.
+    // There is nothing to attach either: no face row exists for it.
+    await deps.db.setPhotoIndexed(photo.id);
+    return;
+  }
   const existing = await deps.db.listExternalIds(photo.id);
   if (photo.status === "indexed" && existing.length > 0) return;
   const imageBytes = await detectionBytes(photo, deps);
@@ -267,6 +277,7 @@ async function indexPhoto(photoId: string, deps: WorkerDeps): Promise<void> {
     photoId: photo.id,
     imageBytes,
     contentType: "image/jpeg",
+    albumId: photo.albumId,
   });
   await deps.db.replaceFaces(
     photo.id,
@@ -329,6 +340,9 @@ type AttachCandidate = { faceId: string; score: number };
 async function attachPhoto(photoId: string, deps: WorkerDeps): Promise<void> {
   const photo = await deps.db.findPhoto(photoId);
   if (!photo) return;
+  // v6: an album without recognition holds no vector, so there is nothing to attach from.
+  const album = await deps.db.findAlbum(photo.albumId);
+  if (!album?.recognition) return;
   const faces = await deps.db.findFaceRowsByPhoto(photo.id);
   if (faces.length === 0) return;
   // Nothing to attach to yet (uploads usually start before the first selfie): skip the searches.
@@ -348,6 +362,7 @@ async function attachPhoto(photoId: string, deps: WorkerDeps): Promise<void> {
     const hits = await deps.faces.searchFaces({
       eventId: photo.eventId,
       externalFaceId: face.externalId,
+      albumIds: [photo.albumId],
     });
     for (const hit of hits) {
       if (hit.photoId === photo.id) continue;
@@ -472,6 +487,9 @@ async function matchSelfie(
   }
   const embedSelfie = deps.faces.embedSelfie?.bind(deps.faces);
   const searchByVector = deps.faces.searchByVector?.bind(deps.faces);
+  // v6: only albums with recognition hold vectors, and the search is restricted to them so
+  // the album filter is served by an index instead of applied after it (A3).
+  const albumIds = await deps.db.listRecognitionAlbumIds(job.eventId);
   const started = Date.now();
   let hits: SearchHit[];
   let queryEmbedding: number[] | null = null;
@@ -492,12 +510,14 @@ async function matchSelfie(
       eventId: job.eventId,
       embedding: queryEmbedding,
       minCosine: deps.env.MATCH_LOG ? MATCH_LOG_MIN_COSINE : deps.env.INSIGHTFACE_MIN_COSINE,
+      albumIds,
     });
   } else {
     hits = await deps.faces.search({
       eventId: job.eventId,
       imageBytes,
       contentType: "image/jpeg",
+      albumIds,
     });
   }
   const engineMs = Date.now() - started;

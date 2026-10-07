@@ -265,7 +265,14 @@ export async function sessionCookie(db: MemoryDatabase, userId: string): Promise
 /** Inserts a photo row and its original object, as an upload completion would. */
 export async function storePhoto(
   deps: Pick<WorkerDeps, "db" | "objects">,
-  input: { eventId: string; photographerId: string; bytes: Uint8Array; sha256?: string },
+  input: {
+    eventId: string;
+    photographerId: string;
+    bytes: Uint8Array;
+    sha256?: string;
+    /** v6: the album; the event's official album when absent. */
+    albumId?: string;
+  },
 ): Promise<string> {
   const photoId = randomUUID();
   const originalKey = objectKeys.original(input.eventId, photoId);
@@ -277,6 +284,7 @@ export async function storePhoto(
     originalKey,
     contentType: "image/png",
     bytes: input.bytes.byteLength,
+    ...(input.albumId ? { albumId: input.albumId } : {}),
   });
   await deps.objects.put(originalKey, input.bytes, "image/png");
   return photoId;

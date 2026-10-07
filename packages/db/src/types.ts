@@ -47,6 +47,8 @@ export type PhotoRow = {
   indexedAt: Date | null;
   error: string | null;
   createdAt: Date;
+  /** v6: the album the photo belongs to (`photos.album_id`, migration 009). */
+  albumId: string;
 };
 
 export type UploadSessionRow = {
@@ -236,6 +238,8 @@ export interface Database {
     /** v5: client filename and free tags (`photos.filename`, `photos.tags`). */
     filename?: string | null;
     tags?: string[];
+    /** v6: the album; the event's official album (`ufficiale`) when absent. */
+    albumId?: string;
   }): Promise<PhotoRow>;
   findPhoto(id: string): Promise<PhotoRow | null>;
   setOriginalStatus(photoId: string, status: OriginalStatus): Promise<void>;
@@ -446,6 +450,98 @@ export interface Database {
   exportFeedback(eventId: string): AsyncIterable<FeedbackExportRow>;
   /** Queue view by type, age of the oldest queued job and the last failures. Separate from `metrics()`. */
   metricsExtras(): Promise<MetricsExtras>;
+
+  // ---- albums and vector isolation v6 (agent A) -------------------------------------------
+  /**
+   * Throws `DuplicateKeyError` when `(eventId, slug)` exists and
+   * `AlbumRecognitionNotAllowedError` for `kind = 'crowd'` with `recognition = true`
+   * (the database `check` is the authority; this is the typed mapping of it).
+   * With `recognition = true` the album's partial vector index is created too.
+   */
+  createAlbum(input: AlbumInsert): Promise<AlbumRow>;
+  findAlbum(id: string): Promise<AlbumRow | null>;
+  findAlbumBySlug(eventId: string, slug: string): Promise<AlbumRow | null>;
+  /** Oldest first (`created_at, id`). */
+  listAlbums(eventId: string): Promise<AlbumRow[]>;
+  /** The event's official album (`slug = 'ufficiale'`), created with the event. */
+  findDefaultAlbum(eventId: string): Promise<AlbumRow | null>;
+  /** Albums of the event with `recognition = true`: the only ones that ever hold vectors. */
+  listRecognitionAlbumIds(eventId: string): Promise<string[]>;
+  /**
+   * Fields left `undefined` are untouched. Throws `AlbumRecognitionLockedError` when
+   * `recognition` would change after `first_upload_at` was set, and
+   * `AlbumRecognitionNotAllowedError` when the result would be a recognising crowd album.
+   */
+  updateAlbum(id: string, patch: AlbumPatch): Promise<AlbumRow | null>;
+  /** Sets `first_upload_at` if it is still null; a no-op afterwards. */
+  markAlbumFirstUpload(albumId: string, at?: Date): Promise<void>;
+  /** Album-scoped dedup: the same bytes in another album are a different photo. */
+  findPhotoByAlbumSha(albumId: string, sha256: string): Promise<PhotoRow | null>;
+}
+
+// ---- albums and vector isolation v6 (agent A) ---------------------------------------------
+
+export type AlbumKind = "official" | "crowd";
+/** `pre` and `post` are the moderation modes of v6 C; `off` is the v5 behaviour. */
+export type AlbumModeration = "pre" | "post" | "off";
+export type AlbumVisibility = "participants" | "link" | "staff";
+
+export type AlbumRow = {
+  id: string;
+  eventId: string;
+  slug: string;
+  name: string;
+  kind: AlbumKind;
+  /** Face recognition applies to this album. Always false for `crowd` (database `check`). */
+  recognition: boolean;
+  moderation: AlbumModeration;
+  visibility: AlbumVisibility;
+  maxPhotosPerUser: number | null;
+  uploadsOpen: boolean;
+  retentionDays: number | null;
+  /** Set by the first photo of the album; `recognition` is immutable from then on. */
+  firstUploadAt: Date | null;
+  createdAt: Date;
+};
+
+export type AlbumInsert = {
+  id?: string;
+  eventId: string;
+  slug: string;
+  name: string;
+  kind: AlbumKind;
+  recognition?: boolean;
+  moderation?: AlbumModeration;
+  visibility?: AlbumVisibility;
+  maxPhotosPerUser?: number | null;
+  uploadsOpen?: boolean;
+  retentionDays?: number | null;
+};
+
+export type AlbumPatch = {
+  name?: string;
+  recognition?: boolean;
+  moderation?: AlbumModeration;
+  visibility?: AlbumVisibility;
+  maxPhotosPerUser?: number | null;
+  uploadsOpen?: boolean;
+  retentionDays?: number | null;
+};
+
+/** `kind = 'crowd'` with `recognition = true`: refused by `albums_crowd_never_recognizes`. */
+export class AlbumRecognitionNotAllowedError extends Error {
+  constructor() {
+    super("a crowd album cannot use face recognition");
+    this.name = "AlbumRecognitionNotAllowedError";
+  }
+}
+
+/** `recognition` changed after `albums.first_upload_at` was set (decision 3, frozen). */
+export class AlbumRecognitionLockedError extends Error {
+  constructor() {
+    super("recognition cannot change once the album has its first upload");
+    this.name = "AlbumRecognitionLockedError";
+  }
 }
 
 // ---- admin and participant tooling v5 (agent D) --------------------------------------------

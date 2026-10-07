@@ -795,3 +795,100 @@ export const galleryFeedbackResponseSchema = z
 export const webConfigResponseSchema = z
   .object({ eventSlug: eventSlugSchema })
   .strict();
+
+// ---- albums (v6, agent A) -------------------------------------------------------------
+//
+// `albums` is the new admin-created entity (migration 009). It is not `galleries` (the
+// per-user personal match gallery) and not a Rekognition `collection`. Italian UI:
+// "Album ufficiale" / "Album di tutti".
+
+export const albumKindSchema = z.enum(["official", "crowd"]);
+export type AlbumKind = z.infer<typeof albumKindSchema>;
+
+export const albumModerationSchema = z.enum(["pre", "post", "off"]);
+export type AlbumModeration = z.infer<typeof albumModerationSchema>;
+
+export const albumVisibilitySchema = z.enum(["participants", "link", "staff"]);
+export type AlbumVisibility = z.infer<typeof albumVisibilitySchema>;
+
+/** Same shape as an event slug: lowercase, hyphen-separated. Unique within the event. */
+export const albumSlugSchema = eventSlugSchema;
+
+/** Slug of the official album every event gets (migration 009). */
+export const DEFAULT_ALBUM_SLUG = "ufficiale";
+
+export const ALBUM_MAX_PHOTOS_PER_USER_MAX = 1000;
+
+export const albumSchema = z
+  .object({
+    id: z.string().uuid(),
+    eventId: z.string().uuid(),
+    slug: albumSlugSchema,
+    name: z.string().min(1).max(120),
+    kind: albumKindSchema,
+    /** Always false for `kind = 'crowd'`: a database `check` refuses the pair. */
+    recognition: z.boolean(),
+    moderation: albumModerationSchema,
+    visibility: albumVisibilitySchema,
+    maxPhotosPerUser: z.number().int().positive().nullable(),
+    uploadsOpen: z.boolean(),
+    retentionDays: z.number().int().positive().nullable(),
+    /** Set by the album's first photo; `recognition` is read-only from then on. */
+    firstUploadAt: z.string().datetime().nullable(),
+    createdAt: z.string().datetime(),
+  })
+  .strict();
+
+export type Album = z.infer<typeof albumSchema>;
+
+/**
+ * A crowd album never recognises faces (decision 2, frozen): the body is refused here as
+ * well as by the `crowd_never_recognizes` database constraint.
+ */
+export const createAlbumBodySchema = z
+  .object({
+    slug: albumSlugSchema,
+    name: z.string().trim().min(1).max(120),
+    kind: albumKindSchema,
+    recognition: z.boolean().default(false),
+    moderation: albumModerationSchema.default("post"),
+    visibility: albumVisibilitySchema.default("participants"),
+    maxPhotosPerUser: z.number().int().positive().max(ALBUM_MAX_PHOTOS_PER_USER_MAX).nullable().default(null),
+    uploadsOpen: z.boolean().default(true),
+    retentionDays: z.number().int().positive().max(3650).nullable().default(null),
+  })
+  .strict()
+  .refine((body) => !(body.kind === "crowd" && body.recognition), {
+    message: "a crowd album cannot use face recognition",
+    path: ["recognition"],
+  });
+
+/** Every field optional; `recognition` is refused once the album has its first upload. */
+export const updateAlbumBodySchema = z
+  .object({
+    name: z.string().trim().min(1).max(120).optional(),
+    recognition: z.boolean().optional(),
+    moderation: albumModerationSchema.optional(),
+    visibility: albumVisibilitySchema.optional(),
+    maxPhotosPerUser: z.number().int().positive().max(ALBUM_MAX_PHOTOS_PER_USER_MAX).nullable().optional(),
+    uploadsOpen: z.boolean().optional(),
+    retentionDays: z.number().int().positive().max(3650).nullable().optional(),
+  })
+  .strict();
+
+export const albumsResponseSchema = z.object({ albums: z.array(albumSchema) }).strict();
+
+export const albumResponseSchema = z.object({ album: albumSchema }).strict();
+
+/**
+ * Album-scoped dedup (migration 009 replaces `photos unique (event_id, sha256)` with
+ * `unique (album_id, sha256)`): the same bytes in another album are a new photo, the same
+ * bytes in the same album are already uploaded — an answer, not an error.
+ */
+export const albumUploadDedupeResponseSchema = z
+  .object({
+    status: z.literal("already-uploaded"),
+    photoId: z.string().uuid(),
+    albumId: z.string().uuid(),
+  })
+  .strict();
