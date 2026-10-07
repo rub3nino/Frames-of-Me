@@ -141,7 +141,9 @@ function SelfieFlow() {
         <div>
           <h1>Consenso</h1>
           <p className="fine">
-            Puoi ritirare il consenso quando vuoi: si possono cancellare account e ricerche.
+            Puoi ritirare il consenso quando vuoi da{" "}
+            <Link href="/i-miei-dati">I miei dati</Link>: cancelliamo la galleria e il modello del
+            tuo volto.
           </p>
         </div>
         <label className="consent">

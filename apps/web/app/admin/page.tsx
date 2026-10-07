@@ -14,6 +14,7 @@ import { StatusSection } from "@/components/admin/status";
 import { ExportSection } from "@/components/admin/export";
 import { ResetSection } from "@/components/admin/reset";
 import { ManageSection } from "@/components/admin/manage";
+import { RetentionSection } from "@/components/admin/retention"; // v6 G (agent G)
 
 type Section = "eventi" | "link" | "gallerie" | "foto" | "stato" | "esporta" | "gestione" | "reset";
 
@@ -121,6 +122,7 @@ function AdminHome() {
       </nav>
 
       {section === "stato" ? <StatusSection /> : null}
+      {section === "stato" ? <RetentionSection /> : null}
       {section === "eventi" ? (
         <EventsSection
           events={events}

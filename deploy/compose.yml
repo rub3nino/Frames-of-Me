@@ -76,6 +76,13 @@ x-app-env: &app_env
   TRUSTED_PROXY_HOPS: "1"
   WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
   WORKER_PUBLISH_METRICS: "false"
+  # v6 G — automatic retention. The scheduler runs inside the worker (every replica; the claim
+  # in `retention_schedule` makes it one run per event per window), so there is no cron on the
+  # host and nothing to install by hand. The api reads the same variables only to show the
+  # window and the next run on /admin → Stato. See README.md § 11 bis.
+  RETENTION_SCHEDULER: ${RETENTION_SCHEDULER:-true}
+  RETENTION_WINDOW_HOURS: ${RETENTION_WINDOW_HOURS:-24}
+  RETENTION_TICK_SECONDS: ${RETENTION_TICK_SECONDS:-300}
 
 services:
   # ------------------------------------------------------------------ edge

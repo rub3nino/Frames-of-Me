@@ -94,8 +94,11 @@ export type JobLogEntry = {
   error?: string;
   /** `match` only: the selfie failed the engine's liveness check and got an empty gallery. */
   liveness?: "rejected";
-  /** `match` only: the selfie was rejected by a quality gate (`reason` says which). */
-  match?: "rejected";
+  /**
+   * `match` only: `rejected` = the selfie failed a quality gate (`reason` says which);
+   * `withdrawn` = the consent was withdrawn after the job was enqueued (v6 G).
+   */
+  match?: "rejected" | "withdrawn";
   reason?: SelfieRejectReason;
   /** `match` only: photos in the rebuilt gallery. */
   hits?: number;
@@ -462,6 +465,19 @@ async function matchSelfie(
   job: { type: "match" } & MatchPayload,
   deps: WorkerDeps,
 ): Promise<JobNote | undefined> {
+  // v6 G: the api requires an active consent before it accepts a selfie, but the job may sit
+  // in the queue (or be re-enqueued by an admin rematch) while the participant withdraws.
+  // Without this check the `match` would rebuild the gallery and store a new selfie vector
+  // right after the withdrawal deleted both.
+  //
+  // The test is "withdrawn and not renewed", not "has an active consent": consent presence is
+  // the api's gate, and a job for a user with no consent row at all is a pre-v6 fixture or an
+  // operator action, not a withdrawal. A re-consent (a new row) lets the match run again.
+  const consent = await deps.db.findConsentState(job.userId, job.eventId);
+  if (consent.grantedAt === null && consent.withdrawnAt !== null) {
+    await deps.objects.delete(job.selfieKey);
+    return { match: "withdrawn" };
+  }
   const selfie = await deps.objects.get(job.selfieKey);
   if (!selfie) throw new Error("Selfie object missing");
   const previousSelfieKey = await keptSelfieKey(job, deps);
@@ -712,14 +728,48 @@ function cosineScore(
   return 0.8 + 0.2 * Math.min(1, Math.max(0, t));
 }
 
+/**
+ * Retention of one event (v6 G: album-aware).
+ *
+ * `events.retention_days` is the event's clock; since migration 009 an album may set its own
+ * `albums.retention_days`, shorter (a crowd album kept for a week) or longer. Every photo
+ * belongs to exactly one album (`photos.album_id`, not null since 009), so the pass runs per
+ * album with `album.retentionDays ?? event.retentionDays`. A crowd album needs nothing
+ * special: it holds no vector at all, and `deletePhotosBefore` finds none to delete.
+ *
+ * The event-wide pass stays as the fallback for a database where the albums of an event are
+ * somehow missing: without it a failed 009 backfill would silently mean no retention at all.
+ */
 async function retainEvent(
   job: { type: "retention" } & RetentionPayload,
   deps: WorkerDeps,
 ): Promise<void> {
   const event = await deps.db.findEventById(job.eventId);
   if (!event) return;
-  const cutoff = new Date(Date.now() - event.retentionDays * 24 * 60 * 60 * 1000);
-  await deletePhotosBefore(event, cutoff, job.actorId, { retention: true }, deps);
+  const now = Date.now();
+  const cutoffOf = (days: number): Date => new Date(now - days * 24 * 60 * 60 * 1000);
+  const cutoff = cutoffOf(event.retentionDays);
+  const albums = await deps.db.listAlbums(event.id);
+  if (albums.length === 0) {
+    await deletePhotosBefore(
+      event,
+      cutoff,
+      job.actorId,
+      { retention: true, scheduled: job.actorId === null },
+      deps,
+    );
+  }
+  for (const album of albums) {
+    const days = album.retentionDays ?? event.retentionDays;
+    await deletePhotosBefore(
+      event,
+      cutoffOf(days),
+      job.actorId,
+      { retention: true, albumId: album.id, retentionDays: days, scheduled: job.actorId === null },
+      deps,
+      album.id,
+    );
+  }
   // Galleries matched before the cutoff lose their biometric part (selfie vector, anchors)
   // and the kept selfie object, if any: the match itself is as old as the photos it found.
   for (const key of await deps.db.expireGalleryMatches(event.id, cutoff)) {
@@ -756,21 +806,24 @@ async function resetEvent(job: { type: "reset" } & ResetPayload, deps: WorkerDep
   });
 }
 
-/** Deletes the photos of the event created before `cutoff`, in batches; returns how many. */
+/**
+ * Deletes the photos created before `cutoff`, in batches; returns how many. With `albumId`
+ * only that album's photos are considered (v6 G: `albums.retention_days`), otherwise the
+ * whole event's.
+ */
 async function deletePhotosBefore(
   event: EventRow,
   cutoff: Date,
-  actorId: string,
+  actorId: string | null,
   auditMeta: Record<string, unknown>,
   deps: WorkerDeps,
+  albumId?: string,
 ): Promise<number> {
   let deleted = 0;
   for (;;) {
-    const photos = await deps.db.listPhotosCreatedBefore(
-      event.id,
-      cutoff,
-      RETENTION_PHOTO_BATCH,
-    );
+    const photos = albumId
+      ? await deps.db.listAlbumPhotosCreatedBefore(albumId, cutoff, RETENTION_PHOTO_BATCH)
+      : await deps.db.listPhotosCreatedBefore(event.id, cutoff, RETENTION_PHOTO_BATCH);
     if (photos.length === 0) break;
     const photoIds = photos.map((photo) => photo.id);
     const externalIds = await deps.db.listExternalIdsForPhotos(photoIds);

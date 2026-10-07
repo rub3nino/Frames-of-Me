@@ -90,6 +90,8 @@ import {
   verifyCallbackState,
 } from "./oauth.js";
 import { purgePhoto } from "./purge.js";
+// v6 G (agent G): the privacy routes live in their own file; this is the only line they add here.
+import { registerPrivacyRoutes } from "./routes.privacy.js";
 
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -1360,6 +1362,8 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     await startSession(c, deps, user);
     return c.json({ user: publicUser(user) });
   });
+
+  registerPrivacyRoutes(app, deps); // v6 G (agent G): apps/api/src/routes.privacy.ts
 }
 
 // ---- admin and participant tooling v5 (agent D) helpers --------------------------------------

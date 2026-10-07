@@ -958,3 +958,112 @@ export const googleCallbackQuerySchema = z.object({
   state: z.string().min(1).max(4096).optional(),
   error: z.string().min(1).max(200).optional(),
 });
+
+// ---- privacy: consent withdrawal and retention schedule v6 (agent G) ----------------------
+
+/**
+ * `GET /v1/events/:slug/privacy` — what the participant area ("I miei dati") shows: the state
+ * of their own consent and what of theirs is stored. Never anybody else's data.
+ */
+export const privacyStateResponseSchema = z
+  .object({
+    event: z.object({ slug: z.string().min(1), name: z.string().min(1) }).strict(),
+    /** The active consent, or null when there is none (never given, or withdrawn). */
+    consent: z
+      .object({
+        grantedAt: z.string().datetime(),
+        textVersion: z.string().min(1),
+      })
+      .strict()
+      .nullable(),
+    /** When the consent was last withdrawn; null when it never was. */
+    withdrawnAt: z.string().datetime().nullable(),
+    /** The personal match gallery, or null when there is none (no selfie yet, or withdrawn). */
+    gallery: z
+      .object({
+        photos: z.number().int().nonnegative(),
+        /** The selfie template (`galleries.query_embedding`) is stored. */
+        selfieVector: z.boolean(),
+        anchors: z.number().int().nonnegative(),
+        matchedAt: z.string().datetime().nullable(),
+      })
+      .strict()
+      .nullable(),
+    /** Photos of the event the participant uploaded themselves (crowd albums). Not biometric. */
+    uploads: z.number().int().nonnegative(),
+  })
+  .strict();
+
+/**
+ * `POST /v1/events/:slug/consent/withdraw` (the participant, for themselves).
+ * `confirm` must be the literal true: a withdrawal deletes data and is never a side effect
+ * of a stray request.
+ */
+export const consentWithdrawBodySchema = z
+  .object({ confirm: z.literal(true) })
+  .strict();
+
+/** `POST /v1/admin/participants/:id/consent/withdraw` (an admin, on request of the person). */
+export const adminConsentWithdrawBodySchema = z
+  .object({
+    eventId: z.string().uuid(),
+    /** Free text kept in the audit row: how the request arrived (e-mail, help desk, phone). */
+    note: z.string().min(1).max(500).optional(),
+  })
+  .strict();
+
+/** What was removed. The same shape for the participant route and the admin one. */
+export const consentWithdrawResponseSchema = z
+  .object({
+    withdrawnAt: z.string().datetime(),
+    deleted: z
+      .object({
+        consents: z.number().int().nonnegative(),
+        gallery: z.boolean(),
+        galleryItems: z.number().int().nonnegative(),
+        selfieVector: z.boolean(),
+        anchors: z.number().int().nonnegative(),
+        faceVectors: z.number().int().nonnegative(),
+        selfieObjects: z.number().int().nonnegative(),
+        feedback: z.number().int().nonnegative(),
+        matchRuns: z.number().int().nonnegative(),
+      })
+      .strict(),
+  })
+  .strict();
+
+export const retentionOutcomeSchema = z.enum(["enqueued", "failed"]);
+
+/**
+ * `GET /v1/admin/retention/schedule` — one row per event for the admin status screen:
+ * when the scheduler last enqueued a run, when the next window opens, how the last job
+ * ended, and whether anything deserves an alarm.
+ */
+export const adminRetentionScheduleResponseSchema = z
+  .object({
+    /** The scheduler runs inside the worker; false = RETENTION_SCHEDULER is off. */
+    enabled: z.boolean(),
+    windowSeconds: z.number().int().positive(),
+    events: z.array(
+      z
+        .object({
+          eventId: z.string().uuid(),
+          slug: z.string().min(1),
+          retentionDays: z.number().int().positive(),
+          lastRunAt: z.string().datetime().nullable(),
+          /** Start of the window the last run belonged to. */
+          windowStart: z.string().datetime().nullable(),
+          nextRunAt: z.string().datetime(),
+          runs: z.number().int().nonnegative(),
+          outcome: retentionOutcomeSchema.nullable(),
+          jobId: z.string().uuid().nullable(),
+          jobStatus: z.enum(["queued", "running", "done", "error"]).nullable(),
+          jobError: z.string().nullable(),
+          jobFinishedAt: z.string().datetime().nullable(),
+          /** Null when nothing is wrong; otherwise why (`failed`, `job_error`, `skipped`, `never`). */
+          alarm: z.enum(["failed", "job_error", "skipped", "never"]).nullable(),
+        })
+        .strict(),
+    ),
+  })
+  .strict();

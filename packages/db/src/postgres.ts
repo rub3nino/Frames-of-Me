@@ -63,6 +63,11 @@ import type {
   // v6 (agent B)
   EventCodeRow,
   IdentityProvider,
+  // v6 (agent G)
+  ConsentState,
+  ConsentWithdrawal,
+  RetentionOutcome,
+  RetentionStatusRow,
 } from "./types.js";
 
 const EVENT_ID = "00000000-0000-4000-8000-000000000001";
@@ -2109,6 +2114,253 @@ export class PostgresDatabase implements Database {
     `;
     return rows[0]?.email_verified_at ?? null;
   }
+
+  // ---- privacy and retention scheduling v6 (agent G) ---------------------------------------
+
+  async findConsentState(userId: string, eventId: string): Promise<ConsentState> {
+    const vectors = await this.queryVectorAvailable();
+    const [consents, galleries] = await Promise.all([
+      this.sql<{ granted_at: Date; text_version: string; withdrawn_at: Date | null }[]>`
+        select granted_at, text_version, withdrawn_at from consents
+        where user_id = ${userId} and event_id = ${eventId}
+        order by granted_at desc, id desc
+      `,
+      this.sql<{
+        id: string;
+        matched_at: Date | null;
+        anchors: number;
+        has_vector: boolean;
+        photos: number;
+      }[]>`
+        select g.id,
+               g.matched_at,
+               cardinality(g.anchor_face_ids) as anchors,
+               ${vectors ? this.sql`(g.query_embedding is not null)` : this.sql`false`} as has_vector,
+               (select count(*)::int from gallery_items gi where gi.gallery_id = g.id) as photos
+        from galleries g
+        where g.user_id = ${userId} and g.event_id = ${eventId}
+      `,
+    ]);
+    const active = consents.find((row) => row.withdrawn_at === null) ?? null;
+    const withdrawn = consents.find((row) => row.withdrawn_at !== null)?.withdrawn_at ?? null;
+    const gallery = galleries[0];
+    return {
+      grantedAt: active?.granted_at ?? null,
+      textVersion: active?.text_version ?? null,
+      withdrawnAt: withdrawn,
+      gallery: gallery
+        ? {
+            photos: gallery.photos,
+            selfieVector: gallery.has_vector,
+            anchors: Number(gallery.anchors ?? 0),
+            matchedAt: gallery.matched_at,
+          }
+        : null,
+    };
+  }
+
+  async withdrawConsent(input: { userId: string; eventId: string }): Promise<ConsentWithdrawal> {
+    const vectors = await this.queryVectorAvailable();
+    const faceVectorsTable = await this.faceVectorsAvailable();
+    return this.sql.begin(async (tx) => {
+      const consents = await tx<{ id: string }[]>`
+        update consents set withdrawn_at = now()
+        where user_id = ${input.userId} and event_id = ${input.eventId} and withdrawn_at is null
+        returning id
+      `;
+      const galleries = await tx<{
+        id: string;
+        anchor_face_ids: string[];
+        selfie_key: string | null;
+        has_vector: boolean;
+      }[]>`
+        select id, anchor_face_ids, selfie_key,
+               ${vectors ? this.sql`(query_embedding is not null)` : this.sql`false`} as has_vector
+        from galleries
+        where user_id = ${input.userId} and event_id = ${input.eventId}
+        for update
+      `;
+      const gallery = galleries[0];
+      const anchors = gallery?.anchor_face_ids ?? [];
+      // The faces this person was identified as: the gallery's anchors plus the face behind
+      // every gallery item. Both are a person-to-template link made by the system, so both go.
+      const itemFaces = gallery
+        ? await tx<{ external_id: string }[]>`
+            select f.external_id
+            from gallery_items gi join faces f on f.id = gi.face_id
+            where gi.gallery_id = ${gallery.id}
+          `
+        : [];
+      const externalFaceIds = [...new Set([...anchors, ...itemFaces.map((row) => row.external_id)])];
+      let galleryItems = 0;
+      if (gallery) {
+        const removed = await tx`delete from gallery_items where gallery_id = ${gallery.id}`;
+        galleryItems = removed.count;
+        // The row carries query_embedding (the selfie template), the anchors and selfie_key:
+        // deleting it removes all three at once.
+        await tx`delete from galleries where id = ${gallery.id}`;
+      }
+      let faceVectors = 0;
+      if (faceVectorsTable && externalFaceIds.length > 0) {
+        // face_vectors.external_face_id is a uuid; anchors and faces.external_id are text and
+        // may hold a non-uuid id (the fake engine), which never has a row here.
+        const uuids = externalFaceIds.filter((id) => UUID_TEXT.test(id));
+        if (uuids.length > 0) {
+          const removed = await tx`
+            delete from face_vectors
+            where event_id = ${input.eventId} and external_face_id = any(${uuids}::uuid[])
+          `;
+          faceVectors = removed.count;
+        }
+      }
+      if (externalFaceIds.length > 0) {
+        // Another participant's gallery may be anchored on one of these faces (a false match,
+        // or two people in one crop). The template is gone, so the dangling anchor goes too —
+        // exactly what purgePhoto does for a deleted photo. Their gallery_items, their selfie
+        // vector and their photos are untouched.
+        await tx`
+          update galleries
+          set anchor_face_ids = coalesce(
+            (select array_agg(x) from unnest(anchor_face_ids) x where x <> all(${externalFaceIds}::text[])),
+            '{}'::text[]
+          )
+          where event_id = ${input.eventId} and anchor_face_ids && ${externalFaceIds}::text[]
+        `;
+      }
+      const feedback = await tx`
+        delete from gallery_feedback
+        where user_id = ${input.userId} and event_id = ${input.eventId}
+      `;
+      // match_runs holds the raw cosines of this person's selfie against named faces; the hits
+      // cascade with the run (migration 006).
+      const matchRuns = await tx`
+        delete from match_runs where user_id = ${input.userId} and event_id = ${input.eventId}
+      `;
+      return {
+        consents: consents.length,
+        galleryDeleted: gallery !== undefined,
+        galleryItems,
+        selfieVector: gallery?.has_vector === true,
+        anchors: anchors.length,
+        faceVectors,
+        externalFaceIds,
+        selfieKeys: gallery?.selfie_key ? [gallery.selfie_key] : [],
+        feedback: feedback.count,
+        matchRuns: matchRuns.count,
+      };
+    });
+  }
+
+  async claimRetentionWindow(input: {
+    eventId: string;
+    windowStart: Date;
+    windowSeconds: number;
+  }): Promise<boolean> {
+    // Exactly once per (event, window): the `where` of the upsert is re-evaluated against the
+    // row the other writer committed, so the second caller gets no row back (migration 015).
+    const rows = await this.sql<{ event_id: string }[]>`
+      insert into retention_schedule (event_id, window_start, window_seconds, last_outcome, runs)
+      values (${input.eventId}, ${input.windowStart}, ${input.windowSeconds}, 'enqueued', 1)
+      on conflict (event_id) do update
+        set window_start = excluded.window_start,
+            window_seconds = excluded.window_seconds,
+            claimed_at = now(),
+            updated_at = now(),
+            runs = retention_schedule.runs + 1,
+            last_outcome = 'enqueued',
+            last_job_id = null,
+            last_error = null
+        where retention_schedule.window_start < excluded.window_start
+      returning event_id
+    `;
+    return rows.length > 0;
+  }
+
+  async recordRetentionRun(input: {
+    eventId: string;
+    outcome: RetentionOutcome;
+    jobId?: string | null;
+    error?: string | null;
+  }): Promise<void> {
+    await this.sql`
+      update retention_schedule
+      set last_outcome = ${input.outcome},
+          last_job_id = ${input.jobId ?? null},
+          last_error = ${input.error ?? null},
+          updated_at = now()
+      where event_id = ${input.eventId}
+    `;
+  }
+
+  async listRetentionStatus(): Promise<RetentionStatusRow[]> {
+    const rows = await this.sql<RetentionStatusSql[]>`
+      select e.id as event_id,
+             e.slug,
+             e.retention_days,
+             s.window_start,
+             s.window_seconds,
+             s.claimed_at,
+             coalesce(s.runs, 0) as runs,
+             s.last_outcome,
+             s.last_job_id,
+             s.last_error,
+             j.id as job_id,
+             j.status as job_status,
+             j.last_error as job_error,
+             j.finished_at as job_finished_at
+      from events e
+      left join retention_schedule s on s.event_id = e.id
+      left join lateral (
+        select id, status, last_error, finished_at
+        from jobs
+        where type = 'retention' and payload ->> 'eventId' = e.id::text
+        order by created_at desc, id desc
+        limit 1
+      ) j on true
+      order by e.created_at, e.id
+    `;
+    return rows.map(mapRetentionStatus);
+  }
+
+  async listAlbumPhotosCreatedBefore(
+    albumId: string,
+    cutoff: Date,
+    limit?: number,
+  ): Promise<PhotoRow[]> {
+    const rows = await this.sql<PhotoSql[]>`
+      select ${this.sql.unsafe(PHOTO_COLUMNS)}
+      from photos
+      where album_id = ${albumId} and created_at < ${cutoff}
+      order by created_at
+      ${limit === undefined ? this.sql`` : this.sql`limit ${limit}`}
+    `;
+    return rows.map(mapPhoto);
+  }
+
+  async countPhotosByUploader(eventId: string, userId: string): Promise<number> {
+    const rows = await this.sql<{ count: number }[]>`
+      select count(*)::int as count from photos
+      where event_id = ${eventId} and photographer_id = ${userId}
+    `;
+    return rows[0]?.count ?? 0;
+  }
+
+  /** Whether migration 005 could create `face_vectors` (it needs pgvector). Cached like the column probe. */
+  private faceVectorsAvailable(): Promise<boolean> {
+    if (!this.faceVectorsChecked) {
+      this.faceVectorsChecked = this.sql<{ present: boolean }[]>`
+        select to_regclass('public.face_vectors') is not null as present
+      `
+        .then((rows) => rows[0]?.present === true)
+        .catch((error: unknown) => {
+          this.faceVectorsChecked = undefined;
+          throw error;
+        });
+    }
+    return this.faceVectorsChecked;
+  }
+
+  private faceVectorsChecked: Promise<boolean> | undefined;
 }
 
 /** Maps the album constraints of migration 009 to their typed errors. */
@@ -2309,5 +2561,51 @@ function mapEventCode(row: EventCodeSql): EventCodeRow {
     uses: Number(row.uses),
     expiresAt: row.expires_at,
     createdAt: row.created_at,
+  };
+}
+
+// ---- privacy and retention scheduling v6 (agent G) ----------------------------------------
+
+/** Anchors and `faces.external_id` are text; `face_vectors.external_face_id` is a uuid. */
+const UUID_TEXT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+type RetentionStatusSql = {
+  event_id: string;
+  slug: string;
+  retention_days: number;
+  window_start: Date | null;
+  window_seconds: number | null;
+  claimed_at: Date | null;
+  runs: number;
+  last_outcome: RetentionOutcome | null;
+  last_job_id: string | null;
+  last_error: string | null;
+  job_id: string | null;
+  job_status: "queued" | "running" | "done" | "error" | null;
+  job_error: string | null;
+  job_finished_at: Date | null;
+};
+
+function mapRetentionStatus(row: RetentionStatusSql): RetentionStatusRow {
+  return {
+    eventId: row.event_id,
+    slug: row.slug,
+    retentionDays: Number(row.retention_days),
+    windowStart: row.window_start,
+    windowSeconds: row.window_seconds === null ? null : Number(row.window_seconds),
+    claimedAt: row.claimed_at,
+    runs: Number(row.runs ?? 0),
+    lastOutcome: row.last_outcome,
+    lastJobId: row.last_job_id,
+    lastError: row.last_error,
+    lastJob:
+      row.job_id && row.job_status
+        ? {
+            id: row.job_id,
+            status: row.job_status,
+            error: row.job_error,
+            finishedAt: row.job_finished_at,
+          }
+        : null,
   };
 }
