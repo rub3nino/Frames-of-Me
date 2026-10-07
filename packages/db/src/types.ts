@@ -516,19 +516,42 @@ export interface Database {
   markEmailVerified(userId: string, at?: Date): Promise<void>;
   findEmailVerifiedAt(userId: string): Promise<Date | null>;
 
-  // ---- tagging v6 (agent E): users.taggable / display_name, photo_tags -------------------
-  /** The caller's own tagging profile (`users.taggable`, `users.display_name`). */
-  findTagProfile(userId: string): Promise<TagProfileRow | null>;
+  // ---- event membership + tagging v6 (agent E) -------------------------------------------
   /**
-   * The opt-in. `taggable = true` without a display name is refused here, not only in the
-   * API: a taggable row with no name could never be found by the autocomplete anyway, and
-   * leaving it possible invites a later "fall back to the e-mail" patch.
+   * `event_members`: the NON-BIOMETRIC record of who belongs to an event. Before it, "is this
+   * person a participant of this event?" had no honest answer for someone who never consented
+   * to face recognition and is not on an allowlist — `consents` and `galleries` are both
+   * biometric and `event_participants` only exists when `events.access = 'list'`.
+   *
+   * Idempotent: a second call for the same pair keeps the first row, `source` included, so
+   * the provenance recorded is how the person FIRST came to belong to the event.
+   */
+  addEventMember(input: {
+    userId: string;
+    eventId: string;
+    source: EventMemberSource;
+  }): Promise<EventMemberRow>;
+  /** Membership alone, without the tagging columns. The cheap gate for every event-scoped route. */
+  isEventMember(userId: string, eventId: string): Promise<boolean>;
+  findEventMember(userId: string, eventId: string): Promise<EventMemberRow | null>;
+  /**
+   * The caller's own tagging profile for one event (`event_members.taggable` + the consent
+   * pair, plus the global `users.display_name`). Null when there is no membership row: a
+   * non-member has no tagging profile to read, and cannot opt in.
+   */
+  findTagProfile(userId: string, eventId: string): Promise<TagProfileRow | null>;
+  /**
+   * The opt-in, per event. Null when the user is not a member of the event, or when
+   * `taggable = true` is asked for without a display name — a taggable row with no name
+   * could never be found by the autocomplete anyway, and leaving it possible invites a later
+   * "fall back to the e-mail" patch.
    *
    * `consentTextVersion` is the tagging consent text the participant accepted; it is stamped
    * with the time on an opt-in and nulled on an opt-out.
    */
   setTagProfile(
     userId: string,
+    eventId: string,
     input: {
       taggable: boolean;
       displayName?: string | null;
@@ -537,16 +560,18 @@ export interface Database {
   ): Promise<TagProfileRow | null>;
   /**
    * The username autocomplete. Deliberately narrow, and it must stay that way:
-   * only `taggable = true` users with a display name, only a **prefix** match on
-   * `lower(display_name)`, and the rows carry no e-mail address at all. `prefix` is never
-   * allowed to be shorter than `TAG_SEARCH_MIN_CHARS`; the API refuses first, and this
-   * method returns `[]` as a second line of defence rather than trusting the caller.
+   * only members of `eventId` who set `taggable` **for that event** and have a display name,
+   * only a **prefix** match on `lower(display_name)`, and the rows carry no e-mail address at
+   * all. `prefix` is never allowed to be shorter than `TAG_SEARCH_MIN_CHARS`; the API refuses
+   * first, and this method returns `[]` as a second line of defence rather than trusting the
+   * caller.
    *
-   * It does NOT require a recognition consent for the event. `users.taggable` is the consent
-   * for tagging; a crowd-album participant never grants recognition consent (decision 2) and
+   * It does NOT require a recognition consent. `event_members.taggable` is the consent for
+   * tagging; a crowd-album participant never grants recognition consent (decision 2) and
    * tagging is the only way they can find themselves in a non-biometric album.
    */
   searchTaggableUsers(input: {
+    eventId: string;
     prefix: string;
     limit: number;
   }): Promise<TaggableUserRow[]>;
@@ -564,8 +589,12 @@ export interface Database {
   findPhotoTag(photoId: string, userId: string): Promise<PhotoTagRow | null>;
   /** Moves an active tag to 'removed'. Null when there was no active tag to remove. */
   removePhotoTag(photoId: string, userId: string): Promise<PhotoTagRow | null>;
-  /** Every still-active tag of a user, for the audited cascade behind an opt-out. */
-  listActivePhotoTagsForUser(userId: string): Promise<PhotoTagRow[]>;
+  /**
+   * Every still-active tag of a user on photos of ONE event, for the audited cascade behind
+   * an opt-out. Scoped to the event because the opt-in is: opting out of event A must not
+   * remove the tags someone accepted at event B.
+   */
+  listActivePhotoTagsForUser(userId: string, eventId: string): Promise<PhotoTagRow[]>;
   /** "The photos I am tagged in", for one event, newest first. Active tags only. */
   listTaggedPhotosForUser(userId: string, eventId: string): Promise<TaggedPhotoRow[]>;
   /** Active tags on one photo, display names only. */
@@ -815,16 +844,45 @@ export type EventCodeRow = {
 /** `photo_tags.state` (migration 013). 'removed' is terminal. */
 export type PhotoTagState = "active" | "removed";
 
-/** The caller's own opt-in state. Carries no other user's data. */
+/**
+ * `event_members.source` (migration 013): how a person came to belong to an event. Provenance,
+ * not permission — nothing reads it to decide anything. `event_code` is the self-registration
+ * path; `consent` / `gallery` / `allowlist` / `staff` are what the backfill could see;
+ * `invite`, `upload` and `admin` are reserved for the entry paths other agents own.
+ */
+export type EventMemberSource =
+  | "event_code"
+  | "consent"
+  | "gallery"
+  | "allowlist"
+  | "staff"
+  | "invite"
+  | "upload"
+  | "admin";
+
+/** One row of `event_members`: membership plus the per-event tagging opt-in. */
+export type EventMemberRow = {
+  userId: string;
+  eventId: string;
+  source: EventMemberSource;
+  taggable: boolean;
+  taggableConsentVersion: string | null;
+  taggableConsentAt: Date | null;
+  createdAt: Date;
+};
+
+/** The caller's own opt-in state for one event. Carries no other user's data. */
 export type TagProfileRow = {
   userId: string;
+  eventId: string;
   taggable: boolean;
+  /** Global (`users.display_name`): the name a person wants to be called by is theirs. */
   displayName: string | null;
   /**
-   * The tagging consent text accepted at opt-in (`users.taggable_consent_version`), and when.
-   * Null while the user is not taggable. This is the tagging consent, NOT the recognition
-   * consent in `consents` — tagging never requires a `consents` row (decision 2: a crowd
-   * album is never biometric, so its participants never grant recognition consent).
+   * The tagging consent text accepted at opt-in (`event_members.taggable_consent_version`),
+   * and when. Null while the user is not taggable for this event. This is the tagging
+   * consent, NOT the recognition consent in `consents` — tagging never requires a `consents`
+   * row (decision 2: a crowd album is never biometric, so its participants never grant one).
    */
   consentTextVersion: string | null;
   consentAt: Date | null;

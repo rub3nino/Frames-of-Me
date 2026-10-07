@@ -20,6 +20,7 @@ export const MESSAGES = {
   // v6 (agent E): tagging. The three refusals below are deliberately vague about *why*:
   // "non taggabile" and "già taggato o rifiutato" must not become an oracle that tells a
   // stranger whether a given person is at the event or has refused a tag.
+  notEventMember: "Non risulti tra i partecipanti di questo evento.",
   tagNotAllowed: "Questa persona non può essere taggata.",
   tagExists: "Il tag non è stato aggiunto.",
   tagNameRequired: "Scegli un nome visibile prima di attivare i tag.",

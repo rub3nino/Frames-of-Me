@@ -1303,6 +1303,12 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     if (!claimed) throw new ApiError(403, MESSAGES.eventCodeInvalid);
     const user = await deps.db.insertUser(email, "participant");
     await deps.db.setUserPassword(user.id, hashPassword(body.data.password));
+    // v6 E (agent E): the non-biometric membership record. The claimed code already resolved
+    // the event; before this row existed that fact was thrown away into the audit line below,
+    // and "is this person a participant of this event?" had no answer for anyone who never
+    // consented to face recognition and is not on an allowlist. `claimEventCode` keeps its
+    // semantics; this only persists what it already knew.
+    await deps.db.addEventMember({ userId: user.id, eventId: claimed.eventId, source: "event_code" });
     // Lazy verification (v6): no e-mail is sent here and `email_verified_at` stays null.
     // The address is proven later, by a password-reset link or a Google token.
     await deps.db.insertAudit({

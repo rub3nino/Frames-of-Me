@@ -40,11 +40,12 @@ const SEARCH_MIN_CHARS = 3;
  * separate consent from the recognition text on the selfie page, and asking for it here does
  * not require that one: a participant who only ever uses the crowd album never grants
  * recognition consent, and tagging is the only way they can find themselves in those photos.
- * Keep both copies in step; the API rejects any other version.
+ * It is also per event, and the words say so — the flag it governs is `event_members.taggable`
+ * for this event alone. Keep both copies in step; the API rejects any other version.
  */
-const TAG_CONSENT_TEXT_VERSION = "2026-10-08";
+const TAG_CONSENT_TEXT_VERSION = "2026-10-09";
 const TAG_CONSENT_TEXT =
-  "Acconsento che gli altri partecipanti associno il nome che ho scelto alle foto dell'evento in cui compaio. Posso rimuovere ogni tag e disattivare i tag in qualsiasi momento: disattivandoli, i tag che ho già vengono rimossi. Questo consenso è separato dal riconoscimento del volto e non lo richiede.";
+  "Acconsento che gli altri partecipanti di questo evento associno il nome che ho scelto alle foto in cui compaio. Vale solo per questo evento. Posso rimuovere ogni tag e disattivare i tag in qualsiasi momento: disattivandoli, i tag che ho già in questo evento vengono rimossi. Questo consenso è separato dal riconoscimento del volto e non lo richiede.";
 /** Typing pause before a suggestion request, so one name is one or two calls, not ten. */
 const SEARCH_DEBOUNCE_MS = 250;
 const NAME_MIN_CHARS = 2;
@@ -157,9 +158,10 @@ function TaggerBody({ slug, photoId }: { slug: string; photoId?: string }) {
       <section className="block">
         <h2>Possono taggarti?</h2>
         <p className="fine">
-          Di norma no. Se lo attivi, chi vede una foto può collegarci il nome che scegli qui, e tu
-          ricevi un avviso. Puoi rimuovere ogni tag e disattivarlo quando vuoi: disattivandolo,
-          i tag che hai già addosso vengono rimossi.
+          Di norma no, e la scelta vale solo per questo evento. Se lo attivi, chi vede una foto
+          di questo evento può collegarci il nome che scegli qui, e tu ricevi un avviso. Puoi
+          rimuovere ogni tag e disattivarlo quando vuoi: disattivandolo, i tag che hai già in
+          questo evento vengono rimossi.
         </p>
         {/* The consent itself: shown before the control that acts on it. Separate from the
             recognition consent on the selfie page, and it does not require it. */}

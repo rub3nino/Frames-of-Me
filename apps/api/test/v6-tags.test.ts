@@ -144,25 +144,44 @@ async function sessionCookie(db: Database, userId: string): Promise<string> {
 
 type Participant = { id: string; email: string; cookie: string };
 
-/**
- * A participant. `recognitionConsent` adds a `consents` row — the consent to the BIOMETRIC
- * comparison of a face against the event's photos. Tagging must NOT require it (decision 2: a
- * crowd album is never biometric, so its participants never grant one), so the default here
- * is `false` and only the independence tests care about the difference.
- */
+type ParticipantOptions = {
+  /**
+   * A `consents` row: the consent to the BIOMETRIC comparison of a face against the event's
+   * photos. Tagging must NOT require it (decision 2: a crowd album is never biometric, so its
+   * participants never grant one), so the default is `false` and only the independence tests
+   * care about the difference.
+   */
+  recognitionConsent?: boolean;
+  /**
+   * An `event_members` row: the NON-BIOMETRIC record of belonging to the event, as
+   * `POST /v1/auth/register` writes it when an event code is claimed. This is what tagging is
+   * gated on, so the default is `true`; `false` produces the participant who wandered in.
+   */
+  member?: boolean;
+  /** Which event the membership row is for. Defaults to the harness event. */
+  eventId?: string;
+};
+
 async function participant(
   h: Harness,
   email: string,
-  recognitionConsent = false,
+  options: ParticipantOptions = {},
 ): Promise<Participant> {
   const user = await h.db.createUser({ email, role: "participant" });
-  if (recognitionConsent) {
+  if (options.recognitionConsent) {
     await h.db.insertConsent({
       userId: user.id,
-      eventId: h.event.id,
+      eventId: options.eventId ?? h.event.id,
       textVersion: "v1",
       ip: "127.0.0.1",
       userAgent: "test",
+    });
+  }
+  if (options.member !== false) {
+    await h.db.addEventMember({
+      userId: user.id,
+      eventId: options.eventId ?? h.event.id,
+      source: "event_code",
     });
   }
   return { id: user.id, email, cookie: await sessionCookie(h.db, user.id) };
@@ -170,6 +189,11 @@ async function participant(
 
 /** One photo uploaded by the seeded photographer, with both derivatives in place. */
 async function seedPhoto(h: Harness, uploaderId?: string): Promise<string> {
+  return seedPhotoIn(h, h.event.id, uploaderId);
+}
+
+/** The same, in a named event — the cross-event tests need photos on both sides. */
+async function seedPhotoIn(h: Harness, eventId: string, uploaderId?: string): Promise<string> {
   const photographer = await h.db.findUserByEmailRole(
     "photographer@rephoto.local",
     "photographer",
@@ -179,10 +203,10 @@ async function seedPhoto(h: Harness, uploaderId?: string): Promise<string> {
   const bytes = Buffer.from(`original-${photoId}`);
   await h.db.insertPhoto({
     id: photoId,
-    eventId: h.event.id,
+    eventId,
     photographerId: uploaderId ?? photographer.id,
     sha256: createHash("sha256").update(bytes).digest("hex"),
-    originalKey: objectKeys.original(h.event.id, photoId),
+    originalKey: objectKeys.original(eventId, photoId),
     contentType: "image/jpeg",
     bytes: bytes.byteLength,
   });
@@ -255,11 +279,11 @@ test("nobody is taggable by default, and the opt-in is the only way in", async (
   assert.equal(before.profile.taggable, false);
   assert.equal(before.profile.displayName, null);
   assert.deepEqual(before.items, []);
-  assert.equal((await h.db.findTagProfile(alice.id))?.taggable, false);
+  assert.equal((await h.db.findTagProfile(alice.id, h.event.id))?.taggable, false);
 
   await optIn(h, alice, "Alice R.");
-  assert.equal((await h.db.findTagProfile(alice.id))?.taggable, true);
-  assert.equal((await h.db.findTagProfile(alice.id))?.displayName, "Alice R.");
+  assert.equal((await h.db.findTagProfile(alice.id, h.event.id))?.taggable, true);
+  assert.equal((await h.db.findTagProfile(alice.id, h.event.id))?.displayName, "Alice R.");
 });
 
 test("the opt-in body must say taggable explicitly, and true needs a display name", async () => {
@@ -278,7 +302,7 @@ test("the opt-in body must say taggable explicitly, and true needs a display nam
     ).status,
     400,
   );
-  assert.equal((await h.db.findTagProfile(alice.id))?.taggable, false);
+  assert.equal((await h.db.findTagProfile(alice.id, h.event.id))?.taggable, false);
   // A one-character display name is refused too (the autocomplete needs 3 characters).
   assert.equal(
     (
@@ -315,10 +339,10 @@ test("opting in requires accepting the current tagging consent text, and records
       JSON.stringify(body),
     );
   }
-  assert.equal((await h.db.findTagProfile(alice.id))?.taggable, false);
+  assert.equal((await h.db.findTagProfile(alice.id, h.event.id))?.taggable, false);
 
   await optIn(h, alice, "Alice Rossi");
-  const stored = await h.db.findTagProfile(alice.id);
+  const stored = await h.db.findTagProfile(alice.id, h.event.id);
   assert.equal(stored?.consentTextVersion, TAG_CONSENT_TEXT_VERSION);
   assert.ok(stored?.consentAt instanceof Date, "the acceptance is timestamped");
   // Auditable: the accepted version is in the audit row too.
@@ -329,7 +353,7 @@ test("opting in requires accepting the current tagging consent text, and records
   // Opting out clears the consent pair and audits the withdrawal.
   const out = await h.app.request(json("PUT", path, { taggable: false }, { cookie: alice.cookie }));
   assert.equal(out.status, 200);
-  const after = await h.db.findTagProfile(alice.id);
+  const after = await h.db.findTagProfile(alice.id, h.event.id);
   assert.equal(after?.consentTextVersion, null);
   assert.equal(after?.consentAt, null);
   assert.deepEqual(
@@ -412,7 +436,7 @@ test("a participant with NO recognition consent can opt in, be found, be tagged 
 
   // 1. She can opt in.
   await optIn(h, alice, "Alice Rossi");
-  assert.equal((await h.db.findTagProfile(alice.id))?.taggable, true);
+  assert.equal((await h.db.findTagProfile(alice.id, h.event.id))?.taggable, true);
 
   // 2. She is found in the autocomplete, by a tagger who also has no recognition consent.
   const found = tagSearchResponseSchema.parse(
@@ -445,8 +469,8 @@ test("granting the recognition consent changes nothing about tagging", async () 
   const h = await harness();
   // Same flow, with the recognition consent present. The tagging behaviour is identical,
   // which is the other half of "independent": the gate is neither required nor consulted.
-  const alice = await participant(h, "alice@example.com", true);
-  const bob = await participant(h, "bob@example.com", true);
+  const alice = await participant(h, "alice@example.com", { recognitionConsent: true });
+  const bob = await participant(h, "bob@example.com", { recognitionConsent: true });
   assert.equal(await h.db.hasActiveConsent(alice.id, h.event.id), true);
   await optIn(h, alice, "Alice Rossi");
   const found = tagSearchResponseSchema.parse(
@@ -462,6 +486,159 @@ test("granting the recognition consent changes nothing about tagging", async () 
     ).status,
     201,
   );
+});
+
+// ---- event membership, and the opt-in being per event ------------------------------------
+//
+// THE TEST THAT PROVES THE HOLE IS CLOSED. Until `event_members` existed, "is this person a
+// participant of this event?" had no honest answer for someone who never consented to face
+// recognition and is not on an allowlist: `consents` and `galleries` are both biometric,
+// `event_participants` only exists when `events.access = 'list'`, and the registration path
+// resolved the event from the claimed code and then threw it away into an audit line. The
+// autocomplete had no event scope at all, so a person who opted in at one event was suggested
+// at every event the deployment runs — and a global `users.taggable` would have meant
+// consenting once, at one event, to being nameable at all of them, which `TAG_CONSENT_TEXT`
+// ("questo evento") would have made a false statement.
+
+test("someone who opted in at event A is NOT suggested, taggable or untagged at event B", async () => {
+  const h = await harness();
+  const other = await h.db.createEvent({ slug: "altro", name: "Altro evento" });
+  // Alice belongs to both events and opts in at the harness event ONLY.
+  const alice = await participant(h, "alice@example.com");
+  await h.db.addEventMember({ userId: alice.id, eventId: other.id, source: "event_code" });
+  const bob = await participant(h, "bob@example.com");
+  await h.db.addEventMember({ userId: bob.id, eventId: other.id, source: "event_code" });
+  await optIn(h, alice, "Alice Rossi");
+
+  // Found at event A.
+  const atA = tagSearchResponseSchema.parse(
+    await (await h.app.request(get(`/v1/events/${h.event.slug}/tags/search?q=ali`, bob.cookie))).json(),
+  );
+  assert.deepEqual(atA.items, [{ userId: alice.id, displayName: "Alice Rossi" }]);
+  // Invisible at event B, although the same account is a member there and has a display name.
+  const atB = tagSearchResponseSchema.parse(
+    await (await h.app.request(get(`/v1/events/${other.slug}/tags/search?q=ali`, bob.cookie))).json(),
+  );
+  assert.deepEqual(atB.items, [], "the opt-in is per event, so event B knows nothing");
+  // And she cannot be tagged at event B either, not even with her id in hand.
+  const photoB = await seedPhotoIn(h, other.id, bob.id);
+  assert.equal(
+    (
+      await h.app.request(
+        json("POST", `/v1/events/${other.slug}/tags`, { photoId: photoB, userId: alice.id }, { cookie: bob.cookie }),
+      )
+    ).status,
+    403,
+  );
+  // Her own profile at event B reads as not taggable, with no consent recorded there.
+  const profileB = await h.db.findTagProfile(alice.id, other.id);
+  assert.equal(profileB?.taggable, false);
+  assert.equal(profileB?.consentTextVersion, null);
+});
+
+test("opting out of one event leaves the tags accepted at another event alone", async () => {
+  const h = await harness();
+  const other = await h.db.createEvent({ slug: "altro", name: "Altro evento" });
+  const alice = await participant(h, "alice@example.com");
+  await h.db.addEventMember({ userId: alice.id, eventId: other.id, source: "event_code" });
+  const bob = await participant(h, "bob@example.com");
+  await h.db.addEventMember({ userId: bob.id, eventId: other.id, source: "event_code" });
+  // Opted in, and tagged, at both events.
+  await optIn(h, alice, "Alice Rossi");
+  const photoA = await seedPhoto(h, bob.id);
+  const photoB = await seedPhotoIn(h, other.id, bob.id);
+  assert.equal(
+    (
+      await h.app.request(
+        json("POST", `/v1/events/${h.event.slug}/tags`, { photoId: photoA, userId: alice.id }, { cookie: bob.cookie }),
+      )
+    ).status,
+    201,
+  );
+  const outIn = await h.app.request(
+    json(
+      "PUT",
+      `/v1/events/${other.slug}/tags/me`,
+      { taggable: true, displayName: "Alice Rossi", consentTextVersion: TAG_CONSENT_TEXT_VERSION },
+      { cookie: alice.cookie },
+    ),
+  );
+  assert.equal(outIn.status, 200);
+  assert.equal(
+    (
+      await h.app.request(
+        json("POST", `/v1/events/${other.slug}/tags`, { photoId: photoB, userId: alice.id }, { cookie: bob.cookie }),
+      )
+    ).status,
+    201,
+  );
+
+  // Opting out of event B cascades over event B only.
+  const out = await h.app.request(
+    json("PUT", `/v1/events/${other.slug}/tags/me`, { taggable: false }, { cookie: alice.cookie }),
+  );
+  assert.equal(out.status, 200);
+  assert.equal((await h.db.findPhotoTag(photoB, alice.id))?.state, "removed");
+  assert.equal(
+    (await h.db.findPhotoTag(photoA, alice.id))?.state,
+    "active",
+    "a withdrawal at event B must not reach into event A",
+  );
+  assert.equal((await h.db.findTagProfile(alice.id, h.event.id))?.taggable, true);
+});
+
+test("a participant who is not a member of the event cannot opt in or search", async () => {
+  const h = await harness();
+  // No `event_members` row: nobody claimed a code, nobody consented, no allowlist entry.
+  const stray = await participant(h, "stray@example.com", { member: false });
+  const path = `/v1/events/${h.event.slug}/tags/me`;
+  const optIn = await h.app.request(
+    json(
+      "PUT",
+      path,
+      { taggable: true, displayName: "Stray", consentTextVersion: TAG_CONSENT_TEXT_VERSION },
+      { cookie: stray.cookie },
+    ),
+  );
+  assert.equal(optIn.status, 403);
+  assert.equal(await h.db.findTagProfile(stray.id, h.event.id), null);
+  // Opting out is refused for the same reason: there is nothing to withdraw.
+  assert.equal(
+    (await h.app.request(json("PUT", path, { taggable: false }, { cookie: stray.cookie }))).status,
+    403,
+  );
+  assert.equal(
+    (await h.app.request(get(`/v1/events/${h.event.slug}/tags/search?q=ali`, stray.cookie))).status,
+    403,
+  );
+  // Reading their own (empty) tag area still works: that must never depend on a gate.
+  const mine = await h.app.request(get(`/v1/events/${h.event.slug}/tags/me`, stray.cookie));
+  assert.equal(mine.status, 200);
+  const body = tagsMeResponseSchema.parse(await mine.json());
+  assert.equal(body.profile.taggable, false);
+  assert.deepEqual(body.items, []);
+});
+
+test("registering with an event code records the non-biometric membership", async () => {
+  const h = await harness();
+  await h.db.createEventCode({ eventId: h.event.id, code: "BADGE-1" });
+  const response = await h.app.request(
+    json("POST", "/v1/auth/register", {
+      email: "nuovo@example.com",
+      password: "unapasswordlunga",
+      eventCode: "BADGE-1",
+    }),
+  );
+  assert.equal(response.status, 201, await response.text());
+  const user = await h.db.findUserByEmailRole("nuovo@example.com", "participant");
+  assert.ok(user);
+  const member = await h.db.findEventMember(user.id, h.event.id);
+  assert.ok(member, "the claimed code's event is persisted, not only audited");
+  assert.equal(member.source, "event_code");
+  // Membership is not taggability: registering makes nobody findable.
+  assert.equal(member.taggable, false);
+  assert.equal(member.taggableConsentVersion, null);
+  assert.equal(await h.db.hasActiveConsent(user.id, h.event.id), false);
 });
 
 // ---- the autocomplete must not become a directory of the event ---------------------------

@@ -22,14 +22,17 @@ import { readJson, requireRole, requireUser } from "./http.js";
  * biometrics. It is therefore a privacy feature wearing a social feature's clothes, and every
  * default here is the conservative one:
  *
- *   * `users.taggable` is false until the participant says otherwise (migration 013). No route
- *     here flips it except the participant's own `PUT /tags/me`, which pins the Italian
- *     consent text (`TAG_CONSENT_TEXT`) and records the accepted version.
- *   * `users.taggable` IS the consent for tagging, and it is NOT the recognition consent in
- *     `consents`. Nothing here requires a `consents` row: decision 2 freezes that a `crowd`
- *     album is never biometric, so a participant whose only involvement is the crowd album
- *     never grants recognition consent — and tagging is the only way those people can find
- *     themselves in a non-biometric album. See `assertEventMember`.
+ *   * `event_members.taggable` is false until the participant says otherwise (migration 013).
+ *     No route here flips it except the participant's own `PUT /tags/me`, which pins the
+ *     Italian consent text (`TAG_CONSENT_TEXT`) and records the accepted version.
+ *   * the opt-in is PER EVENT. It lives on the membership row, not on `users`: a global flag
+ *     would mean consenting once, at one event, to being nameable at every event the
+ *     deployment ever runs, and `TAG_CONSENT_TEXT` says "questo evento".
+ *   * `event_members.taggable` IS the consent for tagging, and it is NOT the recognition
+ *     consent in `consents`. Nothing here requires a `consents` row: decision 2 freezes that
+ *     a `crowd` album is never biometric, so a participant whose only involvement is the
+ *     crowd album never grants recognition consent — and tagging is the only way those people
+ *     can find themselves in a non-biometric album. See `assertEventMember`.
  *   * removal is the existing `not_me` feedback flow: `DELETE /tags/:photoId` writes the same
  *     `gallery_feedback` row the gallery's "Non sono io" button writes, and marks the tag
  *     `removed`. Participants already understand that button; there is no second mechanism.
@@ -44,13 +47,14 @@ import { readJson, requireRole, requireUser } from "./http.js";
  * `apps/api/test/v6-tags.test.ts` has a test per rule because this is the kind of endpoint a
  * later "improvement" relaxes:
  *
- *   1. only `taggable = true` users with a display name are considered — the opt-in is the
- *      whole control, which is why it is an explicit consent and not a side effect;
+ *   1. only members of THIS event who set `taggable` for THIS event and have a display name —
+ *      the per-event opt-in is the whole control, which is why it is an explicit consent and
+ *      not a side effect, and why a person who opted in at event A is invisible at event B;
  *   2. at least `TAG_SEARCH_MIN_CHARS` (3) characters — "", "a" and "ab" are refused by the
  *      schema, before any query runs, and the database layer refuses them again;
  *   3. only a **prefix** match, so the list cannot be walked with 3-character windows;
  *   4. display names only. The response schema is `.strict()` and has no `email` field;
- *   5. rate limited per session, and open only to participants of the event.
+ *   5. rate limited per session, and open only to members of the event.
  *
  * The routes live in their own file and `routes.ts` gains exactly one line, because four other
  * agents are editing `routes.ts` in parallel.
@@ -71,7 +75,7 @@ export function registerTagRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     // No consent gate here on purpose: seeing the links other people made about you, and
     // removing them, must never depend on a consent you may have just withdrawn.
     const [profile, tagged] = await Promise.all([
-      deps.db.findTagProfile(user.id),
+      deps.db.findTagProfile(user.id, event.id),
       deps.db.listTaggedPhotosForUser(user.id, event.id),
     ]);
     const items = [];
@@ -87,11 +91,13 @@ export function registerTagRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
   });
 
   /**
-   * The opt-in, and the only way `users.taggable` ever becomes true.
+   * The opt-in for ONE event, and the only way `event_members.taggable` ever becomes true.
    *
    * Opting out is a withdrawal, so it is not only a flag: every still-active tag of the caller
-   * is moved to `removed` and audited. Leaving old tags alive after an opt-out would keep the
-   * person<->photo links the opt-out was meant to end.
+   * on photos of THIS event is moved to `removed` and audited. Leaving old tags alive after an
+   * opt-out would keep the person<->photo links the opt-out was meant to end — and scoping the
+   * cascade to the event is the other half: opting out here must not touch the tags the same
+   * person accepted at another event.
    */
   app.put("/v1/events/:slug/tags/me", async (c) => {
     const user = requireUser(c);
@@ -99,11 +105,9 @@ export function registerTagRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const event = await loadTagEvent(deps, c.req.param("slug"));
     const body = tagProfileBodySchema.safeParse(await readJson(c));
     if (!body.success) throw new ApiError(400, MESSAGES.validation);
-    if (body.data.taggable) {
-      // Only the event-membership gate: who belongs at this event. NOT a recognition
-      // consent — see `assertEventMember`.
-      await assertEventMember(deps, user, event);
-    }
+    // Both directions: a non-member has nothing to opt into and nothing to opt out of. The
+    // gate is event membership, NOT a recognition consent — see `assertEventMember`.
+    await assertEventMember(deps, user, event);
     const input: {
       taggable: boolean;
       displayName?: string | null;
@@ -113,13 +117,13 @@ export function registerTagRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     // The schema pins `consentTextVersion` to the current text on an opt-in, so reaching
     // here with `taggable: true` means the participant was shown these words.
     if (body.data.taggable) input.consentTextVersion = body.data.consentTextVersion;
-    const profile = await deps.db.setTagProfile(user.id, input);
+    const profile = await deps.db.setTagProfile(user.id, event.id, input);
     // `setTagProfile` returns null when `taggable` is true with no display name, stored or
     // supplied: a findable row with no name is the shape that invites a "fall back to the
     // e-mail" patch later.
     if (!profile) throw new ApiError(400, MESSAGES.tagNameRequired);
     if (!profile.taggable) {
-      for (const tag of await deps.db.listActivePhotoTagsForUser(user.id)) {
+      for (const tag of await deps.db.listActivePhotoTagsForUser(user.id, event.id)) {
         const removed = await deps.db.removePhotoTag(tag.photoId, user.id);
         if (!removed) continue;
         await auditUntag(deps, {
@@ -132,7 +136,7 @@ export function registerTagRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       }
     }
     // The consent record: which Italian text the participant accepted, and when. The columns
-    // on `users` hold the present state; this row is the history.
+    // on `event_members` hold the present state; this row is the history.
     await deps.db.insertAudit({
       actorId: user.id,
       action: profile.taggable ? "tag.optin" : "tag.optout",
@@ -168,8 +172,14 @@ export function registerTagRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     if (!searchLimiter.allow(sessionKey(user), TAG_SEARCH_RATE_LIMIT.max)) {
       throw new ApiError(429, MESSAGES.rateLimited);
     }
-    // Rules 1 and 3 are in the query itself: `taggable` with a display name, prefix match.
-    const rows = await deps.db.searchTaggableUsers({ prefix: term, limit: TAG_SEARCH_LIMIT });
+    // Rules 1 and 3 are in the query itself: an `event_members` row for THIS event with
+    // `taggable` set and a display name, matched on a prefix. The event scope is what stops
+    // the autocomplete being a directory of the whole deployment.
+    const rows = await deps.db.searchTaggableUsers({
+      eventId: event.id,
+      prefix: term,
+      limit: TAG_SEARCH_LIMIT,
+    });
     // Rule 4: `userId` and `displayName`, nothing else. Never spread a `UserRow` here.
     return c.json({
       items: rows.map((row) => ({
@@ -194,8 +204,10 @@ export function registerTagRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     // The opt-in, checked before anything is written so the answer is the honest 403 rather
     // than a conflict. `insertPhotoTag` checks it again inside its single statement, which is
     // what actually holds under a concurrent opt-out.
-    const target = await deps.db.findTagProfile(body.data.userId);
-    // `taggable` is the whole test. A recognition consent is NOT required: a crowd-album
+    const target = await deps.db.findTagProfile(body.data.userId, event.id);
+    // Membership of THIS event plus the per-event opt-in is the whole test — `findTagProfile`
+    // returns null when there is no `event_members` row, so a person who opted in at another
+    // event cannot be tagged here. A recognition consent is NOT required: a crowd-album
     // participant never grants one (decision 2) and tagging is the only way they can find
     // themselves in a non-biometric album.
     if (!target || !target.taggable || !target.displayName) {
@@ -369,7 +381,8 @@ async function loadTagEvent(deps: AppDeps, slug: string): Promise<EventRow> {
 }
 
 /**
- * Who belongs at this event: the allowlist when `events.access = 'list'`, and nothing else.
+ * Who belongs at this event, answered from the NON-BIOMETRIC membership record:
+ * an `event_members` row, plus the allowlist when `events.access = 'list'`.
  *
  * It deliberately does NOT require an active `consents` row, although the selfie route does.
  * That row is consent to the BIOMETRIC comparison of a face against the event's photos, and
@@ -379,11 +392,19 @@ async function loadTagEvent(deps: AppDeps, slug: string): Promise<EventRow> {
  * Requiring it here made tagging unavailable to exactly the population it is for, and
  * conflated two different legal bases.
  *
- * `users.taggable`, with its own Italian text (`TAG_CONSENT_TEXT`) recorded at the opt-in, is
- * the consent for tagging. Do not add a `hasActiveConsent` check back into this function;
- * `apps/api/test/v6-tags.test.ts` has a named regression test that will fail if you do.
+ * `event_members.taggable`, with its own Italian text (`TAG_CONSENT_TEXT`) recorded at the
+ * opt-in, is the consent for tagging. Do not add a `hasActiveConsent` check back into this
+ * function; `apps/api/test/v6-tags.test.ts` has a named regression test that will fail if
+ * you do.
+ *
+ * The allowlist check is kept on top of membership rather than folded into it: `events.access`
+ * can be switched to `list` after people have joined, and from that moment the allowlist is
+ * the authoritative answer, not the historical membership row.
  */
 async function assertEventMember(deps: AppDeps, user: UserRow, event: EventRow): Promise<void> {
+  if (!(await deps.db.isEventMember(user.id, event.id))) {
+    throw new ApiError(403, MESSAGES.notEventMember);
+  }
   if (
     event.access === "list" &&
     !(await deps.db.isEventParticipant(event.id, user.email.toLowerCase()))
@@ -391,6 +412,43 @@ async function assertEventMember(deps: AppDeps, user: UserRow, event: EventRow):
     throw new ApiError(403, MESSAGES.notOnList);
   }
 }
+
+/*
+ * ---- FOR THE INTEGRATOR: the other call sites of this check ------------------------------
+ *
+ * `event_members` (migration 013) is a general primitive, not a tagging one. The same gap it
+ * closes here is open in agent C's crowd routes, which are on `v6/crowd` and deliberately not
+ * touched from this branch. Their `assertEventMember` (routes.crowd.ts) reads:
+ *
+ *     if (event.access !== "list") return;
+ *     if (!(await deps.db.isEventParticipant(event.id, email.toLowerCase()))) ...
+ *
+ * so on an `open` event it authorises ANY signed-in participant. Its comment says that is
+ * "what the event code already gated (B3)" — but the code gate ran once, at registration, and
+ * until migration 013 the event it resolved was never persisted. A participant who registered
+ * at event A could therefore upload to event B's crowd album, list its photos and report them.
+ *
+ * What that function should become, once both branches are merged:
+ *
+ *     if (!(await deps.db.isEventMember(userId, event.id))) {
+ *       throw new ApiError(403, MESSAGES.notEventMember);
+ *     }
+ *     if (event.access === "list" && !(await deps.db.isEventParticipant(event.id, email))) {
+ *       throw new ApiError(403, MESSAGES.notOnList);
+ *     }
+ *
+ * It needs the caller's `user.id`, which it does not take today (it takes only the e-mail).
+ * The three call sites are `crowdAlbumForUpload` (behind `uploads/init`, `uploads/:id/parts`
+ * and `uploads/:id/complete`), `GET /v1/albums/:albumId/photos` and
+ * `POST /v1/photos/:id/report`.
+ *
+ * Two more places worth a decision, both outside section E:
+ *   * `POST /v1/events/:slug/selfie` (routes.ts) gates on a `consents` row, which the 013
+ *     backfill maps to membership, so it is already equivalent — but it would read better as
+ *     membership plus consent than as consent standing in for membership.
+ *   * the crowd upload path should ALSO write a membership row (`source: 'upload'`), so a
+ *     participant who arrives by a share link rather than by registration is recorded.
+ */
 
 /**
  * A photo the caller may tag on: one they uploaded themselves, or one already in their own

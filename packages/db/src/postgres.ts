@@ -67,8 +67,10 @@ import type {
   // v6 (agent B)
   EventCodeRow,
   IdentityProvider,
-  // v6 (agent E): tagging
+  // v6 (agent E): event membership + tagging
   AuditEntryRow,
+  EventMemberRow,
+  EventMemberSource,
   PhotoTagRow,
   PhotoTagState,
   PhotoTagWithNameRow,
@@ -2122,25 +2124,69 @@ export class PostgresDatabase implements Database {
     return rows[0]?.email_verified_at ?? null;
   }
 
-  // ---- tagging v6 (agent E): users.taggable / display_name, photo_tags -------------------
+  // ---- event membership + tagging v6 (agent E) -------------------------------------------
 
-  async findTagProfile(userId: string): Promise<TagProfileRow | null> {
+  async addEventMember(input: {
+    userId: string;
+    eventId: string;
+    source: EventMemberSource;
+  }): Promise<EventMemberRow> {
+    // Idempotent and non-destructive: a second call keeps the first row, `source` included,
+    // so the provenance recorded is how the person FIRST came to belong to the event. The
+    // `do update set user_id = excluded.user_id` is a no-op that makes the insert always
+    // return a row, which an `on conflict do nothing` would not.
+    const rows = await this.sql<EventMemberSql[]>`
+      insert into event_members (user_id, event_id, source)
+      values (${input.userId}, ${input.eventId}, ${input.source})
+      on conflict (user_id, event_id) do update set user_id = excluded.user_id
+      returning user_id, event_id, source, taggable,
+                taggable_consent_version, taggable_consent_at, created_at
+    `;
+    const row = rows[0];
+    if (!row) throw new Error("event_members insert returned no row");
+    return mapEventMember(row);
+  }
+
+  async isEventMember(userId: string, eventId: string): Promise<boolean> {
+    const rows = await this.sql<{ ok: number }[]>`
+      select 1 as ok from event_members
+      where user_id = ${userId} and event_id = ${eventId}
+    `;
+    return rows.length > 0;
+  }
+
+  async findEventMember(userId: string, eventId: string): Promise<EventMemberRow | null> {
+    const rows = await this.sql<EventMemberSql[]>`
+      select user_id, event_id, source, taggable,
+             taggable_consent_version, taggable_consent_at, created_at
+      from event_members where user_id = ${userId} and event_id = ${eventId}
+    `;
+    return rows[0] ? mapEventMember(rows[0]) : null;
+  }
+
+  async findTagProfile(userId: string, eventId: string): Promise<TagProfileRow | null> {
+    // The join is an inner one on purpose: no membership row means no tagging profile, and
+    // no way to opt in. That is the honest answer now that membership is recorded.
     const rows = await this.sql<TagProfileSql[]>`
-      select id, taggable, display_name, taggable_consent_version, taggable_consent_at
-      from users where id = ${userId}
+      select m.user_id, m.event_id, m.taggable, u.display_name,
+             m.taggable_consent_version, m.taggable_consent_at
+      from event_members m
+      join users u on u.id = m.user_id
+      where m.user_id = ${userId} and m.event_id = ${eventId}
     `;
     return rows[0] ? mapTagProfile(rows[0]) : null;
   }
 
   async setTagProfile(
     userId: string,
+    eventId: string,
     input: {
       taggable: boolean;
       displayName?: string | null;
       consentTextVersion?: string | null;
     },
   ): Promise<TagProfileRow | null> {
-    const current = await this.findTagProfile(userId);
+    const current = await this.findTagProfile(userId, eventId);
     if (!current) return null;
     const name =
       input.displayName === undefined ? current.displayName : normalizeDisplayName(input.displayName);
@@ -2152,19 +2198,27 @@ export class PostgresDatabase implements Database {
     // history lives in `audit_log`.
     const consent = nextTagConsent(current, input);
     if (input.taggable && !consent.version) return null;
-    const rows = await this.sql<TagProfileSql[]>`
-      update users
+    // Two writes: the flag and its consent on the membership row, the name on the user. The
+    // name is global, so it is only written when the caller actually supplied one.
+    if (name !== current.displayName) {
+      await this.sql`update users set display_name = ${name} where id = ${userId}`;
+    }
+    const updated = await this.sql`
+      update event_members
       set taggable = ${input.taggable},
-          display_name = ${name},
           taggable_consent_version = ${consent.version},
           taggable_consent_at = ${consent.at}
-      where id = ${userId}
-      returning id, taggable, display_name, taggable_consent_version, taggable_consent_at
+      where user_id = ${userId} and event_id = ${eventId}
+      returning user_id
     `;
-    return rows[0] ? mapTagProfile(rows[0]) : null;
+    if (updated.length === 0) return null;
+    // Re-read rather than compose a RETURNING across the two tables: one extra round trip on
+    // a route a participant hits by hand, in exchange for one definition of the row.
+    return this.findTagProfile(userId, eventId);
   }
 
   async searchTaggableUsers(input: {
+    eventId: string;
     prefix: string;
     limit: number;
   }): Promise<TaggableUserRow[]> {
@@ -2172,17 +2226,19 @@ export class PostgresDatabase implements Database {
     // caller that forgets to get nothing rather than the whole roster.
     const prefix = input.prefix.trim().toLowerCase();
     if (prefix.length < TAG_SEARCH_MIN_PREFIX) return [];
-    // `u.taggable` is the only membership test there is, and that is the decision: tagging
-    // must not require a recognition consent (decision 2 — a crowd album is never biometric,
-    // so its participants never grant one, and tagging is the only way they can find
-    // themselves there). There is no non-biometric user<->event link in the schema today:
-    // `consents` and `galleries` are biometric, `event_participants` only exists when
-    // `events.access = 'list'`, and registration records event membership nowhere but an
-    // audit row. Add the scope here the day such a link exists; do NOT reinstate `consents`.
+    // Two membership tests, both non-biometric:
+    //   * `event_members` for THIS event — so a person who opted in at event A is not
+    //     suggested at event B (that is `event_members_taggable_idx`);
+    //   * `m.taggable`, the per-event opt-in, which is the consent for tagging.
+    // A recognition consent is NOT required and must never be added back: decision 2 freezes
+    // that a crowd album is never biometric, so its participants never grant one, and tagging
+    // is the only way they can find themselves there.
     const rows = await this.sql<{ id: string; display_name: string }[]>`
       select u.id, u.display_name
       from users u
-      where u.taggable
+      join event_members m on m.user_id = u.id
+      where m.event_id = ${input.eventId}
+        and m.taggable
         and u.display_name is not null
         and lower(u.display_name) like ${`${escapeLike(prefix)}%`}
       order by lower(u.display_name) asc, u.id asc
@@ -2196,13 +2252,18 @@ export class PostgresDatabase implements Database {
     userId: string;
     taggedBy: string;
   }): Promise<PhotoTagRow | null> {
-    // One statement: the opt-in is a `where` on the source row, so a concurrent opt-out
-    // cannot be raced, and `on conflict do nothing` keeps a 'removed' row untouched.
+    // One statement, and the opt-in is a `where` on the source rows, so a concurrent opt-out
+    // cannot be raced. The event is taken from the photo itself, so the per-event opt-in is
+    // checked against the event the photo actually belongs to and not against one the caller
+    // named. `on conflict do nothing` keeps a 'removed' row untouched.
     const rows = await this.sql<PhotoTagSql[]>`
       insert into photo_tags (photo_id, user_id, tagged_by)
-      select ${input.photoId}::uuid, u.id, ${input.taggedBy}::uuid
-      from users u
-      where u.id = ${input.userId} and u.taggable and u.display_name is not null
+      select p.id, m.user_id, ${input.taggedBy}::uuid
+      from photos p
+      join event_members m
+        on m.event_id = p.event_id and m.user_id = ${input.userId} and m.taggable
+      join users u on u.id = m.user_id and u.display_name is not null
+      where p.id = ${input.photoId}
       on conflict (photo_id, user_id) do nothing
       returning photo_id, user_id, tagged_by, state, created_at
     `;
@@ -2226,11 +2287,15 @@ export class PostgresDatabase implements Database {
     return rows[0] ? mapPhotoTag(rows[0]) : null;
   }
 
-  async listActivePhotoTagsForUser(userId: string): Promise<PhotoTagRow[]> {
+  async listActivePhotoTagsForUser(userId: string, eventId: string): Promise<PhotoTagRow[]> {
+    // Scoped to the event, because the opt-in is: opting out of event A must not remove the
+    // tags the same person accepted at event B.
     const rows = await this.sql<PhotoTagSql[]>`
-      select photo_id, user_id, tagged_by, state, created_at from photo_tags
-      where user_id = ${userId} and state = 'active'
-      order by created_at desc, photo_id asc
+      select pt.photo_id, pt.user_id, pt.tagged_by, pt.state, pt.created_at
+      from photo_tags pt
+      join photos p on p.id = pt.photo_id
+      where pt.user_id = ${userId} and pt.state = 'active' and p.event_id = ${eventId}
+      order by pt.created_at desc, pt.photo_id asc
     `;
     return rows.map(mapPhotoTag);
   }
@@ -2504,13 +2569,36 @@ function mapEventCode(row: EventCodeSql): EventCodeRow {
 
 // ---- tagging v6 (agent E) -----------------------------------------------------------------
 
+type EventMemberSql = {
+  user_id: string;
+  event_id: string;
+  source: EventMemberSource;
+  taggable: boolean;
+  taggable_consent_version: string | null;
+  taggable_consent_at: Date | null;
+  created_at: Date;
+};
+
 type TagProfileSql = {
-  id: string;
+  user_id: string;
+  event_id: string;
   taggable: boolean;
   display_name: string | null;
   taggable_consent_version: string | null;
   taggable_consent_at: Date | null;
 };
+
+function mapEventMember(row: EventMemberSql): EventMemberRow {
+  return {
+    userId: row.user_id,
+    eventId: row.event_id,
+    source: row.source,
+    taggable: row.taggable,
+    taggableConsentVersion: row.taggable_consent_version,
+    taggableConsentAt: row.taggable_consent_at,
+    createdAt: row.created_at,
+  };
+}
 
 type PhotoTagSql = {
   photo_id: string;
@@ -2522,7 +2610,8 @@ type PhotoTagSql = {
 
 function mapTagProfile(row: TagProfileSql): TagProfileRow {
   return {
-    userId: row.id,
+    userId: row.user_id,
+    eventId: row.event_id,
     taggable: row.taggable,
     displayName: row.display_name,
     consentTextVersion: row.taggable_consent_version,

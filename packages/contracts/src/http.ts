@@ -997,12 +997,17 @@ export const DISPLAY_NAME_MAX_CHARS = 60;
  * is the crowd album never grants recognition consent — and tagging is the only way they can
  * find themselves there. Tagging therefore must never require a `consents` row.
  *
+ * It is also PER EVENT, and the text says so. The opt-in lives on `event_members.taggable`,
+ * not on `users`: a global flag would mean consenting once, at one event, to being nameable
+ * at every event the deployment ever runs, which would make the words below a false
+ * statement the day a second event exists.
+ *
  * Bump the version whenever the text changes: a stored version older than this one means the
  * participant consented to different words and has to be asked again.
  */
-export const TAG_CONSENT_TEXT_VERSION = "2026-10-08";
+export const TAG_CONSENT_TEXT_VERSION = "2026-10-09";
 export const TAG_CONSENT_TEXT =
-  "Acconsento che gli altri partecipanti associno il nome che ho scelto alle foto dell'evento in cui compaio. Posso rimuovere ogni tag e disattivare i tag in qualsiasi momento: disattivandoli, i tag che ho già vengono rimossi. Questo consenso è separato dal riconoscimento del volto e non lo richiede.";
+  "Acconsento che gli altri partecipanti di questo evento associno il nome che ho scelto alle foto in cui compaio. Vale solo per questo evento. Posso rimuovere ogni tag e disattivare i tag in qualsiasi momento: disattivandoli, i tag che ho già in questo evento vengono rimossi. Questo consenso è separato dal riconoscimento del volto e non lo richiede.";
 
 /** The participant's own opt-in state. Their own e-mail is theirs, so it is not here either. */
 export const tagProfileSchema = z

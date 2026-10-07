@@ -60,8 +60,10 @@ export type {
   // v6 (agent B)
   EventCodeRow,
   IdentityProvider,
-  // v6 (agent E): tagging
+  // v6 (agent E): event membership + tagging
   AuditEntryRow,
+  EventMemberRow,
+  EventMemberSource,
   PhotoTagRow,
   PhotoTagState,
   PhotoTagWithNameRow,

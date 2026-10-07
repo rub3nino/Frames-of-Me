@@ -61,8 +61,10 @@ import type {
   // v6 (agent B)
   EventCodeRow,
   IdentityProvider,
-  // v6 (agent E): tagging
+  // v6 (agent E): event membership + tagging
   AuditEntryRow,
+  EventMemberRow,
+  EventMemberSource,
   PhotoTagRow,
   PhotoTagWithNameRow,
   TagProfileRow,
@@ -1893,38 +1895,79 @@ export class MemoryDatabase implements Database {
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || compareText(b.id, a.id));
   }
 
-  // ---- tagging v6 (agent E): users.taggable / display_name, photo_tags -------------------
+  // ---- event membership + tagging v6 (agent E) -------------------------------------------
 
-  /** `users.taggable` / `users.display_name` (migration 013), keyed by user id. */
-  private readonly tagProfiles = new Map<string, TagProfileStored>();
+  /** `event_members` (migration 013), keyed by `user_id\0event_id` (its primary key). */
+  private readonly eventMembers = new Map<string, EventMemberStored>();
+  /** `users.display_name` (migration 013). Global, keyed by user id. */
+  private readonly displayNames = new Map<string, string>();
   /** `photo_tags`, keyed by `photo_id\0user_id` (the primary key of migration 013). */
   private readonly photoTags = new Map<string, PhotoTagStored>();
   /** `audit_log`, so `listAuditForTarget` works without Postgres. */
   private readonly auditRows: AuditEntryRow[] = [];
 
-  async findTagProfile(userId: string): Promise<TagProfileRow | null> {
+  async addEventMember(input: {
+    userId: string;
+    eventId: string;
+    source: EventMemberSource;
+  }): Promise<EventMemberRow> {
+    const key = eventMemberKey(input.userId, input.eventId);
+    const existing = this.eventMembers.get(key);
+    // Idempotent and non-destructive, like the Postgres `on conflict ... do update` no-op:
+    // the recorded `source` is how the person FIRST came to belong to the event.
+    if (existing) return { ...existing };
+    const row: EventMemberStored = {
+      userId: input.userId,
+      eventId: input.eventId,
+      source: input.source,
+      taggable: false,
+      taggableConsentVersion: null,
+      taggableConsentAt: null,
+      createdAt: new Date(),
+    };
+    this.eventMembers.set(key, row);
+    return { ...row };
+  }
+
+  async isEventMember(userId: string, eventId: string): Promise<boolean> {
+    return this.eventMembers.has(eventMemberKey(userId, eventId));
+  }
+
+  async findEventMember(userId: string, eventId: string): Promise<EventMemberRow | null> {
+    const row = this.eventMembers.get(eventMemberKey(userId, eventId));
+    return row ? { ...row } : null;
+  }
+
+  async findTagProfile(userId: string, eventId: string): Promise<TagProfileRow | null> {
     if (!this.users.has(userId)) return null;
-    const stored = this.tagProfiles.get(userId);
+    // No membership row means no tagging profile, and no way to opt in — the inner join in
+    // the Postgres version.
+    const member = this.eventMembers.get(eventMemberKey(userId, eventId));
+    if (!member) return null;
     // The column defaults: `taggable false`, `display_name null`. Never "unknown means yes".
     return {
       userId,
-      taggable: stored?.taggable ?? false,
-      displayName: stored?.displayName ?? null,
-      consentTextVersion: stored?.consentTextVersion ?? null,
-      consentAt: stored?.consentAt ?? null,
+      eventId,
+      taggable: member.taggable,
+      displayName: this.displayNames.get(userId) ?? null,
+      consentTextVersion: member.taggableConsentVersion,
+      consentAt: member.taggableConsentAt,
     };
   }
 
   async setTagProfile(
     userId: string,
+    eventId: string,
     input: {
       taggable: boolean;
       displayName?: string | null;
       consentTextVersion?: string | null;
     },
   ): Promise<TagProfileRow | null> {
-    const current = await this.findTagProfile(userId);
+    const current = await this.findTagProfile(userId, eventId);
     if (!current) return null;
+    const member = this.eventMembers.get(eventMemberKey(userId, eventId));
+    if (!member) return null;
     const name =
       input.displayName === undefined
         ? current.displayName
@@ -1932,14 +1975,14 @@ export class MemoryDatabase implements Database {
     if (input.taggable && !name) return null;
     const consent = nextTagConsent(current, input);
     if (input.taggable && !consent.version) return null;
-    this.tagProfiles.set(userId, {
-      taggable: input.taggable,
-      displayName: name,
-      consentTextVersion: consent.version,
-      consentAt: consent.at,
-    });
+    if (name === null) this.displayNames.delete(userId);
+    else this.displayNames.set(userId, name);
+    member.taggable = input.taggable;
+    member.taggableConsentVersion = consent.version;
+    member.taggableConsentAt = consent.at;
     return {
       userId,
+      eventId,
       taggable: input.taggable,
       displayName: name,
       consentTextVersion: consent.version,
@@ -1948,6 +1991,7 @@ export class MemoryDatabase implements Database {
   }
 
   async searchTaggableUsers(input: {
+    eventId: string;
     prefix: string;
     limit: number;
   }): Promise<TaggableUserRow[]> {
@@ -1955,12 +1999,15 @@ export class MemoryDatabase implements Database {
     // Same second line of defence as Postgres: a short prefix returns nothing here too.
     if (prefix.length < TAG_SEARCH_MIN_PREFIX) return [];
     const rows: TaggableUserRow[] = [];
-    // `taggable` is the only membership test. See the comment on the Postgres version: a
-    // recognition consent must NOT be required, and there is no non-biometric event link.
-    for (const [userId, profile] of this.tagProfiles) {
-      if (!profile.taggable || !profile.displayName) continue;
-      if (!profile.displayName.toLowerCase().startsWith(prefix)) continue;
-      rows.push({ userId, displayName: profile.displayName });
+    // Two membership tests, both non-biometric: a member row for THIS event, and the
+    // per-event opt-in. See the comment on the Postgres version — a recognition consent must
+    // NOT be required, and a person who opted in at event A is not suggested at event B.
+    for (const member of this.eventMembers.values()) {
+      if (member.eventId !== input.eventId || !member.taggable) continue;
+      const displayName = this.displayNames.get(member.userId);
+      if (!displayName) continue;
+      if (!displayName.toLowerCase().startsWith(prefix)) continue;
+      rows.push({ userId: member.userId, displayName });
     }
     return rows
       .sort(
@@ -1976,7 +2023,11 @@ export class MemoryDatabase implements Database {
     userId: string;
     taggedBy: string;
   }): Promise<PhotoTagRow | null> {
-    const profile = await this.findTagProfile(input.userId);
+    // The event comes from the photo, so the per-event opt-in is checked against the event
+    // the photo actually belongs to and not against one the caller named.
+    const photo = this.photos.get(input.photoId);
+    if (!photo) return null;
+    const profile = await this.findTagProfile(input.userId, photo.eventId);
     if (!profile || !profile.taggable || !profile.displayName) return null;
     const key = photoTagKey(input.photoId, input.userId);
     // Mirrors `on conflict (photo_id, user_id) do nothing`: an existing row, 'removed'
@@ -2005,9 +2056,16 @@ export class MemoryDatabase implements Database {
     return { ...row };
   }
 
-  async listActivePhotoTagsForUser(userId: string): Promise<PhotoTagRow[]> {
+  async listActivePhotoTagsForUser(userId: string, eventId: string): Promise<PhotoTagRow[]> {
+    // Scoped to the event, because the opt-in is: opting out of event A must not remove the
+    // tags the same person accepted at event B.
     return [...this.photoTags.values()]
-      .filter((row) => row.userId === userId && row.state === "active")
+      .filter(
+        (row) =>
+          row.userId === userId &&
+          row.state === "active" &&
+          this.photos.get(row.photoId)?.eventId === eventId,
+      )
       .sort(
         (a, b) =>
           b.createdAt.getTime() - a.createdAt.getTime() || compareText(a.photoId, b.photoId),
@@ -2051,7 +2109,7 @@ export class MemoryDatabase implements Database {
       )
       .map((row) => ({
         ...row,
-        displayName: this.tagProfiles.get(row.userId)?.displayName ?? null,
+        displayName: this.displayNames.get(row.userId) ?? null,
       }));
   }
 
@@ -2152,14 +2210,22 @@ function eventCodeKey(eventId: string, code: string): string {
   return `${eventId}\u0000${code}`;
 }
 
-// ---- tagging v6 (agent E) -----------------------------------------------------------------
+// ---- event membership + tagging v6 (agent E) ----------------------------------------------
 
-type TagProfileStored = {
+type EventMemberStored = {
+  userId: string;
+  eventId: string;
+  source: EventMemberSource;
   taggable: boolean;
-  displayName: string | null;
-  consentTextVersion: string | null;
-  consentAt: Date | null;
+  taggableConsentVersion: string | null;
+  taggableConsentAt: Date | null;
+  createdAt: Date;
 };
+
+/** The `event_members` primary key (user_id, event_id) as one map key. */
+function eventMemberKey(userId: string, eventId: string): string {
+  return `${userId}\u0000${eventId}`;
+}
 
 type PhotoTagStored = {
   photoId: string;
