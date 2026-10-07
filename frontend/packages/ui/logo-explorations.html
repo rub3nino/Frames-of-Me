@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RePhoto — Logo explorations</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="base.css">
+<link rel="stylesheet" href="components.css">
+<style>
+  .wrap { max-width: var(--maxw-page); margin-inline: auto; padding: var(--s-9) var(--s-5) var(--s-12); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px,1fr)); gap: var(--s-5); margin-top: var(--s-7); }
+  .lv { background: var(--c-surface); border: 1px solid var(--c-line); border-radius: var(--r-lg); overflow: hidden; }
+  .lv.pick { border-color: var(--c-accent); box-shadow: 0 0 0 1px var(--c-accent); }
+  .lv .stage { height: 190px; display: grid; place-items: center; background: var(--c-canvas); }
+  .lv .stage svg { width: 108px; height: 108px; color: var(--c-ink); }
+  .lv .meta { padding: var(--s-4) var(--s-5) var(--s-5); }
+  .lv .meta .n { display: flex; align-items: center; gap: var(--s-2); font-weight: var(--fw-semibold); }
+  .lv .meta .t { font-size: var(--fs-xs); color: var(--c-ink-3); margin-top: 2px; }
+  .lv .meta p { font-size: var(--fs-sm); color: var(--c-ink-2); margin-top: var(--s-3); line-height: 1.5; }
+  .word { display: inline-flex; align-items: center; gap: 9px; font-weight: var(--fw-semibold); font-size: 1.25rem; letter-spacing: var(--tr-tight); color: var(--c-ink); margin-top: var(--s-4); }
+  .word svg { width: 28px; height: 28px; }
+  .scale-row { display: flex; align-items: center; gap: var(--s-4); margin-top: var(--s-4); color: var(--c-ink); }
+  .scale-row svg { color: var(--c-ink); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1 class="display-2">Logo — sei direzioni</h1>
+  <p class="lead" style="max-width:44rem;margin-top:var(--s-3)">Generato con lo skill <span class="mono">logo-generator</span>: minimal, geometrico, molto spazio negativo, un solo fuoco, tratto 3–4. Monocromo ink con un singolo elemento in blu accento. La direzione consigliata è evidenziata.</p>
+
+  <div class="grid">
+
+    <!-- V4 recommended first -->
+    <div class="lv pick">
+      <div class="stage">
+        <svg viewBox="0 0 100 100" fill="none" aria-label="RePhoto focus lock">
+          <g stroke="currentColor" stroke-width="3.6" stroke-linecap="round" fill="none">
+            <path d="M22 36 V28 a6 6 0 0 1 6-6 H36"/>
+            <path d="M64 22 H72 a6 6 0 0 1 6 6 V36"/>
+            <path d="M78 64 V72 a6 6 0 0 1-6 6 H64"/>
+            <path d="M36 78 H28 a6 6 0 0 1-6-6 V64"/>
+          </g>
+          <circle cx="50" cy="50" r="7.5" fill="var(--c-accent)"/>
+        </svg>
+      </div>
+      <div class="meta">
+        <div class="n">Focus Lock <span class="badge badge-accent">consigliato</span></div>
+        <div class="t">Brackets AF + soggetto · mixed</div>
+        <p>La cornice di messa a fuoco si chiude sul soggetto: esattamente la promessa del prodotto — "ti troviamo". Leggibile a 16px, perfetto come app icon.</p>
+        <div class="word"><svg viewBox="0 0 100 100" fill="none"><g stroke="currentColor" stroke-width="3.6" stroke-linecap="round"><path d="M22 36 V28 a6 6 0 0 1 6-6 H36"/><path d="M64 22 H72 a6 6 0 0 1 6 6 V36"/><path d="M78 64 V72 a6 6 0 0 1-6 6 H64"/><path d="M36 78 H28 a6 6 0 0 1-6-6 V64"/></g><circle cx="50" cy="50" r="7.5" fill="var(--c-accent)"/></svg>RePhoto</div>
+      </div>
+    </div>
+
+    <!-- V1 focus ring -->
+    <div class="lv">
+      <div class="stage">
+        <svg viewBox="0 0 100 100" fill="none" aria-label="RePhoto aperture">
+          <circle cx="50" cy="50" r="32" stroke="currentColor" stroke-width="3.5"/>
+          <circle cx="50" cy="50" r="19" stroke="currentColor" stroke-width="2.4" opacity=".45"/>
+          <circle cx="50" cy="50" r="6.5" fill="var(--c-accent)"/>
+        </svg>
+      </div>
+      <div class="meta">
+        <div class="n">Aperture</div>
+        <div class="t">Anelli concentrici · pure geometric</div>
+        <p>Un obiettivo che mette a fuoco. Calmo e senza tempo; il blu al centro è il punto di fuoco.</p>
+        <div class="word"><svg viewBox="0 0 100 100" fill="none"><circle cx="50" cy="50" r="32" stroke="currentColor" stroke-width="3.5"/><circle cx="50" cy="50" r="19" stroke="currentColor" stroke-width="2.4" opacity=".45"/><circle cx="50" cy="50" r="6.5" fill="var(--c-accent)"/></svg>RePhoto</div>
+      </div>
+    </div>
+
+    <!-- V2 one among many -->
+    <div class="lv">
+      <div class="stage">
+        <svg viewBox="0 0 100 100" fill="none" aria-label="RePhoto one among many">
+          <g fill="currentColor" opacity=".34">
+            <circle cx="28" cy="28" r="2.4"/><circle cx="42" cy="28" r="2.4"/><circle cx="56" cy="28" r="2.4"/><circle cx="70" cy="28" r="2.4"/>
+            <circle cx="28" cy="42" r="2.4"/><circle cx="42" cy="42" r="2.4"/><circle cx="56" cy="42" r="2.4"/><circle cx="70" cy="42" r="2.4"/>
+            <circle cx="28" cy="56" r="2.4"/><circle cx="42" cy="56" r="2.4"/><circle cx="70" cy="56" r="2.4"/>
+            <circle cx="28" cy="70" r="2.4"/><circle cx="42" cy="70" r="2.4"/><circle cx="56" cy="70" r="2.4"/><circle cx="70" cy="70" r="2.4"/>
+          </g>
+          <circle cx="56" cy="56" r="7.5" fill="var(--c-accent)"/>
+        </svg>
+      </div>
+      <div class="meta">
+        <div class="n">One Among Many</div>
+        <div class="t">Matrice di punti · dot matrix</div>
+        <p>Migliaia di volti, e uno è il tuo. L'asimmetria del punto blu crea il fuoco.</p>
+        <div class="word"><svg viewBox="0 0 100 100" fill="none"><g fill="currentColor" opacity=".34"><circle cx="30" cy="34" r="3"/><circle cx="46" cy="34" r="3"/><circle cx="62" cy="34" r="3"/><circle cx="30" cy="50" r="3"/><circle cx="62" cy="50" r="3"/><circle cx="30" cy="66" r="3"/><circle cx="46" cy="66" r="3"/><circle cx="62" cy="66" r="3"/></g><circle cx="46" cy="50" r="8" fill="var(--c-accent)"/></svg>RePhoto</div>
+      </div>
+    </div>
+
+    <!-- V3 scan lines -->
+    <div class="lv">
+      <div class="stage">
+        <svg viewBox="0 0 100 100" fill="none" aria-label="RePhoto scan">
+          <defs><clipPath id="c3"><circle cx="50" cy="50" r="30"/></clipPath></defs>
+          <g clip-path="url(#c3)" stroke="currentColor" stroke-linecap="round">
+            <line x1="20" y1="34" x2="80" y2="34" stroke-width="2"/>
+            <line x1="20" y1="42" x2="80" y2="42" stroke-width="2"/>
+            <line x1="20" y1="50" x2="80" y2="50" stroke-width="3.4" stroke="var(--c-accent)"/>
+            <line x1="20" y1="58" x2="80" y2="58" stroke-width="2"/>
+            <line x1="20" y1="66" x2="80" y2="66" stroke-width="2"/>
+          </g>
+          <circle cx="50" cy="50" r="33.5" stroke="currentColor" stroke-width="2.2" opacity=".5"/>
+        </svg>
+      </div>
+      <div class="meta">
+        <div class="n">Scan</div>
+        <div class="t">Linee in un cerchio · line system</div>
+        <p>La riga blu è la scansione che riconosce. Tecnico ma sobrio.</p>
+        <div class="word"><svg viewBox="0 0 100 100" fill="none"><defs><clipPath id="c3w"><circle cx="50" cy="50" r="30"/></clipPath></defs><g clip-path="url(#c3w)" stroke="currentColor" stroke-linecap="round"><line x1="20" y1="38" x2="80" y2="38" stroke-width="2"/><line x1="20" y1="50" x2="80" y2="50" stroke-width="3.4" stroke="var(--c-accent)"/><line x1="20" y1="62" x2="80" y2="62" stroke-width="2"/></g><circle cx="50" cy="50" r="33.5" stroke="currentColor" stroke-width="2.2" opacity=".5"/></svg>RePhoto</div>
+      </div>
+    </div>
+
+    <!-- V5 aperture blades -->
+    <div class="lv">
+      <div class="stage">
+        <svg viewBox="0 0 100 100" fill="none" aria-label="RePhoto aperture blades">
+          <polygon points="50,20 76,35 76,65 50,80 24,65 24,35" stroke="currentColor" stroke-width="3.2" fill="none" stroke-linejoin="round"/>
+          <polygon points="50,33 63,41 63,59 50,67 37,59 37,41" stroke="currentColor" stroke-width="2" fill="none" opacity=".45" stroke-linejoin="round"/>
+          <circle cx="50" cy="50" r="5.5" fill="var(--c-accent)"/>
+        </svg>
+      </div>
+      <div class="meta">
+        <div class="n">Aperture Blades</div>
+        <div class="t">Poligoni annidati · lines + geometry</div>
+        <p>Le lamelle del diaframma. Struttura solida, taglio fotografico.</p>
+        <div class="word"><svg viewBox="0 0 100 100" fill="none"><polygon points="50,20 76,35 76,65 50,80 24,65 24,35" stroke="currentColor" stroke-width="3.2" fill="none" stroke-linejoin="round"/><circle cx="50" cy="50" r="5.5" fill="var(--c-accent)"/></svg>RePhoto</div>
+      </div>
+    </div>
+
+    <!-- V6 match -->
+    <div class="lv">
+      <div class="stage">
+        <svg viewBox="0 0 100 100" fill="none" aria-label="RePhoto match">
+          <path d="M37 42 Q50 50 63 58" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+          <circle cx="34" cy="39" r="11" stroke="currentColor" stroke-width="3.4" fill="var(--c-surface)"/>
+          <circle cx="66" cy="61" r="9" fill="var(--c-accent)"/>
+        </svg>
+      </div>
+      <div class="meta">
+        <div class="n">Match</div>
+        <div class="t">Due nodi collegati · node network</div>
+        <p>Selfie e scatto che si incontrano. Il nodo blu è la foto trovata.</p>
+        <div class="word"><svg viewBox="0 0 100 100" fill="none"><path d="M37 42 Q50 50 63 58" stroke="currentColor" stroke-width="3" stroke-linecap="round"/><circle cx="34" cy="39" r="11" stroke="currentColor" stroke-width="3.4" fill="var(--c-surface)"/><circle cx="66" cy="61" r="9" fill="var(--c-accent)"/></svg>RePhoto</div>
+      </div>
+    </div>
+
+  </div>
+
+  <div style="margin-top:var(--s-9);padding-top:var(--s-6);border-top:1px solid var(--c-line)">
+    <h3>Il segno scelto, in scala</h3>
+    <div class="scale-row">
+      <svg width="24" height="24" viewBox="0 0 100 100" fill="none"><g stroke="currentColor" stroke-width="3.6" stroke-linecap="round"><path d="M22 36 V28 a6 6 0 0 1 6-6 H36"/><path d="M64 22 H72 a6 6 0 0 1 6 6 V36"/><path d="M78 64 V72 a6 6 0 0 1-6 6 H64"/><path d="M36 78 H28 a6 6 0 0 1-6-6 V64"/></g><circle cx="50" cy="50" r="7.5" fill="var(--c-accent)"/></svg>
+      <svg width="40" height="40" viewBox="0 0 100 100" fill="none"><g stroke="currentColor" stroke-width="3.6" stroke-linecap="round"><path d="M22 36 V28 a6 6 0 0 1 6-6 H36"/><path d="M64 22 H72 a6 6 0 0 1 6 6 V36"/><path d="M78 64 V72 a6 6 0 0 1-6 6 H64"/><path d="M36 78 H28 a6 6 0 0 1-6-6 V64"/></g><circle cx="50" cy="50" r="7.5" fill="var(--c-accent)"/></svg>
+      <svg width="64" height="64" viewBox="0 0 100 100" fill="none"><g stroke="currentColor" stroke-width="3.6" stroke-linecap="round"><path d="M22 36 V28 a6 6 0 0 1 6-6 H36"/><path d="M64 22 H72 a6 6 0 0 1 6 6 V36"/><path d="M78 64 V72 a6 6 0 0 1-6 6 H64"/><path d="M36 78 H28 a6 6 0 0 1-6-6 V64"/></g><circle cx="50" cy="50" r="7.5" fill="var(--c-accent)"/></svg>
+      <span class="word" style="margin:0"><svg viewBox="0 0 100 100" fill="none"><g stroke="currentColor" stroke-width="3.6" stroke-linecap="round"><path d="M22 36 V28 a6 6 0 0 1 6-6 H36"/><path d="M64 22 H72 a6 6 0 0 1 6 6 V36"/><path d="M78 64 V72 a6 6 0 0 1-6 6 H64"/><path d="M36 78 H28 a6 6 0 0 1-6-6 V64"/></g><circle cx="50" cy="50" r="7.5" fill="var(--c-accent)"/></svg>RePhoto</span>
+    </div>
+  </div>
+</div>
+</body>
+</html>

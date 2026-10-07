@@ -22,7 +22,7 @@ import {
   MemoryFaceIndexStore,
 } from "../../../packages/face-engine/src/fake.ts";
 import { createApp } from "../src/app.ts";
-import { sha256Hex } from "../src/crypto.ts";
+import { hashPassword, sha256Hex } from "../src/crypto.ts";
 import type { AppDeps } from "../src/deps.ts";
 import { MESSAGES } from "../src/errors.ts";
 import type { Mailer, MailMessage } from "../src/mailer.ts";
@@ -325,6 +325,100 @@ test("accept-invite creates the photographer, the membership and a session cooki
 
   const again = await h.app.request(json("POST", "/v1/auth/accept-invite", { token }));
   assert.equal(again.status, 400);
+});
+
+test("staff password login issues a session; wrong password and participant role are refused", async () => {
+  const h = await harness();
+  const admin = await h.db.findUserByEmailRole("admin@rephoto.local", "admin");
+  assert.ok(admin);
+  await h.db.setUserPassword(admin.id, hashPassword("s3cret-pass"));
+
+  const ok = await h.app.request(
+    json("POST", "/v1/auth/login", {
+      email: "admin@rephoto.local",
+      password: "s3cret-pass",
+      role: "admin",
+    }),
+  );
+  assert.equal(ok.status, 200);
+  const cookie = ok.headers.get("set-cookie") ?? "";
+  assert.ok(cookie.startsWith(`${SESSION_COOKIE_NAME}=`));
+  assert.ok(cookie.includes("HttpOnly"));
+
+  const wrong = await h.app.request(
+    json("POST", "/v1/auth/login", {
+      email: "admin@rephoto.local",
+      password: "nope",
+      role: "admin",
+    }),
+  );
+  assert.equal(wrong.status, 401);
+
+  // No password set on the seeded photographer → refused.
+  const unset = await h.app.request(
+    json("POST", "/v1/auth/login", {
+      email: "photographer@rephoto.local",
+      password: "anything",
+      role: "photographer",
+    }),
+  );
+  assert.equal(unset.status, 401);
+
+  // Participants are magic-link only — the schema rejects the role.
+  const participant = await h.app.request(
+    json("POST", "/v1/auth/login", {
+      email: "p@example.com",
+      password: "whatever",
+      role: "participant",
+    }),
+  );
+  assert.equal(participant.status, 400);
+});
+
+test("admin creates staff credentials that then work for login", async () => {
+  const h = await harness();
+  const admin = await h.db.findUserByEmailRole("admin@rephoto.local", "admin");
+  assert.ok(admin);
+
+  const created = await h.app.request(
+    json(
+      "POST",
+      "/v1/admin/staff",
+      { email: "Shooter@Studio.it", role: "photographer", password: "photo-pass-123", eventId: h.event.id },
+      { cookie: await sessionCookie(h.db, admin.id) },
+    ),
+  );
+  assert.equal(created.status, 200);
+  const body = (await created.json()) as { user: { id: string; email: string; role: string } };
+  assert.equal(body.user.email, "shooter@studio.it");
+  assert.equal(body.user.role, "photographer");
+  assert.equal(await h.db.isEventPhotographer(h.event.id, body.user.id), true);
+
+  const login = await h.app.request(
+    json("POST", "/v1/auth/login", {
+      email: "shooter@studio.it",
+      password: "photo-pass-123",
+      role: "photographer",
+    }),
+  );
+  assert.equal(login.status, 200);
+
+  // Short password is rejected by the schema.
+  const short = await h.app.request(
+    json(
+      "POST",
+      "/v1/admin/staff",
+      { email: "x@studio.it", role: "photographer", password: "short" },
+      { cookie: await sessionCookie(h.db, admin.id) },
+    ),
+  );
+  assert.equal(short.status, 400);
+
+  // Without an admin session the endpoint is unauthorized.
+  const anon = await h.app.request(
+    json("POST", "/v1/admin/staff", { email: "y@studio.it", role: "admin", password: "longenough1" }),
+  );
+  assert.equal(anon.status, 401);
 });
 
 test("inviting an existing photographer adds the membership immediately", async () => {

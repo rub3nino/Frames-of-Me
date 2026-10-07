@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Programma — Conferenza Europea di Gioventù e Famiglie 2026</title>
+<meta name="description" content="Le tre giornate della Conferenza 2026 · tema BIRUITORI: sessioni plenarie, workshop, attività per famiglie e youth, momenti serali, con orari e sale.">
+<meta name="theme-color" content="#F5F5F7">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../packages/ui/tokens.css">
+<link rel="stylesheet" href="../../packages/ui/base.css">
+<link rel="stylesheet" href="../../packages/ui/components.css">
+<link rel="stylesheet" href="site.css">
+<style>
+  /* Day switcher */
+  .day-nav { display: flex; gap: var(--s-2); flex-wrap: wrap; margin-bottom: var(--s-9); }
+
+  /* Agenda timeline — not a card trio: a quiet time/session list */
+  .day { margin-bottom: var(--s-10); }
+  .day:last-child { margin-bottom: 0; }
+  .day-head { display: flex; align-items: baseline; gap: var(--s-4); flex-wrap: wrap; margin-bottom: var(--s-2); }
+  .day-head h2 { font-size: var(--fs-h1); }
+  .day-head .day-date { font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--c-ink-3); letter-spacing: var(--tr-data); }
+  .day-note { color: var(--c-ink-2); font-size: var(--fs-sm); margin-bottom: var(--s-6); max-width: 60ch; }
+
+  .slot { display: grid; grid-template-columns: 8rem 1fr; gap: var(--s-6); padding: var(--s-5) 0; border-top: 1px solid var(--c-line); }
+  .slot .time { font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--c-ink-2); letter-spacing: var(--tr-data); font-feature-settings: "tnum" 1; }
+  .slot .sess h3 { font-size: var(--fs-h3); margin-bottom: 6px; }
+  .slot .sess p { color: var(--c-ink-2); font-size: var(--fs-sm); max-width: 60ch; }
+  .slot .tag { display: inline-block; font-size: var(--fs-2xs); font-weight: var(--fw-semibold); letter-spacing: var(--tr-data); text-transform: uppercase; color: var(--c-ink-3); margin-bottom: var(--s-2); }
+  .slot .meta { display: flex; gap: var(--s-4); flex-wrap: wrap; margin-top: var(--s-3); font-size: var(--fs-xs); color: var(--c-ink-3); }
+  .slot .meta .where { font-family: var(--font-mono); letter-spacing: var(--tr-data); }
+  .slot .meta a { font-size: var(--fs-xs); }
+  .slot.is-plenary .tag { color: var(--c-accent-ink); }
+
+  @media (max-width: 640px) {
+    .slot { grid-template-columns: 1fr; gap: var(--s-2); }
+    .slot .time { color: var(--c-ink-3); }
+  }
+</style>
+</head>
+<body>
+
+<header class="site-header">
+  <div class="site-header-inner page">
+    <a class="brand" href="index.html" aria-label="RePhoto — home">
+      <svg viewBox="0 0 100 100" fill="none" aria-hidden="true"><g stroke="currentColor" stroke-width="3.6" stroke-linecap="round"><path d="M22 36 V28 a6 6 0 0 1 6-6 H36"/><path d="M64 22 H72 a6 6 0 0 1 6 6 V36"/><path d="M78 64 V72 a6 6 0 0 1-6 6 H64"/><path d="M36 78 H28 a6 6 0 0 1-6-6 V64"/></g><circle cx="50" cy="50" r="7.5" fill="var(--c-accent)"/></svg>
+      RePhoto
+    </a>
+    <nav class="site-nav" id="siteNav" aria-label="Navigazione principale">
+      <a href="programma.html" aria-current="page">Programma</a>
+      <a href="ospiti.html">Ospiti</a>
+      <a href="info.html">Informazioni</a>
+      <a href="edizioni.html">Edizioni</a>
+      <a href="faq.html">FAQ</a>
+      <a href="contatti.html">Contatti</a>
+    </nav>
+    <div class="site-header-actions">
+      <div class="lang-switch" role="group" aria-label="Lingua">
+        <button type="button" data-lang="ro">RO</button>
+        <button type="button" data-lang="it" class="is-active" aria-pressed="true">IT</button>
+        <button type="button" data-lang="en">EN</button>
+      </div>
+      <a class="btn btn-primary btn-sm" href="participant/iscrizione.html" data-press>Trova le tue foto</a>
+      <button class="nav-toggle" type="button" data-nav-toggle aria-controls="siteNav" aria-expanded="false" aria-label="Apri il menu">
+        <svg class="ico-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+        <svg class="ico-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+
+<main>
+  <section class="page-intro page">
+    <h1 class="display-2">Il programma delle tre giornate.</h1>
+    <p class="mono-meta">BIRUITORI 2026 · 3 giornate · Ven 12 — Dom 14 giugno</p>
+    <p class="lead">Sessioni plenarie, workshop, attività per famiglie e per i giovani, e i momenti serali di tutta la comunità. Orari e sale indicativi; l'accesso è per l'intera conferenza, non per singola giornata.</p>
+  </section>
+
+  <section class="section-sm page">
+    <div class="day-nav" role="tablist" aria-label="Vai alla giornata">
+      <a class="chip" href="#venerdi">Venerdì 12</a>
+      <a class="chip" href="#sabato">Sabato 13</a>
+      <a class="chip" href="#domenica">Domenica 14</a>
+    </div>
+
+    <!-- Venerdì -->
+    <div class="day" id="venerdi">
+      <div class="day-head">
+        <h2>Venerdì</h2>
+        <span class="day-date">12 giugno 2026</span>
+      </div>
+      <p class="day-note">Arrivi, accoglienza dei gruppi e serata di apertura con il tema BIRUITORI.</p>
+
+      <div class="slot">
+        <div class="time">14:00 — 18:00</div>
+        <div class="sess">
+          <span class="tag">Accoglienza</span>
+          <h3>Check-in e ritiro braccialetti</h3>
+          <p>Reception, consegna di badge, voucher pasti e chiavi camera. I capigruppo ritirano i materiali del proprio gruppo.</p>
+          <div class="meta"><span class="where">Reception · Hall</span></div>
+        </div>
+      </div>
+      <div class="slot is-plenary">
+        <div class="time">19:00 — 20:00</div>
+        <div class="sess">
+          <span class="tag">Plenaria</span>
+          <h3>Cena comunitaria</h3>
+          <p>Primo pasto insieme per tutti i partecipanti e le famiglie.</p>
+          <div class="meta"><span class="where">Sala Grande</span></div>
+        </div>
+      </div>
+      <div class="slot is-plenary">
+        <div class="time">20:30 — 22:30</div>
+        <div class="sess">
+          <span class="tag">Plenaria · Serale</span>
+          <h3>Apertura — «BIRUITORI»</h3>
+          <p>Saluto degli organizzatori, presentazione del tema dell'edizione e prima sessione plenaria.</p>
+          <div class="meta"><span class="where">Auditorium</span> <a class="link-more" href="ospiti.html"><span>Relatori</span></a></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sabato -->
+    <div class="day" id="sabato">
+      <div class="day-head">
+        <h2>Sabato</h2>
+        <span class="day-date">13 giugno 2026</span>
+      </div>
+      <p class="day-note">La giornata piena: plenarie al mattino, tracce parallele di workshop nel pomeriggio, serata insieme.</p>
+
+      <div class="slot">
+        <div class="time">08:00 — 09:00</div>
+        <div class="sess">
+          <span class="tag">Pasti</span>
+          <h3>Colazione</h3>
+          <div class="meta"><span class="where">Sala Grande</span></div>
+        </div>
+      </div>
+      <div class="slot is-plenary">
+        <div class="time">09:30 — 11:00</div>
+        <div class="sess">
+          <span class="tag">Plenaria</span>
+          <h3>Sessione mattutina</h3>
+          <p>La prima delle due plenarie principali sul tema dell'anno, per tutta la comunità.</p>
+          <div class="meta"><span class="where">Auditorium</span> <a class="link-more" href="ospiti.html"><span>Relatori</span></a></div>
+        </div>
+      </div>
+      <div class="slot">
+        <div class="time">11:30 — 13:00</div>
+        <div class="sess">
+          <span class="tag">Workshop · Tracce parallele</span>
+          <h3>Seminari del mattino</h3>
+          <p>Tre tracce in parallelo: famiglie, giovani (14–18) e giovani adulti. Scegli la traccia all'ingresso della sala.</p>
+          <div class="meta"><span class="where">Sale A · B · C</span></div>
+        </div>
+      </div>
+      <div class="slot">
+        <div class="time">13:00 — 14:30</div>
+        <div class="sess">
+          <span class="tag">Pasti</span>
+          <h3>Pranzo</h3>
+          <div class="meta"><span class="where">Sala Grande</span></div>
+        </div>
+      </div>
+      <div class="slot">
+        <div class="time">15:00 — 16:30</div>
+        <div class="sess">
+          <span class="tag">Famiglie · Youth</span>
+          <h3>Attività pomeridiane</h3>
+          <p>Programma per famiglie con bambini e, in parallelo, attività e giochi per i gruppi youth.</p>
+          <div class="meta"><span class="where">Area famiglie · Campo esterno</span></div>
+        </div>
+      </div>
+      <div class="slot is-plenary">
+        <div class="time">17:00 — 18:30</div>
+        <div class="sess">
+          <span class="tag">Plenaria</span>
+          <h3>Sessione pomeridiana</h3>
+          <p>Seconda plenaria principale, con spazio per domande e testimonianze.</p>
+          <div class="meta"><span class="where">Auditorium</span> <a class="link-more" href="ospiti.html"><span>Relatori</span></a></div>
+        </div>
+      </div>
+      <div class="slot">
+        <div class="time">19:00 — 20:00</div>
+        <div class="sess">
+          <span class="tag">Pasti</span>
+          <h3>Cena</h3>
+          <div class="meta"><span class="where">Sala Grande</span></div>
+        </div>
+      </div>
+      <div class="slot is-plenary">
+        <div class="time">20:30 — 23:00</div>
+        <div class="sess">
+          <span class="tag">Serale</span>
+          <h3>Serata della comunità</h3>
+          <p>Musica, cori e il momento più fotografato dell'intera conferenza: migliaia di persone insieme.</p>
+          <div class="meta"><span class="where">Auditorium</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Domenica -->
+    <div class="day" id="domenica">
+      <div class="day-head">
+        <h2>Domenica</h2>
+        <span class="day-date">14 giugno 2026</span>
+      </div>
+      <p class="day-note">Sessione finale, benedizione e partenze. Le foto dei tre giorni restano disponibili dopo l'evento.</p>
+
+      <div class="slot">
+        <div class="time">08:00 — 09:00</div>
+        <div class="sess">
+          <span class="tag">Pasti</span>
+          <h3>Colazione</h3>
+          <div class="meta"><span class="where">Sala Grande</span></div>
+        </div>
+      </div>
+      <div class="slot is-plenary">
+        <div class="time">09:30 — 11:30</div>
+        <div class="sess">
+          <span class="tag">Plenaria</span>
+          <h3>Sessione conclusiva</h3>
+          <p>L'ultima plenaria sul tema BIRUITORI, con il messaggio finale per famiglie e giovani.</p>
+          <div class="meta"><span class="where">Auditorium</span> <a class="link-more" href="ospiti.html"><span>Relatori</span></a></div>
+        </div>
+      </div>
+      <div class="slot is-plenary">
+        <div class="time">11:30 — 12:00</div>
+        <div class="sess">
+          <span class="tag">Plenaria</span>
+          <h3>Chiusura e saluti</h3>
+          <p>Ringraziamenti, appuntamento alla prossima edizione e foto finale di gruppo.</p>
+          <div class="meta"><span class="where">Auditorium</span></div>
+        </div>
+      </div>
+      <div class="slot">
+        <div class="time">12:00 — 14:00</div>
+        <div class="sess">
+          <span class="tag">Partenze</span>
+          <h3>Pranzo al sacco e check-out</h3>
+          <p>Riconsegna chiavi e partenze. Il servizio foto resta attivo: potrai cercare le tue foto anche dopo essere tornato a casa.</p>
+          <div class="meta"><span class="where">Reception</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section-sm page">
+    <div class="cta-band">
+      <div class="cta-band-text">
+        <h2 class="display-2">Eri alla conferenza?</h2>
+        <p>Un selfie, e ti troviamo tra tutti gli scatti delle tre giornate. Il selfie non viene conservato.</p>
+      </div>
+      <a class="btn btn-primary btn-lg" href="participant/iscrizione.html" data-press>Trova le tue foto</a>
+    </div>
+  </section>
+</main>
+
+<footer class="site-footer">
+  <div class="page">
+    <div class="footer-top">
+      <div class="footer-brand">
+        <a class="brand" href="index.html">
+          <svg viewBox="0 0 100 100" fill="none" aria-hidden="true"><g stroke="currentColor" stroke-width="3.6" stroke-linecap="round"><path d="M22 36 V28 a6 6 0 0 1 6-6 H36"/><path d="M64 22 H72 a6 6 0 0 1 6 6 V36"/><path d="M78 64 V72 a6 6 0 0 1-6 6 H64"/><path d="M36 78 H28 a6 6 0 0 1-6-6 V64"/></g><circle cx="50" cy="50" r="7.5" fill="var(--c-accent)"/></svg>
+          RePhoto
+        </a>
+        <p>La memoria della Conferenza Europea di Gioventù e Famiglie: ritrova le tue foto con un selfie.</p>
+      </div>
+      <div class="footer-col">
+        <h3>Conferenza</h3>
+        <ul>
+          <li><a href="programma.html">Programma</a></li>
+          <li><a href="ospiti.html">Ospiti</a></li>
+          <li><a href="info.html">Informazioni pratiche</a></li>
+          <li><a href="info.html#iscrizioni">Iscrizioni</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h3>Foto</h3>
+        <ul>
+          <li><a href="participant/iscrizione.html">Trova le tue foto</a></li>
+          <li><a href="faq.html#foto">Come funziona</a></li>
+          <li><a href="faq.html#foto">FAQ foto</a></li>
+          <li><a href="participant/i-miei-dati.html">Gestisci i miei dati</a></li>
+          <li><a href="photographer/invito.html">Per i fotografi</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h3>Community</h3>
+        <ul>
+          <li><a href="edizioni.html">Edizioni precedenti</a></li>
+          <li><a href="contatti.html#newsletter">Newsletter</a></li>
+          <li><a href="contatti.html">Organizzatori</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h3>Contatti</h3>
+        <ul>
+          <li><a href="mailto:info@conferintaeuropeana.it">info@conferintaeuropeana.it</a></li>
+          <li><a href="tel:+390000000000">+39 000 000 0000</a></li>
+          <li><a href="contatti.html">Sede &amp; social</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-legal">
+      <span>© 2026 RePhoto · Conferenza Europea</span>
+      <a href="#">Informativa privacy</a>
+      <a href="#">Termini</a>
+      <a href="#">Cookie</a>
+      <a href="#">Informativa minori</a>
+      <a href="#">Accessibilità</a>
+      <span class="grow"></span>
+      <a href="admin/login.html">Area staff</a>
+    </div>
+  </div>
+</footer>
+
+<script src="../../packages/ui/motion.js"></script>
+<script src="site.js"></script>
+</body>
+</html>

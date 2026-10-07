@@ -3,7 +3,7 @@ import { createSql, migrate, PostgresDatabase, seedDemo } from "@rephoto/db";
 import { createApp } from "./app.js";
 import { loadEnv } from "./env.js";
 import { loadFaceEngine } from "./face.js";
-import { bootstrapAdmins } from "./bootstrap.js";
+import { bootstrapAdmins, seedStaffCredentials } from "./bootstrap.js";
 import { createMailer } from "./mailer.js";
 import { createS3ObjectStore } from "./objects.js";
 import { createQueue } from "./queue.js";
@@ -14,6 +14,7 @@ await migrate(sql);
 const db = new PostgresDatabase(sql);
 await seedDemo(db);
 await bootstrapAdmins(db, env.BOOTSTRAP_ADMINS);
+await seedStaffCredentials(db);
 const app = createApp({
   env,
   db,

@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>FAQ — Conferenza Europea di Gioventù e Famiglie 2026</title>
+<meta name="description" content="Domande frequenti sulla Conferenza 2026 e sul servizio foto: iscrizioni di gruppo, pagamenti, minori, come funziona il riconoscimento e la privacy.">
+<meta name="theme-color" content="#F5F5F7">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../packages/ui/tokens.css">
+<link rel="stylesheet" href="../../packages/ui/base.css">
+<link rel="stylesheet" href="../../packages/ui/components.css">
+<link rel="stylesheet" href="site.css">
+<style>
+  .faq-group { padding-top: var(--s-7); scroll-margin-top: calc(var(--header-h) + var(--s-5)); }
+  .faq-group .section-head { margin-bottom: var(--s-5); }
+  .faq-list { max-width: 56rem; }
+  .faq-item { border-top: 1px solid var(--c-line); }
+  .faq-list .faq-item:last-child { border-bottom: 1px solid var(--c-line); }
+  .faq-item > summary {
+    list-style: none; cursor: pointer; display: flex; align-items: center; justify-content: space-between;
+    gap: var(--s-4); padding: var(--s-5) 0; font-size: var(--fs-lead); font-weight: var(--fw-medium); color: var(--c-ink);
+  }
+  .faq-item > summary::-webkit-details-marker { display: none; }
+  .faq-item > summary:focus-visible { box-shadow: var(--ring-focus); border-radius: var(--r-sm); }
+  .faq-item .chev { flex: none; width: 20px; height: 20px; color: var(--c-ink-3); transition: transform var(--dur-2) var(--ease-out); }
+  .faq-item[open] .chev { transform: rotate(90deg); color: var(--c-ink); }
+  .faq-item .answer { padding: 0 0 var(--s-5); color: var(--c-ink-2); font-size: var(--fs-body); max-width: 66ch; }
+  .faq-item .answer p + p { margin-top: var(--s-3); }
+  .faq-item .answer strong { color: var(--c-ink); font-weight: var(--fw-semibold); }
+  .faq-item[open] .answer { animation: faq-open var(--dur-3) var(--ease-out); }
+  @keyframes faq-open { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+  @media (prefers-reduced-motion: reduce) { .faq-item[open] .answer { animation: none; } }
+</style>
+</head>
+<body>
+
+<header class="site-header">
+  <div class="site-header-inner page">
+    <a class="brand" href="index.html" aria-label="RePhoto — home">
+      <svg viewBox="0 0 100 100" fill="none" aria-hidden="true"><g stroke="currentColor" stroke-width="3.6" stroke-linecap="round"><path d="M22 36 V28 a6 6 0 0 1 6-6 H36"/><path d="M64 22 H72 a6 6 0 0 1 6 6 V36"/><path d="M78 64 V72 a6 6 0 0 1-6-6 H64"/><path d="M36 78 H28 a6 6 0 0 1-6-6 V64"/></g><circle cx="50" cy="50" r="7.5" fill="var(--c-accent)"/></svg>
+      RePhoto
+    </a>
+    <nav class="site-nav" id="siteNav" aria-label="Navigazione principale">
+      <a href="programma.html">Programma</a>
+      <a href="ospiti.html">Ospiti</a>
+      <a href="info.html">Informazioni</a>
+      <a href="edizioni.html">Edizioni</a>
+      <a href="faq.html" aria-current="page">FAQ</a>
+      <a href="contatti.html">Contatti</a>
+    </nav>
+    <div class="site-header-actions">
+      <div class="lang-switch" role="group" aria-label="Lingua">
+        <button type="button" data-lang="ro">RO</button>
+        <button type="button" data-lang="it" class="is-active" aria-pressed="true">IT</button>
+        <button type="button" data-lang="en">EN</button>
+      </div>
+      <a class="btn btn-primary btn-sm" href="participant/iscrizione.html" data-press>Trova le tue foto</a>
+      <button class="nav-toggle" type="button" data-nav-toggle aria-controls="siteNav" aria-expanded="false" aria-label="Apri il menu">
+        <svg class="ico-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+        <svg class="ico-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+
+<main>
+  <section class="page-intro page">
+    <h1 class="display-2">Domande frequenti.</h1>
+    <p class="mono-meta">BIRUITORI 2026</p>
+    <p class="lead">Due sezioni: la conferenza (iscrizioni, pagamenti, camere, minori) e il servizio foto con la sua privacy. Non trovi la risposta? Scrivici dai <a href="contatti.html">contatti</a>.</p>
+    <div class="row wrap" style="margin-top:var(--s-6);gap:var(--s-2)">
+      <a class="chip" href="#evento">Domande sull'evento</a>
+      <a class="chip" href="#foto">Foto &amp; privacy</a>
+    </div>
+  </section>
+
+  <div class="page">
+    <!-- Gruppo A: evento -->
+    <section class="faq-group" id="evento">
+      <div class="section-head">
+        <h2>La conferenza</h2>
+        <p>Iscrizioni, pagamenti, sistemazione ed età minima.</p>
+      </div>
+      <div class="faq-list">
+        <details class="faq-item">
+          <summary>Chi può partecipare?<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></summary>
+          <div class="answer"><p>La conferenza è pensata per famiglie e giovani della comunità europea. La partecipazione autonoma è dai <strong>14 anni</strong>; i bambini più piccoli partecipano con i genitori.</p></div>
+        </details>
+        <details class="faq-item">
+          <summary>Come ci si iscrive? Si può a titolo individuale?<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></summary>
+          <div class="answer"><p>L'iscrizione avviene <strong>a gruppi</strong>, tramite il capogruppo o la chiesa locale. Anche chi si iscrive individualmente viene associato a un gruppo di riferimento. La registrazione è gestita dagli organizzatori sul <a href="info.html#iscrizioni">sito ufficiale</a>.</p></div>
+        </details>
+        <details class="faq-item">
+          <summary>Come funzionano i pagamenti e le scadenze?<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></summary>
+          <div class="answer"><p>Il pagamento si completa tramite il capogruppo entro la scadenza comunicata dagli organizzatori. I posti (circa 3000) sono assegnati in ordine di conferma del saldo.</p></div>
+        </details>
+        <details class="faq-item">
+          <summary>Come sono le camere e cosa è incluso?<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></summary>
+          <div class="answer"><p>Ci sono camere condivise per gruppo e camere famiglia. La quota comprende pernottamento e pasti principali; alcuni extra sono opzionali. Tutti i dettagli sono in <a href="info.html#alloggio">Informazioni pratiche</a>.</p></div>
+        </details>
+        <details class="faq-item">
+          <summary>Posso cancellare l'iscrizione?<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></summary>
+          <div class="answer"><p>Le cancellazioni e gli eventuali rimborsi seguono le condizioni degli organizzatori e vanno richiesti tramite il capogruppo. L'accesso è per l'intera conferenza, non per singola giornata.</p></div>
+        </details>
+        <details class="faq-item">
+          <summary>Quali lingue si parlano?<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></summary>
+          <div class="answer"><p>Le sessioni principali sono in romeno, con momenti e materiali in italiano e inglese. Il pubblico arriva da oltre 15 paesi.</p></div>
+        </details>
+        <details class="faq-item">
+          <summary>I minori possono partecipare?<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></summary>
+          <div class="answer"><p>Sì. I minori di 18 anni partecipano all'interno di un gruppo con un referente adulto. Per chi ha meno di 18 anni serve il <strong>consenso di un genitore o tutore</strong>, sia per la partecipazione sia per il servizio foto.</p></div>
+        </details>
+      </div>
+    </section>
+
+    <!-- Gruppo B: foto & privacy -->
+    <section class="faq-group" id="foto">
+      <div class="section-head">
+        <h2>Foto &amp; privacy</h2>
+        <p>Come funziona il riconoscimento e come proteggiamo i tuoi dati.</p>
+      </div>
+      <div class="faq-list">
+        <details class="faq-item">
+          <summary>Come fate a trovarmi tra migliaia di foto?<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></summary>
+          <div class="answer"><p>Fai un selfie una volta sola. Lo confrontiamo con i volti presenti nelle foto <strong>di quell'evento</strong> e ti mostriamo solo gli scatti in cui compari. È un confronto limitato all'evento, non un riconoscimento che ti segue altrove.</p></div>
+        </details>
+        <details class="faq-item">
+          <summary>Il mio selfie viene conservato?<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></summary>
+          <div class="answer"><p><strong>No.</strong> Il selfie viene usato solo per il confronto e poi cancellato. Non conserviamo un'impronta del volto riutilizzabile oltre l'evento.</p></div>
+        </details>
+        <details class="faq-item">
+          <summary>Chi può vedere le mie foto?<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></summary>
+          <div class="answer"><p>Solo tu, dalla tua galleria personale. Per alcune edizioni l'accesso è riservato a chi è nell'elenco dei partecipanti, così nessun estraneo può cercare i volti.</p></div>
+        </details>
+        <details class="faq-item">
+          <summary>Come scarico le foto?<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></summary>
+          <div class="answer"><p>Selezioni le foto che vuoi e le scarichi come ZIP (originali o versione per il web) oppure una alla volta.</p></div>
+        </details>
+        <details class="faq-item">
+          <summary>Non trovo le mie foto, perché?<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></summary>
+          <div class="answer"><p>Può succedere se il selfie è poco nitido o se le foto non sono ancora state caricate. Riprova con un selfie più chiaro o più tardi: le nuove foto si agganciano da sole e <strong>ti avvisiamo via email</strong> quando ne arrivano di nuove.</p></div>
+        </details>
+        <details class="faq-item">
+          <summary>Sono minorenne (14–17). Cosa cambia?<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></summary>
+          <div class="answer"><p>Per i minori di 18 anni il riconoscimento del volto richiede il <strong>consenso di un genitore o tutore</strong>. Il consenso viene raccolto e registrato, il selfie non viene conservato e i dati si possono cancellare in ogni momento. I dettagli sono nell'informativa minori.</p></div>
+        </details>
+        <details class="faq-item">
+          <summary>Che cos'è il consenso biometrico?<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></summary>
+          <div class="answer"><p>Il confronto dei volti tratta un dato biometrico, che la legge (art. 9 GDPR) protegge in modo particolare. Per questo chiediamo un consenso esplicito e separato prima del selfie: puoi revocarlo quando vuoi.</p></div>
+        </details>
+        <details class="faq-item">
+          <summary>Le mie foto vengono vendute o usate per pubblicità?<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></summary>
+          <div class="answer"><p><strong>No.</strong> Niente vendita dei dati, niente pubblicità, nessun riconoscimento fuori dall'evento.</p></div>
+        </details>
+        <details class="faq-item">
+          <summary>Posso cancellare i miei dati?<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></summary>
+          <div class="answer"><p>Sì, in ogni momento da <a href="participant/i-miei-dati.html">«Gestisci i miei dati»</a>: puoi revocare il consenso e chiedere la cancellazione della galleria e dei consensi.</p></div>
+        </details>
+        <details class="faq-item">
+          <summary>Per quanto restano disponibili le foto?<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></summary>
+          <div class="answer"><p>Le foto restano disponibili per un periodo definito per ciascun evento, dopodiché vengono cancellate. Scarica ciò che ti interessa finché la galleria è attiva.</p></div>
+        </details>
+      </div>
+    </section>
+  </div>
+
+  <section class="section-sm page">
+    <div class="cta-band">
+      <div class="cta-band-text">
+        <h2 class="display-2">Pronto a cercare?</h2>
+        <p>Un selfie, e trovi le tue foto in pochi secondi. Il selfie non viene conservato.</p>
+      </div>
+      <a class="btn btn-primary btn-lg" href="participant/iscrizione.html" data-press>Trova le tue foto</a>
+    </div>
+  </section>
+</main>
+
+<footer class="site-footer">
+  <div class="page">
+    <div class="footer-top">
+      <div class="footer-brand">
+        <a class="brand" href="index.html">
+          <svg viewBox="0 0 100 100" fill="none" aria-hidden="true"><g stroke="currentColor" stroke-width="3.6" stroke-linecap="round"><path d="M22 36 V28 a6 6 0 0 1 6-6 H36"/><path d="M64 22 H72 a6 6 0 0 1 6 6 V36"/><path d="M78 64 V72 a6 6 0 0 1-6-6 H64"/><path d="M36 78 H28 a6 6 0 0 1-6-6 V64"/></g><circle cx="50" cy="50" r="7.5" fill="var(--c-accent)"/></svg>
+          RePhoto
+        </a>
+        <p>La memoria della Conferenza Europea di Gioventù e Famiglie: ritrova le tue foto con un selfie.</p>
+      </div>
+      <div class="footer-col">
+        <h3>Conferenza</h3>
+        <ul>
+          <li><a href="programma.html">Programma</a></li>
+          <li><a href="ospiti.html">Ospiti</a></li>
+          <li><a href="info.html">Informazioni pratiche</a></li>
+          <li><a href="info.html#iscrizioni">Iscrizioni</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h3>Foto</h3>
+        <ul>
+          <li><a href="participant/iscrizione.html">Trova le tue foto</a></li>
+          <li><a href="faq.html#foto">Come funziona</a></li>
+          <li><a href="faq.html#foto">FAQ foto</a></li>
+          <li><a href="participant/i-miei-dati.html">Gestisci i miei dati</a></li>
+          <li><a href="photographer/invito.html">Per i fotografi</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h3>Community</h3>
+        <ul>
+          <li><a href="edizioni.html">Edizioni precedenti</a></li>
+          <li><a href="contatti.html#newsletter">Newsletter</a></li>
+          <li><a href="contatti.html">Organizzatori</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h3>Contatti</h3>
+        <ul>
+          <li><a href="mailto:info@conferintaeuropeana.it">info@conferintaeuropeana.it</a></li>
+          <li><a href="tel:+390000000000">+39 000 000 0000</a></li>
+          <li><a href="contatti.html">Sede &amp; social</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-legal">
+      <span>© 2026 RePhoto · Conferenza Europea</span>
+      <a href="#">Informativa privacy</a>
+      <a href="#">Termini</a>
+      <a href="#">Cookie</a>
+      <a href="#">Informativa minori</a>
+      <a href="#">Accessibilità</a>
+      <span class="grow"></span>
+      <a href="admin/login.html">Area staff</a>
+    </div>
+  </div>
+</footer>
+
+<script src="../../packages/ui/motion.js"></script>
+<script src="site.js"></script>
+</body>
+</html>

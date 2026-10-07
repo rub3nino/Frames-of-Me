@@ -162,6 +162,13 @@ export interface Database {
   findUserByEmailRole(email: string, role: Role): Promise<UserRow | null>;
   createUser(input: { id?: string; email: string; role: Role }): Promise<UserRow>;
   insertUser(email: string, role: Role): Promise<UserRow>;
+  /** Sets (or resets) the staff password hash for a user. */
+  setUserPassword(userId: string, passwordHash: string): Promise<void>;
+  /** Looks up a user for password login, returning the stored hash (null if unset). */
+  findUserForLogin(
+    email: string,
+    role: Role,
+  ): Promise<{ user: UserRow; passwordHash: string | null } | null>;
   insertMagicLink(input: {
     email: string;
     role: Role;

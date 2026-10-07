@@ -1,0 +1,143 @@
+/* ============================================================================
+   RePhoto — Landing (marketing) stylesheet
+   A gentle shift from the Apple base toward an editorial/Notion feel:
+   thin hairline separators, a high-contrast editorial serif for display,
+   soft pastel feature cards, black CTAs — fonts & colors taken from the
+   reference the user pinned (OG Image.Design). RePhoto-only content.
+   Isolated here so the functional app pages (blue accent, Geist) are untouched.
+   Motion follows Emil Kowalski's rules (strong curves, <300ms, stagger 30–80ms).
+   Load after tokens.css + base.css + components.css.
+   ============================================================================ */
+
+:root {
+  --mk-bg:     #FFFFFF;
+  --mk-ink:    #17171A;   /* headline near-black */
+  --mk-ink-2:  #56565E;   /* body grey */
+  --mk-ink-3:  #8A8A93;   /* muted */
+  --mk-hair:   #ECECEF;   /* Notion-thin separators */
+  --mk-line:   #E3E3E7;   /* slightly stronger hairline */
+  --mk-cta:    #111113; --mk-cta-hover:#2B2B30; --mk-cta-on:#FFFFFF;
+  --mk-dot:    #5B7CFA;   /* periwinkle accent (the "." in the reference) */
+  --mk-surface-2:#FAFAFB;
+
+  --font-serif: "Instrument Serif", "Iowan Old Style", Georgia, serif;
+
+  /* soft pastel tints (from the reference: butter + sky; + mint/lilac) */
+  --t-butter:#EEF0C2; --t-butter-ink:#54541F;
+  --t-sky:   #DBEAF7; --t-sky-ink:   #234A64;
+  --t-mint:  #DAEEE1; --t-mint-ink:  #214A34;
+  --t-lilac: #E7E4F8; --t-lilac-ink: #39336A;
+
+  --mk-ease: cubic-bezier(.23, 1, .32, 1);   /* Emil strong ease-out */
+}
+
+body.mkt { background: var(--mk-bg); color: var(--mk-ink); }
+.mkt .wrap { width: 100%; max-width: 1120px; margin-inline: auto; padding-inline: 24px; }
+.mkt .serif { font-family: var(--font-serif); font-weight: 400; letter-spacing: -0.005em; }
+
+/* ---- Nav ---------------------------------------------------------------- */
+.mkt-nav { position: sticky; top: 0; z-index: 200; background: rgba(255,255,255,.82);
+  backdrop-filter: saturate(180%) blur(16px); -webkit-backdrop-filter: saturate(180%) blur(16px);
+  border-bottom: 1px solid var(--mk-hair); }
+.mkt-nav .wrap { display: flex; align-items: center; gap: 24px; height: 64px; }
+.mkt-brand { display: inline-flex; align-items: baseline; gap: 9px; color: var(--mk-ink); text-decoration: none; }
+.mkt-brand svg { width: 24px; height: 24px; align-self: center; }
+.mkt-brand .nm { font-family: var(--font-serif); font-style: italic; font-size: 1.6rem; line-height: 1; letter-spacing: -0.01em; }
+.mkt-brand .nm b { font-style: normal; font-weight: 400; }
+.mkt-brand .dot { color: var(--mk-dot); }
+.mkt-nav nav { display: flex; align-items: center; gap: 28px; margin-left: 8px; }
+.mkt-nav nav a { color: var(--mk-ink-2); font-size: 0.95rem; text-decoration: none; transition: color 150ms ease; }
+.mkt-nav nav a:hover { color: var(--mk-ink); }
+.mkt-nav .spacer { flex: 1; }
+@media (max-width: 760px) { .mkt-nav nav { display: none; } }
+
+/* ---- Black CTA ---------------------------------------------------------- */
+.btn-cta { --press:0; display: inline-flex; align-items: center; justify-content: center; gap: 9px;
+  font-family: var(--font-sans); font-size: 0.95rem; font-weight: 500; color: var(--mk-cta-on);
+  background: var(--mk-cta); border: 0; border-radius: 12px; padding: 11px 20px; cursor: pointer;
+  text-decoration: none; white-space: nowrap; transform: scale(calc(1 - var(--press)*.03));
+  transition: transform 140ms var(--mk-ease), background 180ms ease, box-shadow 220ms ease; }
+.btn-cta:hover { background: var(--mk-cta-hover); box-shadow: 0 6px 20px rgba(0,0,0,.12); }
+.btn-cta svg { width: 17px; height: 17px; }
+.btn-cta.lg { padding: 14px 24px; font-size: 1rem; border-radius: 14px; }
+
+.btn-text { display: inline-flex; align-items: center; gap: 6px; color: var(--mk-ink); font-size: 0.95rem; font-weight: 500; text-decoration: none; }
+.btn-text svg { width: 16px; height: 16px; transition: transform 180ms var(--mk-ease); }
+.btn-text:hover svg { transform: translateX(3px); }
+
+/* ---- Hero --------------------------------------------------------------- */
+.hero { text-align: center; padding: 72px 0 8px; }
+.pill { display: inline-flex; align-items: center; gap: 8px; font-size: 0.82rem; font-weight: 500; color: var(--mk-ink-2);
+  background: var(--mk-surface-2); border: 1px solid var(--mk-line); border-radius: 999px; padding: 6px 14px; }
+.pill .pdot { width: 6px; height: 6px; border-radius: 50%; background: var(--mk-dot); }
+.hero h1 { font-family: var(--font-serif); font-weight: 400; color: var(--mk-ink);
+  font-size: clamp(2.8rem, 1.6rem + 5.4vw, 5.25rem); line-height: 1.02; letter-spacing: -0.01em;
+  margin: 22px auto 0; max-width: 16ch; text-wrap: balance; }
+.hero .sub { font-size: clamp(1.05rem, 1rem + 0.5vw, 1.3rem); color: var(--mk-ink-2); line-height: 1.5;
+  max-width: 40ch; margin: 20px auto 0; }
+
+/* hero input — mirrors the reference's scan input, gradient border */
+.hero-field-label { font-size: 0.9rem; color: var(--mk-ink-3); margin: 40px 0 12px; }
+.hero-field { position: relative; max-width: 620px; margin: 0 auto; border-radius: 16px; padding: 2px;
+  background: linear-gradient(90deg, #C4E6CE, #CFE0F7);
+  transition: box-shadow 220ms ease; }
+.hero-field:focus-within { box-shadow: 0 0 0 4px rgba(91,124,250,.16); }
+.hero-field .inner { display: flex; align-items: center; gap: 8px; background: #fff; border-radius: 14px; padding: 7px 7px 7px 18px; }
+.hero-field input { flex: 1; border: 0; outline: 0; font-size: 1.05rem; color: var(--mk-ink); background: transparent; padding: 10px 0; }
+.hero-field input::placeholder { color: var(--mk-ink-3); }
+@media (max-width: 560px) { .hero-field .inner { flex-direction: column; align-items: stretch; gap: 8px; padding: 10px; } .hero-field input { padding: 8px 10px; } .hero-field .btn-cta { width: 100%; } }
+.privacy-note { display: inline-flex; align-items: center; gap: 7px; font-size: 0.85rem; color: var(--mk-ink-3); margin-top: 16px; }
+.privacy-note svg { width: 15px; height: 15px; color: #3EA06A; }
+
+/* ---- Feature pastel cards ---------------------------------------------- */
+.features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 56px; }
+@media (max-width: 860px) { .features { grid-template-columns: 1fr; } }
+.card-feat { border-radius: 20px; padding: 28px; border: 1px solid rgba(0,0,0,.04); }
+.card-feat h3 { font-size: 1.22rem; font-weight: 600; letter-spacing: -0.01em; margin-bottom: 10px; color: inherit; font-family: var(--font-sans); }
+.card-feat p { font-size: 0.98rem; line-height: 1.5; color: inherit; opacity: .78; }
+.card-feat .fi { width: 30px; height: 30px; margin-bottom: 16px; }
+.t-butter { background: var(--t-butter); color: var(--t-butter-ink); }
+.t-sky    { background: var(--t-sky);    color: var(--t-sky-ink); }
+.t-mint   { background: var(--t-mint);   color: var(--t-mint-ink); }
+.t-lilac  { background: var(--t-lilac);  color: var(--t-lilac-ink); }
+
+/* ---- Separators & sections --------------------------------------------- */
+.sep { border: 0; height: 1px; background: var(--mk-hair); margin: 0; }
+.sect { padding: 72px 0; }
+.sec-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 36px; }
+.sec-head h2 { font-family: var(--font-serif); font-weight: 400; font-size: clamp(2rem, 1.4rem + 2.6vw, 3rem); line-height: 1.05; letter-spacing: -0.01em; color: var(--mk-ink); max-width: 20ch; }
+
+/* photo showcase row */
+.photo-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+@media (max-width: 760px) { .photo-row { grid-template-columns: repeat(2, 1fr); } }
+.photo-row .ph { aspect-ratio: 4/5; border-radius: 14px; overflow: hidden; background: var(--c-sunken); }
+.photo-row .ph img { width: 100%; height: 100%; object-fit: cover; }
+
+/* how-it-works: three steps, hairline-separated (Notion) */
+.steps3 { display: grid; grid-template-columns: repeat(3, 1fr); }
+@media (max-width: 760px) { .steps3 { grid-template-columns: 1fr; } }
+.steps3 .st { padding: 4px 28px; }
+.steps3 .st + .st { border-left: 1px solid var(--mk-hair); }
+@media (max-width: 760px) { .steps3 .st { padding: 24px 0; } .steps3 .st + .st { border-left: 0; border-top: 1px solid var(--mk-hair); } }
+.steps3 .n { font-family: var(--font-serif); font-size: 2rem; color: var(--mk-dot); line-height: 1; display: block; margin-bottom: 14px; }
+.steps3 .st h3 { font-size: 1.1rem; font-weight: 600; margin-bottom: 6px; letter-spacing: -0.01em; }
+.steps3 .st p { font-size: 0.96rem; color: var(--mk-ink-2); line-height: 1.5; }
+
+/* privacy band */
+.privacy-band { text-align: center; max-width: 640px; margin: 0 auto; }
+.privacy-band .shield { width: 36px; height: 36px; color: #3EA06A; margin: 0 auto 18px; }
+.privacy-band h2 { font-family: var(--font-serif); font-weight: 400; font-size: clamp(2rem, 1.4rem + 2.4vw, 2.9rem); line-height: 1.06; letter-spacing: -0.01em; margin-bottom: 14px; }
+.privacy-band p { font-size: 1.1rem; color: var(--mk-ink-2); line-height: 1.55; }
+
+/* footer */
+.mkt-foot { border-top: 1px solid var(--mk-hair); padding: 48px 0; }
+.mkt-foot .wrap { display: flex; justify-content: space-between; gap: 24px; flex-wrap: wrap; align-items: center; }
+.mkt-foot nav { display: flex; gap: 24px; flex-wrap: wrap; }
+.mkt-foot a { color: var(--mk-ink-2); font-size: 0.92rem; text-decoration: none; }
+.mkt-foot a:hover { color: var(--mk-ink); }
+.mkt-foot .copy { color: var(--mk-ink-3); font-size: 0.88rem; }
+
+/* ---- Motion (Emil): staggered reveal, once; reduced-motion safe -------- */
+[data-rise] { opacity: 0; transform: translateY(14px); transition: opacity 620ms var(--mk-ease), transform 620ms var(--mk-ease); }
+[data-rise].in { opacity: 1; transform: none; }
+@media (prefers-reduced-motion: reduce) { [data-rise] { opacity: 1; transform: none; transition: none; } }

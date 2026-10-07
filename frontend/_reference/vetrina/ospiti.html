@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Ospiti — Conferenza Europea di Gioventù e Famiglie 2026</title>
+<meta name="description" content="Gli ospiti speciali e i relatori della Conferenza 2026 · tema BIRUITORI: nome, ruolo e sessioni a cui partecipano.">
+<meta name="theme-color" content="#F5F5F7">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../packages/ui/tokens.css">
+<link rel="stylesheet" href="../../packages/ui/base.css">
+<link rel="stylesheet" href="../../packages/ui/components.css">
+<link rel="stylesheet" href="site.css">
+<style>
+  .guests { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--s-7) var(--s-4); }
+  @media (min-width: 640px) { .guests { grid-template-columns: repeat(3, 1fr); } }
+  @media (min-width: 980px) { .guests { grid-template-columns: repeat(4, 1fr); } }
+
+  .guest .photo-tile { margin-bottom: var(--s-3); }
+  .guest .name { font-weight: var(--fw-semibold); font-size: var(--fs-lead); letter-spacing: var(--tr-tight); line-height: var(--lh-snug); }
+  .guest .role { color: var(--c-ink-2); font-size: var(--fs-sm); margin-top: 2px; }
+  .guest .country { display: inline-block; font-family: var(--font-mono); font-size: var(--fs-2xs); letter-spacing: var(--tr-data); color: var(--c-ink-3); margin-top: var(--s-2); }
+  @media (hover: hover) and (pointer: fine) {
+    .guest .photo-tile { transition: transform var(--dur-3) var(--ease-out), box-shadow var(--dur-3); }
+    .guest:hover .photo-tile { transform: translateY(-3px); box-shadow: var(--shadow-md); }
+  }
+</style>
+</head>
+<body>
+
+<header class="site-header">
+  <div class="site-header-inner page">
+    <a class="brand" href="index.html" aria-label="RePhoto — home">
+      <svg viewBox="0 0 100 100" fill="none" aria-hidden="true"><g stroke="currentColor" stroke-width="3.6" stroke-linecap="round"><path d="M22 36 V28 a6 6 0 0 1 6-6 H36"/><path d="M64 22 H72 a6 6 0 0 1 6 6 V36"/><path d="M78 64 V72 a6 6 0 0 1-6 6 H64"/><path d="M36 78 H28 a6 6 0 0 1-6-6 V64"/></g><circle cx="50" cy="50" r="7.5" fill="var(--c-accent)"/></svg>
+      RePhoto
+    </a>
+    <nav class="site-nav" id="siteNav" aria-label="Navigazione principale">
+      <a href="programma.html">Programma</a>
+      <a href="ospiti.html" aria-current="page">Ospiti</a>
+      <a href="info.html">Informazioni</a>
+      <a href="edizioni.html">Edizioni</a>
+      <a href="faq.html">FAQ</a>
+      <a href="contatti.html">Contatti</a>
+    </nav>
+    <div class="site-header-actions">
+      <div class="lang-switch" role="group" aria-label="Lingua">
+        <button type="button" data-lang="ro">RO</button>
+        <button type="button" data-lang="it" class="is-active" aria-pressed="true">IT</button>
+        <button type="button" data-lang="en">EN</button>
+      </div>
+      <a class="btn btn-primary btn-sm" href="participant/iscrizione.html" data-press>Trova le tue foto</a>
+      <button class="nav-toggle" type="button" data-nav-toggle aria-controls="siteNav" aria-expanded="false" aria-label="Apri il menu">
+        <svg class="ico-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+        <svg class="ico-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+
+<main>
+  <section class="page-intro page">
+    <h1 class="display-2">Gli ospiti della conferenza.</h1>
+    <p class="mono-meta">BIRUITORI 2026 · 15+ paesi</p>
+    <p class="lead">Voci dalla comunità europea e internazionale: relatori delle sessioni plenarie, guide dei workshop per famiglie e giovani, ospiti speciali dell'edizione 2026.</p>
+  </section>
+
+  <section class="section-sm page">
+    <div class="section-head">
+      <h2>Ospiti speciali</h2>
+      <p>Chi apre e chiude le giornate, e porta il messaggio del tema BIRUITORI.</p>
+    </div>
+    <div class="guests">
+      <article class="guest">
+        <div class="photo-tile"><img src="../../packages/ui/assets/photos/p-01.jpg" alt="Ritratto di Daniel Rădoi" class="blur-up" loading="lazy" width="433" height="650"></div>
+        <div class="name">Daniel Rădoi</div>
+        <div class="role">Pastore, Philadelphia Mansue · apertura</div>
+        <span class="country">IT</span>
+      </article>
+      <article class="guest">
+        <div class="photo-tile"><img src="../../packages/ui/assets/photos/p-02.jpg" alt="Ritratto di Elena Munteanu" class="blur-up" loading="lazy" width="433" height="650"></div>
+        <div class="name">Elena Munteanu</div>
+        <div class="role">Relatrice principale · plenarie</div>
+        <span class="country">RO</span>
+      </article>
+      <article class="guest">
+        <div class="photo-tile"><img src="../../packages/ui/assets/photos/p-03.jpg" alt="Ritratto di Markus Weber" class="blur-up" loading="lazy" width="433" height="650"></div>
+        <div class="name">Markus Weber</div>
+        <div class="role">Ospite internazionale</div>
+        <span class="country">DE</span>
+      </article>
+      <article class="guest">
+        <div class="photo-tile"><img src="../../packages/ui/assets/photos/p-04.jpg" alt="Ritratto di Ana-Maria Ionescu" class="blur-up" loading="lazy" width="433" height="650"></div>
+        <div class="name">Ana-Maria Ionescu</div>
+        <div class="role">Direttrice programma famiglie</div>
+        <span class="country">RO</span>
+      </article>
+    </div>
+  </section>
+
+  <section class="section-sm page">
+    <div class="section-head">
+      <h2>Relatori e guide</h2>
+      <p>Conducono le tracce parallele di workshop e i momenti serali. Gli orari sono nel <a href="programma.html">programma</a>.</p>
+    </div>
+    <div class="guests">
+      <article class="guest">
+        <div class="photo-tile"><img src="../../packages/ui/assets/photos/p-05.jpg" alt="Ritratto di Luca Fiore" class="blur-up" loading="lazy" width="433" height="650"></div>
+        <div class="name">Luca Fiore</div>
+        <div class="role">Workshop giovani (14–18)</div>
+        <span class="country">IT</span>
+      </article>
+      <article class="guest">
+        <div class="photo-tile"><img src="../../packages/ui/assets/photos/p-06.jpg" alt="Ritratto di Ruth Oprea" class="blur-up" loading="lazy" width="433" height="650"></div>
+        <div class="name">Ruth Oprea</div>
+        <div class="role">Sessione famiglie</div>
+        <span class="country">RO</span>
+      </article>
+      <article class="guest">
+        <div class="photo-tile"><img src="../../packages/ui/assets/photos/p-07.jpg" alt="Ritratto di David Novák" class="blur-up" loading="lazy" width="433" height="650"></div>
+        <div class="name">David Novák</div>
+        <div class="role">Traccia giovani adulti</div>
+        <span class="country">CZ</span>
+      </article>
+      <article class="guest">
+        <div class="photo-tile"><img src="../../packages/ui/assets/photos/p-08.jpg" alt="Ritratto di Sara Lungu" class="blur-up" loading="lazy" width="433" height="650"></div>
+        <div class="name">Sara Lungu</div>
+        <div class="role">Coro e lode · serata</div>
+        <span class="country">RO</span>
+      </article>
+      <article class="guest">
+        <div class="photo-tile"><img src="../../packages/ui/assets/photos/p-09.jpg" alt="Ritratto di Petru Marin" class="blur-up" loading="lazy" width="433" height="650"></div>
+        <div class="name">Petru Marin</div>
+        <div class="role">Testimonianza</div>
+        <span class="country">RO</span>
+      </article>
+      <article class="guest">
+        <div class="photo-tile"><img src="../../packages/ui/assets/photos/p-10.jpg" alt="Ritratto di Hannah Berg" class="blur-up" loading="lazy" width="433" height="650"></div>
+        <div class="name">Hannah Berg</div>
+        <div class="role">Ospite · workshop famiglie</div>
+        <span class="country">SE</span>
+      </article>
+      <article class="guest">
+        <div class="photo-tile"><img src="../../packages/ui/assets/photos/p-12.jpg" alt="Ritratto di Mihai Dobre" class="blur-up" loading="lazy" width="433" height="650"></div>
+        <div class="name">Mihai Dobre</div>
+        <div class="role">Workshop giovani adulti</div>
+        <span class="country">RO</span>
+      </article>
+      <article class="guest">
+        <div class="photo-tile"><img src="../../packages/ui/assets/photos/p-14.jpg" alt="Ritratto di Giulia Costa" class="blur-up" loading="lazy" width="433" height="650"></div>
+        <div class="name">Giulia Costa</div>
+        <div class="role">Attività famiglie</div>
+        <span class="country">IT</span>
+      </article>
+    </div>
+  </section>
+
+  <section class="section-sm page">
+    <div class="cta-band">
+      <div class="cta-band-text">
+        <h2 class="display-2">Hai incontrato loro all'evento?</h2>
+        <p>Cerca le foto in cui compari tu — da sola o con gli ospiti. Il selfie non viene conservato.</p>
+      </div>
+      <a class="btn btn-primary btn-lg" href="participant/iscrizione.html" data-press>Trova le tue foto</a>
+    </div>
+  </section>
+</main>
+
+<footer class="site-footer">
+  <div class="page">
+    <div class="footer-top">
+      <div class="footer-brand">
+        <a class="brand" href="index.html">
+          <svg viewBox="0 0 100 100" fill="none" aria-hidden="true"><g stroke="currentColor" stroke-width="3.6" stroke-linecap="round"><path d="M22 36 V28 a6 6 0 0 1 6-6 H36"/><path d="M64 22 H72 a6 6 0 0 1 6 6 V36"/><path d="M78 64 V72 a6 6 0 0 1-6 6 H64"/><path d="M36 78 H28 a6 6 0 0 1-6-6 V64"/></g><circle cx="50" cy="50" r="7.5" fill="var(--c-accent)"/></svg>
+          RePhoto
+        </a>
+        <p>La memoria della Conferenza Europea di Gioventù e Famiglie: ritrova le tue foto con un selfie.</p>
+      </div>
+      <div class="footer-col">
+        <h3>Conferenza</h3>
+        <ul>
+          <li><a href="programma.html">Programma</a></li>
+          <li><a href="ospiti.html">Ospiti</a></li>
+          <li><a href="info.html">Informazioni pratiche</a></li>
+          <li><a href="info.html#iscrizioni">Iscrizioni</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h3>Foto</h3>
+        <ul>
+          <li><a href="participant/iscrizione.html">Trova le tue foto</a></li>
+          <li><a href="faq.html#foto">Come funziona</a></li>
+          <li><a href="faq.html#foto">FAQ foto</a></li>
+          <li><a href="participant/i-miei-dati.html">Gestisci i miei dati</a></li>
+          <li><a href="photographer/invito.html">Per i fotografi</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h3>Community</h3>
+        <ul>
+          <li><a href="edizioni.html">Edizioni precedenti</a></li>
+          <li><a href="contatti.html#newsletter">Newsletter</a></li>
+          <li><a href="contatti.html">Organizzatori</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h3>Contatti</h3>
+        <ul>
+          <li><a href="mailto:info@conferintaeuropeana.it">info@conferintaeuropeana.it</a></li>
+          <li><a href="tel:+390000000000">+39 000 000 0000</a></li>
+          <li><a href="contatti.html">Sede &amp; social</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-legal">
+      <span>© 2026 RePhoto · Conferenza Europea</span>
+      <a href="#">Informativa privacy</a>
+      <a href="#">Termini</a>
+      <a href="#">Cookie</a>
+      <a href="#">Informativa minori</a>
+      <a href="#">Accessibilità</a>
+      <span class="grow"></span>
+      <a href="admin/login.html">Area staff</a>
+    </div>
+  </div>
+</footer>
+
+<script src="../../packages/ui/motion.js"></script>
+<script src="site.js"></script>
+</body>
+</html>

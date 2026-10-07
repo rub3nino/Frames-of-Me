@@ -11,6 +11,8 @@ import {
   adminExportQuerySchema,
   adminGalleriesQuerySchema,
   adminMagicLinkBodySchema,
+  adminStaffCreateBodySchema,
+  loginBodySchema,
   adminMatchRunsQuerySchema,
   adminNeighboursQuerySchema,
   adminPhotosQuerySchema,
@@ -56,7 +58,7 @@ import {
   type PhotoRow,
   type UserRow,
 } from "@rephoto/db";
-import { newToken, sha256Hex } from "./crypto.js";
+import { hashPassword, newToken, sha256Hex, verifyPassword } from "./crypto.js";
 import type { AppDeps, AppEnv } from "./deps.js";
 import { ApiError, MESSAGES } from "./errors.js";
 import {
@@ -130,6 +132,18 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     }
     await startSession(c, deps, user);
     return c.json({ user: publicUser(user) });
+  });
+
+  app.post("/v1/auth/login", async (c) => {
+    const body = loginBodySchema.safeParse(await readJson(c));
+    if (!body.success) throw new ApiError(400, MESSAGES.validation);
+    const email = body.data.email.toLowerCase();
+    const found = await deps.db.findUserForLogin(email, body.data.role);
+    // Verify even when the user is missing, to keep timing uniform.
+    const ok = verifyPassword(body.data.password, found?.passwordHash ?? null);
+    if (!found || !ok) throw new ApiError(401, MESSAGES.loginInvalid);
+    await startSession(c, deps, found.user);
+    return c.json({ user: publicUser(found.user) });
   });
 
   app.post("/v1/auth/accept-invite", async (c) => {
@@ -823,6 +837,31 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       meta: { role, eventId },
     });
     return c.json({ url: `${webOrigin(deps.env)}/verifica?token=${encodeURIComponent(token)}` });
+  });
+
+  app.post("/v1/admin/staff", async (c) => {
+    const actor = requireUser(c);
+    requireRole(actor, ["admin"]);
+    const body = adminStaffCreateBodySchema.safeParse(await readJson(c));
+    if (!body.success) throw new ApiError(400, MESSAGES.validation);
+    const email = body.data.email.toLowerCase();
+    const role = body.data.role;
+    let eventId: string | null = null;
+    if (body.data.eventId) {
+      const event = await deps.db.findEventById(body.data.eventId);
+      if (!event) throw new ApiError(404, MESSAGES.notFound);
+      eventId = event.id;
+    }
+    const user = await deps.db.insertUser(email, role);
+    await deps.db.setUserPassword(user.id, hashPassword(body.data.password));
+    if (role === "photographer" && eventId) await deps.db.addEventPhotographer(eventId, user.id);
+    await deps.db.insertAudit({
+      actorId: actor.id,
+      action: "staff.credentials_set",
+      target: `user:${email}`,
+      meta: { role, eventId },
+    });
+    return c.json({ user: publicUser(user) });
   });
 
   app.get("/v1/admin/galleries", async (c) => {

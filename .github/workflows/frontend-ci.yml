@@ -1,0 +1,129 @@
+# Frontend CI — build check for the four RePhoto apps.
+#
+# Runs on every PR and on pushes that touch `frontend/**`. For each Vite app
+# whose files changed (its own dir, or a shared package it imports), we run a
+# real production build so a broken build fails the PR. The landing app has no
+# build step (static HTML), so we only assert its entry file exists.
+#
+# Apps are standalone: each has its own package.json + lockfile and is NOT part
+# of a root npm workspace, so we install and build inside each app directory.
+# Vite resolves the shared packages (../../packages/ui, ../../packages/api-client)
+# via the `@ui`/`@api` aliases + `server.fs.allow` already set in each
+# vite.config.ts, so no extra wiring is needed here.
+name: frontend-ci
+
+on:
+  pull_request:
+    paths:
+      - "frontend/**"
+  push:
+    paths:
+      - "frontend/**"
+
+# Cancel superseded runs for the same ref to save CI minutes.
+concurrency:
+  group: frontend-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Detect which apps / shared packages changed so we only build what's affected.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      landing: ${{ steps.filter.outputs.landing }}
+      partecipanti: ${{ steps.filter.outputs.partecipanti }}
+      fotografi: ${{ steps.filter.outputs.fotografi }}
+      admin: ${{ steps.filter.outputs.admin }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            # ui is CSS/assets shared by ALL apps (including landing).
+            # api-client is the typed fetch client shared by the three SPAs.
+            landing:
+              - 'frontend/apps/landing/**'
+              - 'frontend/packages/ui/**'
+            partecipanti:
+              - 'frontend/apps/partecipanti/**'
+              - 'frontend/packages/ui/**'
+              - 'frontend/packages/api-client/**'
+            fotografi:
+              - 'frontend/apps/fotografi/**'
+              - 'frontend/packages/ui/**'
+              - 'frontend/packages/api-client/**'
+            admin:
+              - 'frontend/apps/admin/**'
+              - 'frontend/packages/ui/**'
+              - 'frontend/packages/api-client/**'
+
+  # Landing is static HTML — nothing to compile. Just assert the entry exists.
+  landing:
+    needs: changes
+    if: needs.changes.outputs.landing == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate landing static files
+        run: |
+          test -f frontend/apps/landing/index.html \
+            || { echo "::error::frontend/apps/landing/index.html is missing"; exit 1; }
+          echo "landing: index.html present"
+
+  # The three Vite SPAs share the same build check, parameterised by app name.
+  build:
+    needs: changes
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [partecipanti, fotografi, admin]
+    # Only run the matrix leg whose app (or a shared package) changed.
+    if: |
+      needs.changes.outputs.partecipanti == 'true' ||
+      needs.changes.outputs.fotografi == 'true' ||
+      needs.changes.outputs.admin == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Skip unchanged app
+        id: gate
+        run: |
+          changed="${{ needs.changes.outputs[matrix.app] }}"
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+          if [ "$changed" != "true" ]; then
+            echo "::notice::${{ matrix.app }} unchanged — skipping build"
+          fi
+
+      - name: Setup Node
+        if: steps.gate.outputs.changed == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          # Each app has its own lockfile; cache per-app node_modules via npm cache.
+          cache: npm
+          cache-dependency-path: frontend/apps/${{ matrix.app }}/package-lock.json
+
+      - name: Install
+        if: steps.gate.outputs.changed == 'true'
+        working-directory: frontend/apps/${{ matrix.app }}
+        # Prefer the reproducible `npm ci`; fall back to `npm install` if the
+        # lockfile is absent or out of sync.
+        run: npm ci || npm install
+
+      - name: Build
+        if: steps.gate.outputs.changed == 'true'
+        working-directory: frontend/apps/${{ matrix.app }}
+        run: npm run build
+
+      - name: Assert dist output
+        if: steps.gate.outputs.changed == 'true'
+        working-directory: frontend/apps/${{ matrix.app }}
+        run: |
+          test -d dist && test -f dist/index.html \
+            || { echo "::error::${{ matrix.app }} build produced no dist/index.html"; exit 1; }
+          echo "${{ matrix.app }}: build OK"

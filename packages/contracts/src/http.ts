@@ -65,6 +65,37 @@ export const verifyResponseSchema = z
   .object({ user: userSchema })
   .strict();
 
+/** Staff roles can log in with a password; participants stay magic-link only. */
+export const staffRoleSchema = z.enum(["photographer", "admin"]);
+export type StaffRole = z.infer<typeof staffRoleSchema>;
+
+export const loginBodySchema = z
+  .object({
+    email: z.string().trim().email().max(320),
+    password: z.string().min(1).max(200),
+    role: staffRoleSchema,
+  })
+  .strict();
+
+export const loginResponseSchema = z
+  .object({ user: userSchema })
+  .strict();
+
+/** Admin-only: create or update a staff account with a password. */
+export const adminStaffCreateBodySchema = z
+  .object({
+    email: z.string().trim().email().max(320),
+    role: staffRoleSchema,
+    password: z.string().min(8).max(200),
+    /** With `photographer`: the user is attached to this event. */
+    eventId: z.string().uuid().optional(),
+  })
+  .strict();
+
+export const adminStaffCreateResponseSchema = z
+  .object({ user: userSchema })
+  .strict();
+
 export const acceptInviteBodySchema = z
   .object({ token: z.string().min(1) })
   .strict();

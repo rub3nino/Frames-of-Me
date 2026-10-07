@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Contatti — Conferenza Europea di Gioventù e Famiglie 2026</title>
+<meta name="description" content="Contatta gli organizzatori della Conferenza 2026 e il servizio foto: email, telefono +39, canale privacy. Iscriviti alla newsletter per gli aggiornamenti.">
+<meta name="theme-color" content="#F5F5F7">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../packages/ui/tokens.css">
+<link rel="stylesheet" href="../../packages/ui/base.css">
+<link rel="stylesheet" href="../../packages/ui/components.css">
+<link rel="stylesheet" href="site.css">
+<style>
+  .contact-cols { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--s-7); }
+  @media (max-width: 720px) { .contact-cols { grid-template-columns: 1fr; gap: var(--s-6); } }
+  .contact-item { padding: var(--s-5) 0; border-top: 1px solid var(--c-line); }
+  .contact-item:first-child, .contact-col > .contact-item:first-child { border-top: 0; padding-top: 0; }
+  .contact-item .k { font-size: var(--fs-xs); font-weight: var(--fw-semibold); letter-spacing: var(--tr-data); text-transform: uppercase; color: var(--c-ink-3); margin-bottom: var(--s-2); }
+  .contact-item .v { font-size: var(--fs-lead); }
+  .contact-item .v a { color: var(--c-ink); }
+  .contact-item .v a:hover { color: var(--c-accent-ink); }
+  .contact-item .d { color: var(--c-ink-2); font-size: var(--fs-sm); margin-top: var(--s-2); max-width: 36ch; }
+  .contact-item .mono { font-family: var(--font-mono); font-feature-settings: "tnum" 1; }
+
+  .orgs { display: grid; }
+  .org { display: grid; grid-template-columns: 1fr; gap: 2px; padding: var(--s-5) 0; border-top: 1px solid var(--c-line); }
+  .org:first-child { border-top: 0; padding-top: 0; }
+  .org .name { font-weight: var(--fw-semibold); font-size: var(--fs-lead); letter-spacing: var(--tr-tight); }
+  .org .role { color: var(--c-ink-2); font-size: var(--fs-sm); }
+</style>
+</head>
+<body>
+
+<header class="site-header">
+  <div class="site-header-inner page">
+    <a class="brand" href="index.html" aria-label="RePhoto — home">
+      <svg viewBox="0 0 100 100" fill="none" aria-hidden="true"><g stroke="currentColor" stroke-width="3.6" stroke-linecap="round"><path d="M22 36 V28 a6 6 0 0 1 6-6 H36"/><path d="M64 22 H72 a6 6 0 0 1 6 6 V36"/><path d="M78 64 V72 a6 6 0 0 1-6-6 H64"/><path d="M36 78 H28 a6 6 0 0 1-6-6 V64"/></g><circle cx="50" cy="50" r="7.5" fill="var(--c-accent)"/></svg>
+      RePhoto
+    </a>
+    <nav class="site-nav" id="siteNav" aria-label="Navigazione principale">
+      <a href="programma.html">Programma</a>
+      <a href="ospiti.html">Ospiti</a>
+      <a href="info.html">Informazioni</a>
+      <a href="edizioni.html">Edizioni</a>
+      <a href="faq.html">FAQ</a>
+      <a href="contatti.html" aria-current="page">Contatti</a>
+    </nav>
+    <div class="site-header-actions">
+      <div class="lang-switch" role="group" aria-label="Lingua">
+        <button type="button" data-lang="ro">RO</button>
+        <button type="button" data-lang="it" class="is-active" aria-pressed="true">IT</button>
+        <button type="button" data-lang="en">EN</button>
+      </div>
+      <a class="btn btn-primary btn-sm" href="participant/iscrizione.html" data-press>Trova le tue foto</a>
+      <button class="nav-toggle" type="button" data-nav-toggle aria-controls="siteNav" aria-expanded="false" aria-label="Apri il menu">
+        <svg class="ico-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+        <svg class="ico-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+
+<main>
+  <section class="page-intro page">
+    <h1 class="display-2">Contatti.</h1>
+    <p class="mono-meta">Conferenza Europea · RePhoto</p>
+    <p class="lead">Due canali distinti: gli organizzatori per la conferenza, e il servizio foto per tutto ciò che riguarda le immagini e la privacy.</p>
+  </section>
+
+  <section class="section-sm page">
+    <div class="contact-cols">
+      <div class="contact-col">
+        <div class="contact-item">
+          <div class="k">Organizzatori — evento</div>
+          <div class="v"><a href="mailto:info@conferintaeuropeana.it">info@conferintaeuropeana.it</a></div>
+          <div class="d">Iscrizioni, programma, alloggio e logistica.</div>
+        </div>
+        <div class="contact-item">
+          <div class="k">Telefono</div>
+          <div class="v"><a class="mono" href="tel:+390000000000">+39 000 000 0000</a></div>
+          <div class="d">Lun–Ven, 9:00–17:00.</div>
+        </div>
+        <div class="contact-item">
+          <div class="k">Sede</div>
+          <div class="v">Philadelphia Mansue</div>
+          <div class="d">Mansuè (TV), Italia. L'indirizzo della conferenza 2026 viene comunicato all'iscrizione.</div>
+        </div>
+      </div>
+      <div class="contact-col">
+        <div class="contact-item">
+          <div class="k">Servizio foto &amp; privacy</div>
+          <div class="v"><a href="mailto:privacy@rephoto.it">privacy@rephoto.it</a></div>
+          <div class="d">Richieste GDPR, cancellazione dati, domande sul riconoscimento e sui minori.</div>
+        </div>
+        <div class="contact-item">
+          <div class="k">Per i fotografi</div>
+          <div class="v"><a href="photographer/invito.html">Accedi con l'invito</a></div>
+          <div class="d">Sei un fotografo della conferenza? Entra con il tuo invito per caricare.</div>
+        </div>
+        <div class="contact-item">
+          <div class="k">Social</div>
+          <div class="v"><a href="#">Instagram</a> · <a href="#">Facebook</a> · <a href="#">YouTube</a></div>
+          <div class="d">Aggiornamenti, momenti e anteprime delle edizioni.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section-sm page">
+    <div class="section-head">
+      <h2>Organizzatori</h2>
+      <p>La conferenza è organizzata dalla comunità, con il sostegno istituzionale per la diaspora e RePhoto come partner tecnico per le foto.</p>
+    </div>
+    <div class="orgs" style="max-width:48rem">
+      <div class="org">
+        <div class="name">Philadelphia Mansue</div>
+        <div class="role">Organizzatore e ospitante della conferenza</div>
+      </div>
+      <div class="org">
+        <div class="name">Department for Romanians Abroad</div>
+        <div class="role">Con il sostegno per la diaspora romena (contributo istituzionale)</div>
+      </div>
+      <div class="org">
+        <div class="name">RePhoto</div>
+        <div class="role">Fornitore del servizio foto e responsabile del trattamento dei dati biometrici</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section-sm page" id="newsletter">
+    <div class="newsletter">
+      <h2 class="display-2">Ricevi gli aggiornamenti.</h2>
+      <p>Ti avvisiamo quando le foto della conferenza sono pronte e quando apriamo le iscrizioni alle prossime edizioni. Niente spam.</p>
+      <form class="newsletter-form" data-newsletter novalidate>
+        <input class="input" type="email" name="email" required autocomplete="email" placeholder="La tua email" aria-label="La tua email">
+        <button class="btn btn-primary" type="submit" data-press>Iscrivimi</button>
+      </form>
+      <label class="check">
+        <input type="checkbox" name="consent" required>
+        <span class="box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+        <span class="check-label">Acconsento a ricevere email di aggiornamento sulla conferenza e sul servizio foto. Posso disiscrivermi in ogni momento. <a href="#">Informativa privacy</a>.</span>
+      </label>
+      <div class="banner banner-success form-note" aria-live="polite">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8.5 12l2.4 2.4L16 9"/></svg>
+        <div>Fatto. Ti scriveremo appena ci sono aggiornamenti.</div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="site-footer">
+  <div class="page">
+    <div class="footer-top">
+      <div class="footer-brand">
+        <a class="brand" href="index.html">
+          <svg viewBox="0 0 100 100" fill="none" aria-hidden="true"><g stroke="currentColor" stroke-width="3.6" stroke-linecap="round"><path d="M22 36 V28 a6 6 0 0 1 6-6 H36"/><path d="M64 22 H72 a6 6 0 0 1 6 6 V36"/><path d="M78 64 V72 a6 6 0 0 1-6-6 H64"/><path d="M36 78 H28 a6 6 0 0 1-6-6 V64"/></g><circle cx="50" cy="50" r="7.5" fill="var(--c-accent)"/></svg>
+          RePhoto
+        </a>
+        <p>La memoria della Conferenza Europea di Gioventù e Famiglie: ritrova le tue foto con un selfie.</p>
+      </div>
+      <div class="footer-col">
+        <h3>Conferenza</h3>
+        <ul>
+          <li><a href="programma.html">Programma</a></li>
+          <li><a href="ospiti.html">Ospiti</a></li>
+          <li><a href="info.html">Informazioni pratiche</a></li>
+          <li><a href="info.html#iscrizioni">Iscrizioni</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h3>Foto</h3>
+        <ul>
+          <li><a href="participant/iscrizione.html">Trova le tue foto</a></li>
+          <li><a href="faq.html#foto">Come funziona</a></li>
+          <li><a href="faq.html#foto">FAQ foto</a></li>
+          <li><a href="participant/i-miei-dati.html">Gestisci i miei dati</a></li>
+          <li><a href="photographer/invito.html">Per i fotografi</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h3>Community</h3>
+        <ul>
+          <li><a href="edizioni.html">Edizioni precedenti</a></li>
+          <li><a href="contatti.html#newsletter">Newsletter</a></li>
+          <li><a href="contatti.html">Organizzatori</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h3>Contatti</h3>
+        <ul>
+          <li><a href="mailto:info@conferintaeuropeana.it">info@conferintaeuropeana.it</a></li>
+          <li><a href="tel:+390000000000">+39 000 000 0000</a></li>
+          <li><a href="contatti.html">Sede &amp; social</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-legal">
+      <span>© 2026 RePhoto · Conferenza Europea</span>
+      <a href="#">Informativa privacy</a>
+      <a href="#">Termini</a>
+      <a href="#">Cookie</a>
+      <a href="#">Informativa minori</a>
+      <a href="#">Accessibilità</a>
+      <span class="grow"></span>
+      <a href="admin/login.html">Area staff</a>
+    </div>
+  </div>
+</footer>
+
+<script src="../../packages/ui/motion.js"></script>
+<script src="site.js"></script>
+</body>
+</html>

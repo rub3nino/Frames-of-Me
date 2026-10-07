@@ -8,5 +8,7 @@ uploads
 *.pem
 *.tsbuildinfo
 apps/web/public/mediapipe/
+frontend/apps/*/public/mediapipe/
+photo/
 .DS_Store
 __pycache__/

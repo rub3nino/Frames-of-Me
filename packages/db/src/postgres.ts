@@ -174,6 +174,23 @@ export class PostgresDatabase implements Database {
     return mapUser(row);
   }
 
+  async setUserPassword(userId: string, passwordHash: string): Promise<void> {
+    await this.sql`update users set password_hash = ${passwordHash} where id = ${userId}`;
+  }
+
+  async findUserForLogin(
+    email: string,
+    role: Role,
+  ): Promise<{ user: UserRow; passwordHash: string | null } | null> {
+    const rows = await this.sql<(UserSql & { password_hash: string | null })[]>`
+      select id, email, role, created_at, password_hash from users
+      where email = ${email} and role = ${role}
+    `;
+    const row = rows[0];
+    if (!row) return null;
+    return { user: mapUser(row), passwordHash: row.password_hash };
+  }
+
   async insertMagicLink(input: {
     email: string;
     role: Role;

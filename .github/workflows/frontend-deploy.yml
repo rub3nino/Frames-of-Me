@@ -1,0 +1,219 @@
+# Frontend deploy — independent, per-app deploys from a single `main`.
+#
+# Model (see frontend/DEPLOY.md): one repo, one `main`, no per-surface branches.
+# On every push to `main`, a `changes` job computes which app is affected via
+# path filters, and ONLY the affected app's deploy job runs. Each app ships to
+# its own subdomain on its own cadence.
+#
+#   apps/landing       -> rephoto.it (+ www)     static files, "frozen" (rarely changes)
+#   apps/partecipanti  -> app.rephoto.it          Vite SPA build -> dist/
+#   apps/fotografi     -> foto.rephoto.it         Vite SPA build -> dist/
+#   apps/admin         -> admin.rephoto.it        Vite SPA build -> dist/
+#
+# Shared-package fan-out:
+#   - packages/ui         changes  -> redeploy ALL apps (it is the design system/CSS)
+#   - packages/api-client changes  -> redeploy the three SPAs (landing doesn't use it)
+#
+# Prod wiring: each app is served behind a reverse proxy that routes /v1/* to the
+# API (api.rephoto.it), so the browser sees the API as same-origin and the
+# session cookie works without CORS. The build itself is origin-agnostic because
+# packages/api-client defaults to `/v1` — there is NO build-time API URL to set.
+# (If you ever need to point a build elsewhere, that is the proxy's job, not a
+# rebuild: do not bake an absolute API origin into the bundle.)
+#
+# ───────────────────────────── FILL THESE IN ─────────────────────────────────
+# The deploy steps below are TODO placeholders. Pick ONE mechanism per app and
+# wire it up, then delete the other. Required repo secrets (Settings → Secrets):
+#   DEPLOY_HOST  - ssh host of the server/edge that serves the static roots
+#   DEPLOY_USER  - ssh user for rsync/scp
+#   DEPLOY_KEY   - private ssh key (PEM) for DEPLOY_USER
+# Per-app document roots live in the `env:` of each job (DEPLOY_PATH) — adjust to
+# match your server layout. Alternatively replace the rsync step with your
+# CDN/host provider's action (Cloudflare Pages, S3+CloudFront, Netlify, …).
+# ──────────────────────────────────────────────────────────────────────────────
+name: frontend-deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "frontend/**"
+
+permissions:
+  contents: read
+
+jobs:
+  # Decide which app(s) to deploy for this push.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      landing: ${{ steps.filter.outputs.landing }}
+      partecipanti: ${{ steps.filter.outputs.partecipanti }}
+      fotografi: ${{ steps.filter.outputs.fotografi }}
+      admin: ${{ steps.filter.outputs.admin }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            landing:
+              - 'frontend/apps/landing/**'
+              - 'frontend/packages/ui/**'
+            partecipanti:
+              - 'frontend/apps/partecipanti/**'
+              - 'frontend/packages/ui/**'
+              - 'frontend/packages/api-client/**'
+            fotografi:
+              - 'frontend/apps/fotografi/**'
+              - 'frontend/packages/ui/**'
+              - 'frontend/packages/api-client/**'
+            admin:
+              - 'frontend/apps/admin/**'
+              - 'frontend/packages/ui/**'
+              - 'frontend/packages/api-client/**'
+
+  # ── landing → rephoto.it (static, no build) ────────────────────────────────
+  deploy-landing:
+    needs: changes
+    if: needs.changes.outputs.landing == 'true'
+    runs-on: ubuntu-latest
+    # One in-flight deploy per app; a newer push waits rather than racing.
+    concurrency:
+      group: deploy-landing
+      cancel-in-progress: false
+    env:
+      APP_SUBDOMAIN: rephoto.it
+      DEPLOY_PATH: /srv/www/rephoto.it            # TODO: adjust to your server's docroot
+      SRC_DIR: frontend/apps/landing              # static files published as-is
+    steps:
+      - uses: actions/checkout@v4
+
+      # TODO (choose one and delete the other):
+      #
+      # (A) rsync over ssh to the static host:
+      #   - uses: webfactory/ssh-agent@v0.9.0
+      #     with: { ssh-private-key: ${{ secrets.DEPLOY_KEY }} }
+      #   - run: |
+      #       rsync -az --delete \
+      #         "$SRC_DIR"/ \
+      #         "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:$DEPLOY_PATH/"
+      #
+      # (B) hand the files to a later step/job as an artifact:
+      #   - uses: actions/upload-artifact@v4
+      #     with: { name: landing, path: frontend/apps/landing }
+      - name: TODO deploy landing
+        run: |
+          echo "::warning::landing deploy is a placeholder — wire up rsync/CDN"
+          echo "would publish $SRC_DIR -> $APP_SUBDOMAIN ($DEPLOY_PATH)"
+          test -f "$SRC_DIR/index.html"
+
+  # ── partecipanti → app.rephoto.it (Vite SPA) ───────────────────────────────
+  deploy-partecipanti:
+    needs: changes
+    if: needs.changes.outputs.partecipanti == 'true'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-partecipanti
+      cancel-in-progress: false
+    env:
+      APP_SUBDOMAIN: app.rephoto.it
+      DEPLOY_PATH: /srv/www/app.rephoto.it        # TODO: adjust to your server's docroot
+      APP_DIR: frontend/apps/partecipanti
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ${{ env.APP_DIR }}/package-lock.json
+      - name: Install & build
+        working-directory: ${{ env.APP_DIR }}
+        # No API URL env needed: the client defaults to /v1 and the prod proxy
+        # routes /v1 -> api.rephoto.it (same-origin, cookie-friendly).
+        run: |
+          npm ci || npm install
+          npm run build
+      # TODO (choose one and delete the other):
+      #
+      # (A) rsync dist/ to the SPA host (SPA fallback handled by the proxy/host):
+      #   - uses: webfactory/ssh-agent@v0.9.0
+      #     with: { ssh-private-key: ${{ secrets.DEPLOY_KEY }} }
+      #   - run: |
+      #       rsync -az --delete \
+      #         "$APP_DIR/dist/" \
+      #         "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:$DEPLOY_PATH/"
+      #
+      # (B) upload dist/ as an artifact for a separate release job:
+      #   - uses: actions/upload-artifact@v4
+      #     with: { name: partecipanti-dist, path: frontend/apps/partecipanti/dist }
+      - name: TODO deploy partecipanti
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          echo "::warning::partecipanti deploy is a placeholder — wire up rsync/CDN"
+          echo "would publish $APP_DIR/dist -> $APP_SUBDOMAIN ($DEPLOY_PATH)"
+          test -f dist/index.html
+
+  # ── fotografi → foto.rephoto.it (Vite SPA) ─────────────────────────────────
+  deploy-fotografi:
+    needs: changes
+    if: needs.changes.outputs.fotografi == 'true'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-fotografi
+      cancel-in-progress: false
+    env:
+      APP_SUBDOMAIN: foto.rephoto.it
+      DEPLOY_PATH: /srv/www/foto.rephoto.it       # TODO: adjust to your server's docroot
+      APP_DIR: frontend/apps/fotografi
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ${{ env.APP_DIR }}/package-lock.json
+      - name: Install & build
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          npm ci || npm install
+          npm run build
+      # TODO: same two options as partecipanti — rsync dist/ OR upload-artifact.
+      - name: TODO deploy fotografi
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          echo "::warning::fotografi deploy is a placeholder — wire up rsync/CDN"
+          echo "would publish $APP_DIR/dist -> $APP_SUBDOMAIN ($DEPLOY_PATH)"
+          test -f dist/index.html
+
+  # ── admin → admin.rephoto.it (Vite SPA) ────────────────────────────────────
+  deploy-admin:
+    needs: changes
+    if: needs.changes.outputs.admin == 'true'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-admin
+      cancel-in-progress: false
+    env:
+      APP_SUBDOMAIN: admin.rephoto.it
+      DEPLOY_PATH: /srv/www/admin.rephoto.it      # TODO: adjust to your server's docroot
+      APP_DIR: frontend/apps/admin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ${{ env.APP_DIR }}/package-lock.json
+      - name: Install & build
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          npm ci || npm install
+          npm run build
+      # TODO: same two options as partecipanti — rsync dist/ OR upload-artifact.
+      - name: TODO deploy admin
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          echo "::warning::admin deploy is a placeholder — wire up rsync/CDN"
+          echo "would publish $APP_DIR/dist -> $APP_SUBDOMAIN ($DEPLOY_PATH)"
+          test -f dist/index.html

@@ -1,6 +1,7 @@
 export const MESSAGES = {
   validation: "Dati non validi.",
   linkInvalid: "Link non valido oppure già usato.",
+  loginInvalid: "Email o password non corrette.",
   unauthorized: "Accesso richiesto.",
   forbidden: "Non hai i permessi per questa operazione.",
   notOnList: "La tua email non è nell'elenco dei partecipanti di questo evento.",

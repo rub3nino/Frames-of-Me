@@ -1,0 +1,104 @@
+/* ============================================================================
+   RePhoto — Design Tokens (v2 · Apple-grade · LIGHT ONLY)
+   Single source of truth. Components never hardcode a value that lives here.
+   Grounded in Apple's real system values; rules from the impeccable skill.
+   There is intentionally NO dark theme (chosen from the use scene, not category).
+   ============================================================================ */
+
+:root {
+  /* ---- Neutrals (the system) -------------------------------------------- */
+  --c-canvas:   #F5F5F7;  /* base ground (Apple soft grey) */
+  --c-surface:  #FFFFFF;  /* cards, panels, inputs */
+  --c-surface-2:#FBFBFD;  /* barely-raised hover */
+  --c-sunken:   #ECECEE;  /* wells, tracks, placeholders */
+
+  --c-ink:   #1D1D1F;     /* primary text */
+  --c-ink-2: #6E6E73;     /* secondary text */
+  --c-ink-3: #86868B;     /* tertiary / hint */
+  --c-ink-4: #AEAEB2;     /* disabled */
+  --c-line:  #D2D2D7;     /* hairline border */
+  --c-line-2:#C7C7CC;     /* stronger border */
+
+  /* ---- Accent — one precise blue ---------------------------------------- */
+  --c-accent:       #0071E3;
+  --c-accent-hover: #0077ED;
+  --c-accent-press: #0066CC;
+  --c-accent-soft:  #E8F1FD;  /* selection, soft surface */
+  --c-accent-on:    #FFFFFF;  /* text/icon on accent */
+  --c-accent-ink:   #0066CC;  /* accent-colored text/links on light */
+
+  /* ---- Semantic (muted, serious) ---------------------------------------- */
+  --c-success:#248A3D; --c-success-soft:#E4F2E7; --c-success-ink:#1C6E31;
+  --c-warning:#B25E00; --c-warning-soft:#FBEDDD; --c-warning-ink:#8A4900;
+  --c-danger: #D70015; --c-danger-soft: #FBE3E4; --c-danger-ink: #A6000F;
+  --c-info:   #0071E3; --c-info-soft:   #E8F1FD; --c-info-ink:   #0066CC;
+
+  /* ---- Typography -------------------------------------------------------- */
+  --font-sans: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* Fluid scale — tracking tightens as size grows (floor -0.04em) */
+  --fs-display-1: clamp(2.75rem, 1.7rem + 5.2vw, 5rem);   /* hero (<= 6rem cap) */
+  --fs-display-2: clamp(2.1rem, 1.5rem + 3vw, 3.5rem);
+  --fs-h1:        clamp(1.75rem, 1.35rem + 2vw, 2.5rem);
+  --fs-h2:        clamp(1.4rem, 1.2rem + 1vw, 1.9rem);
+  --fs-h3:        clamp(1.2rem, 1.1rem + 0.5vw, 1.4rem);
+  --fs-lead:      clamp(1.05rem, 1rem + 0.35vw, 1.2rem);
+  --fs-body:      1rem;
+  --fs-sm:        0.9375rem;
+  --fs-xs:        0.8125rem;
+  --fs-2xs:       0.6875rem;
+
+  --lh-display: 1.06;
+  --lh-tight:   1.12;
+  --lh-snug:    1.25;
+  --lh-body:    1.47;   /* Apple body leading */
+
+  --tr-display: -0.035em;   /* large text tightens */
+  --tr-tight:   -0.018em;
+  --tr-normal:  0em;
+  --tr-data:    0.01em;
+
+  --fw-regular: 400; --fw-medium: 500; --fw-semibold: 600; --fw-bold: 700;
+
+  /* ---- Spacing (Apple scale, 4-base) ------------------------------------ */
+  --s-0:0; --s-1:4px; --s-2:8px; --s-3:12px; --s-4:16px; --s-5:24px;
+  --s-6:32px; --s-7:40px; --s-8:56px; --s-9:64px; --s-10:80px; --s-11:96px; --s-12:128px;
+
+  /* ---- Radius (Apple) --------------------------------------------------- */
+  --r-sm:8px; --r-md:12px; --r-lg:18px; --r-xl:22px; --r-pill:980px;
+
+  /* ---- Depth: offset + soft blur, never a glow -------------------------- */
+  --shadow-xs: 0 1px 2px rgba(0,0,0,.05);
+  --shadow-sm: 0 2px 8px rgba(0,0,0,.06);
+  --shadow-md: 0 6px 20px rgba(0,0,0,.08), 0 1px 3px rgba(0,0,0,.05);
+  --shadow-lg: 0 18px 48px rgba(0,0,0,.14), 0 4px 12px rgba(0,0,0,.07);
+  --ring-focus: 0 0 0 4px rgba(0,113,227,.28);  /* accent focus ring */
+
+  /* ---- Chrome material (subtle, a real effect not decoration) ----------- */
+  --mat-bar:  rgba(255,255,255,.80);
+  --mat-blur: saturate(180%) blur(20px);
+
+  /* ---- Motion (Emil Kowalski's strong curves — built-in easings too weak) */
+  --ease-out:    cubic-bezier(.23, 1, .32, 1);     /* entrances/exits, UI */
+  --ease-in-out: cubic-bezier(.77, 0, .175, 1);    /* on-screen move/morph */
+  --ease-drawer: cubic-bezier(.32, .72, 0, 1);     /* iOS-like drawer/sheet */
+  --ease-std:    ease;                             /* hover / color only */
+  --dur-press: 140ms;  /* button press feedback (100–160) */
+  --dur-1: 160ms;  /* small feedback */
+  --dur-2: 220ms;  /* routine state / dropdowns (150–250) */
+  --dur-3: 300ms;  /* overlay / small layout (<300 for UI) */
+  --dur-4: 640ms;  /* the ONE authored entrance (Recognition) — marketing */
+
+  /* ---- Layout ----------------------------------------------------------- */
+  --maxw-prose: 42rem;
+  --maxw-page:  73.5rem;   /* ~1176px, Apple content width */
+  --maxw-wide:  90rem;
+  --header-h:   52px;      /* Apple nav height */
+  --tabbar-h:   66px;
+
+  --z-base:0; --z-raised:10; --z-sticky:100; --z-header:200;
+  --z-overlay:500; --z-modal:600; --z-toast:800;
+
+  color-scheme: light;    /* light only — no dark variant anywhere */
+}

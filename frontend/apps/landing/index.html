@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>RePhoto — Ritrova le tue foto dell'evento</title>
+<meta name="description" content="Un selfie, e ti troviamo tra tutti gli scatti dell'evento. Scarichi le foto che vuoi, in alta qualità.">
+<meta name="theme-color" content="#FFFFFF">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../packages/ui/tokens.css">
+<link rel="stylesheet" href="../../packages/ui/base.css">
+<link rel="stylesheet" href="../../packages/ui/components.css">
+<link rel="stylesheet" href="../../packages/ui/landing.css">
+</head>
+<body class="mkt">
+
+<header class="mkt-nav">
+  <div class="wrap">
+    <a class="mkt-brand" href="index.html" aria-label="RePhoto">
+      <svg viewBox="0 0 100 100" fill="none" aria-hidden="true"><g stroke="currentColor" stroke-width="3.6" stroke-linecap="round"><path d="M22 36 V28 a6 6 0 0 1 6-6 H36"/><path d="M64 22 H72 a6 6 0 0 1 6 6 V36"/><path d="M78 64 V72 a6 6 0 0 1-6 6 H64"/><path d="M36 78 H28 a6 6 0 0 1-6-6 V64"/></g><circle cx="50" cy="50" r="7.5" fill="var(--mk-dot)"/></svg>
+      <span class="nm">Re<b>Photo</b></span>
+    </a>
+    <nav>
+      <a href="#come">Come funziona</a>
+      <a href="#privacy">Privacy</a>
+      <a href="../fotografi/invito.html">Per i fotografi</a>
+    </nav>
+    <span class="spacer"></span>
+    <a class="btn-cta" href="../partecipanti/iscrizione.html" data-press>Trova le mie foto</a>
+  </div>
+</header>
+
+<main>
+  <!-- HERO -->
+  <section class="hero wrap">
+    <span class="pill" data-reveal><span class="pdot"></span> 4.000+ foto · Conferenza 2026</span>
+    <h1 data-reveal data-reveal-delay="60">Le tue foto dell'evento,<br>trovate in un selfie.</h1>
+    <p class="sub" data-reveal data-reveal-delay="120">Ti cerchiamo tra tutti gli scatti e ti mostriamo solo quelli in cui compari. Niente da sfogliare.</p>
+
+    <!-- email input → in produzione: POST /v1/auth/request-link { email, role:"participant" } -->
+    <form class="hero-field" id="hero-form" data-reveal data-reveal-delay="180">
+      <div class="inner">
+        <input type="email" inputmode="email" placeholder="la-tua@email.it" aria-label="La tua email">
+        <button class="btn-cta" type="submit" data-press>
+          Trova le mie foto
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        </button>
+      </div>
+    </form>
+    <div data-reveal data-reveal-delay="240">
+      <span class="privacy-note">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l7 3v6c0 4.4-3 7.6-7 9-4-1.4-7-4.6-7-9V6l7-3Z"/><path d="M9 12l2 2 4-4"/></svg>
+        Il selfie serve solo a trovarti, poi lo cancelliamo.
+      </span>
+    </div>
+
+    <!-- FEATURE PASTEL CARDS -->
+    <div class="features" id="come">
+      <article class="card-feat t-butter" data-reveal>
+        <svg class="fi" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="9" r="4"/><path d="M5 20c0-3.6 3.1-6 7-6s7 2.4 7 6"/></svg>
+        <h3>Ti riconosce dal volto</h3>
+        <p>Un selfie e ti troviamo tra migliaia di scatti dell'evento. Senza cercare, senza scorrere.</p>
+      </article>
+      <article class="card-feat t-sky" data-reveal data-reveal-delay="80">
+        <svg class="fi" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+        <h3>Pronte in pochi secondi</h3>
+        <p>La tua galleria si prepara mentre aspetti. Ti avvisiamo quando è pronta.</p>
+      </article>
+      <article class="card-feat t-mint" data-reveal data-reveal-delay="160">
+        <svg class="fi" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M8 11l4 4 4-4"/><path d="M5 21h14"/></svg>
+        <h3>Scarichi quelle che vuoi</h3>
+        <p>Scegli le foto e le scarichi in alta qualità: originale o versione per il web.</p>
+      </article>
+    </div>
+  </section>
+
+  <hr class="sep">
+
+  <!-- SHOWCASE -->
+  <section class="sect wrap">
+    <div class="sec-head">
+      <h2>Solo le foto<br>in cui compari.</h2>
+      <a class="btn-text" href="../partecipanti/iscrizione.html">Trova le mie foto <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>
+    </div>
+    <div class="photo-row">
+      <div class="ph" data-reveal><img class="blur-up" src="../../packages/ui/assets/photos/event-02.jpg" alt="" width="360" height="450"></div>
+      <div class="ph" data-reveal data-reveal-delay="70"><img class="blur-up" src="../../packages/ui/assets/photos/event-03.jpg" alt="" width="360" height="450"></div>
+      <div class="ph" data-reveal data-reveal-delay="140"><img class="blur-up" src="../../packages/ui/assets/photos/p-22.jpg" alt="" width="360" height="450"></div>
+      <div class="ph" data-reveal data-reveal-delay="210"><img class="blur-up" src="../../packages/ui/assets/photos/p-26.jpg" alt="" width="360" height="450"></div>
+    </div>
+  </section>
+
+  <hr class="sep">
+
+  <!-- HOW -->
+  <section class="sect wrap">
+    <div class="steps3">
+      <div class="st" data-reveal><span class="n serif">01</span><h3>Scatta un selfie</h3><p>Dopo un accesso veloce via email, inquadri il viso una volta sola.</p></div>
+      <div class="st" data-reveal data-reveal-delay="80"><span class="n serif">02</span><h3>Ti riconosciamo</h3><p>Confrontiamo il tuo viso con gli scatti dell'evento in pochi secondi.</p></div>
+      <div class="st" data-reveal data-reveal-delay="160"><span class="n serif">03</span><h3>Scarichi</h3><p>Vedi solo le foto in cui compari e scarichi quelle che vuoi.</p></div>
+    </div>
+  </section>
+
+  <hr class="sep">
+
+  <!-- PRIVACY -->
+  <section class="sect wrap" id="privacy">
+    <div class="privacy-band" data-reveal>
+      <svg class="shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l8 3.5v6c0 5-3.5 8.6-8 10-4.5-1.4-8-5-8-10v-6L12 2Z"/><path d="M8.5 12l2.4 2.4L16 9"/></svg>
+      <h2>Il tuo viso resta tuo.</h2>
+      <p>Usiamo il selfie solo per trovarti e lo cancelliamo subito dopo. Non conserviamo impronte del volto riutilizzabili, e puoi chiedere la cancellazione dei tuoi dati in ogni momento.</p>
+      <p style="margin-top:22px"><a class="btn-text" href="#">Leggi l'informativa privacy <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a></p>
+    </div>
+  </section>
+</main>
+
+<footer class="mkt-foot">
+  <div class="wrap">
+    <a class="mkt-brand" href="index.html" aria-label="RePhoto">
+      <svg viewBox="0 0 100 100" fill="none" aria-hidden="true" style="width:22px;height:22px"><g stroke="currentColor" stroke-width="3.6" stroke-linecap="round"><path d="M22 36 V28 a6 6 0 0 1 6-6 H36"/><path d="M64 22 H72 a6 6 0 0 1 6 6 V36"/><path d="M78 64 V72 a6 6 0 0 1-6 6 H64"/><path d="M36 78 H28 a6 6 0 0 1-6-6 V64"/></g><circle cx="50" cy="50" r="7.5" fill="var(--mk-dot)"/></svg>
+      <span class="nm" style="font-size:1.3rem">Re<b>Photo</b></span>
+    </a>
+    <nav>
+      <a href="#privacy">Privacy</a>
+      <a href="#">Termini</a>
+      <a href="../partecipanti/i-miei-dati.html">I miei dati</a>
+      <a href="../fotografi/invito.html">Per i fotografi</a>
+      <a href="../admin/login.html">Staff</a>
+    </nav>
+    <span class="copy">© 2026 RePhoto</span>
+  </div>
+</footer>
+
+<script src="../../packages/ui/motion.js"></script>
+<script type="module">
+  // The ONLY backend touchpoint of the landing: email -> magic link.
+  import { createClient } from "../../packages/api-client/index.mjs";
+  const api = createClient(); // same-origin /v1 (prod reverse-proxy / Next dev proxy). See DEPLOY.md
+  const form = document.getElementById("hero-form");
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const email = (form.querySelector('input[type="email"]').value || "").trim();
+    const dest = "../partecipanti/attesa.html" + (email ? "?email=" + encodeURIComponent(email) : "");
+    try {
+      if (email) await api.requestLink(email, "participant"); // POST /v1/auth/request-link
+    } catch (err) {
+      // Pure-static local preview has no /v1 proxy; continue to the waiting screen anyway.
+      console.warn("request-link non inviato (serve il proxy /v1 o CORS lato API):", err);
+    }
+    location.href = dest;
+  });
+</script>
+</body>
+</html>

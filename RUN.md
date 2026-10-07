@@ -49,11 +49,26 @@ Running the Python service outside Docker (venv, `MODEL_ROOT`, `uvicorn`) is des
 
 Admins and photographers ask their magic link on **http://localhost:3000/staff** (e-mail + role; the home page form is for participants only; the page is not linked from anywhere, type the URL). A fresh database can also get an admin from `BOOTSTRAP_ADMINS=you@example.com` in `.env` (upserted when `dev:api` boots). Then http://localhost:3000/admin, sections by hash:
 
+### Staff login with e-mail + password
+
+Admins and photographers can also log in with **e-mail + password** (participants stay magic-link only). This is what the new `frontend/` apps use: the admin area (`frontend/apps/admin`) and the photographer area (`frontend/apps/fotografi`) show a credentials form first, with the magic link kept as a fallback link.
+
+- **Endpoint:** `POST /v1/auth/login` `{ email, password, role }` (role `photographer` or `admin`) → sets the `rephoto_session` cookie, same as a verified magic link. Wrong credentials → `401`.
+- **Create / reset credentials (admin-only):** `POST /v1/admin/staff` `{ email, role, password, eventId? }` creates the account if missing, sets the password (scrypt-hashed in `users.password_hash`, migration `008_staff_passwords.sql`), and attaches a photographer to `eventId` when given. In the admin UI it is the **Accessi staff** page (`/admin/link`), card “Credenziali con password” (with a password generator).
+- **Local dev credentials** (seeded only when `SEED_DEMO` is on, i.e. not in production, and never overwriting a password already set — see `seedStaffCredentials` in `apps/api/src/bootstrap.ts`):
+  - admin — `admin@rephoto.local` / `rephoto-admin`
+  - photographer — `photographer@rephoto.local` / `rephoto-foto`
+  - override the defaults with `DEV_ADMIN_PASSWORD` / `DEV_PHOTOGRAPHER_PASSWORD` in `.env`.
+
+With the `frontend/` apps running (admin on `:5192`, fotografi on `:5191`), sign in at the app root with those credentials; create more staff from **Accessi staff** and hand each person their e-mail + password.
+
+
+
 | Section | What it does | API |
 | --- | --- | --- |
 | **Stato** (`#stato`) | photos by status, queue by job type with the oldest age, last 20 job errors, face-service probe; refreshes every 10 s | `GET /v1/admin/metrics` |
 | **Eventi** | list with counts, create an event (slug, name, retention, access); the selected event drives every other section (default: the runtime slug from `/api/config`) | `GET` / `POST /v1/admin/events` |
-| **Link di accesso** | mint a magic link for any e-mail and role, shown as a QR and as text, never mailed; a photographer is created and attached to the selected event | `POST /v1/admin/magic-links` |
+| **Link di accesso** / **Accessi staff** | create staff credentials (e-mail + password) for photographers/admins, and mint a magic link for any e-mail and role, shown as a QR and as text, never mailed; a photographer is created and attached to the selected event | `POST /v1/admin/staff`, `POST /v1/admin/magic-links` |
 | **Gallerie** | a participant's gallery by e-mail (score and source on every cell, reason, anchors; «Elimina la galleria», «Rifai il confronto» with `KEEP_SELFIES`), the paged list of galleries | `GET /v1/admin/galleries`, `DELETE` / `rematch` |
 | **Foto** | search by filename prefix, sha256, status, tag → `/admin/foto/<id>`: the web rendition with the stored face boxes, each face's «Vicini» (nearest faces of the event with the raw cosine), the galleries the photo is in | `GET /v1/admin/photos`, `/photos/:id`, `/faces/:externalId/neighbours` |
 | **Esporta** | the three CSV downloads (galleries, match hits, feedback) and the match-run log with `kept` / `maxCosine` per run | `GET /v1/admin/export/*.csv`, `/match-runs` |

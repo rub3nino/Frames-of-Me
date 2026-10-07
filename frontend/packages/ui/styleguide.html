@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RePhoto — Style guide</title>
+<meta name="theme-color" content="#F5F5F7">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="brand/tokens.css">
+<link rel="stylesheet" href="brand/base.css">
+<link rel="stylesheet" href="brand/components.css">
+<style>
+  .sg { padding: var(--s-9) 0 var(--s-12); }
+  .sg section { padding-block: var(--s-7); border-top: 1px solid var(--c-line); }
+  .sg h2.sec { margin-bottom: var(--s-5); }
+  .lbl { font-size: var(--fs-xs); color: var(--c-ink-3); font-weight: var(--fw-medium); margin-bottom: var(--s-3); }
+  .swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px,1fr)); gap: var(--s-3); }
+  .sw { border-radius: var(--r-md); overflow: hidden; border: 1px solid var(--c-line); }
+  .sw .c { height: 60px; }
+  .sw .m { padding: 8px 10px; font-size: var(--fs-2xs); background: var(--c-surface); }
+  .sw .m b { display: block; font-size: var(--fs-xs); color: var(--c-ink); }
+  .sw .m span { font-family: var(--font-mono); color: var(--c-ink-3); }
+  .demo-row { display: flex; flex-wrap: wrap; gap: var(--s-3); align-items: center; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px,1fr)); gap: var(--s-4); }
+  .type-item { display: flex; align-items: baseline; gap: var(--s-4); padding-block: var(--s-2); border-bottom: 1px dashed var(--c-line); }
+  .type-item .tag { font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--c-ink-3); width: 96px; flex: none; }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px,1fr)); gap: var(--s-5); }
+</style>
+</head>
+<body>
+<header class="appbar">
+  <a class="brand" href="pages/index.html"><svg viewBox="0 0 100 100" fill="none" aria-hidden="true"><g stroke="currentColor" stroke-width="3.6" stroke-linecap="round"><path d="M22 36 V28 a6 6 0 0 1 6-6 H36"/><path d="M64 22 H72 a6 6 0 0 1 6 6 V36"/><path d="M78 64 V72 a6 6 0 0 1-6 6 H64"/><path d="M36 78 H28 a6 6 0 0 1-6-6 V64"/></g><circle cx="50" cy="50" r="7.5" fill="var(--c-accent)"/></svg> RePhoto</a>
+  <span class="badge badge-neutral" style="margin-left:var(--s-2)">Style guide</span>
+</header>
+
+<main class="sg page">
+  <div style="padding-block:var(--s-6)">
+    <h1 class="display-2">Precise · Quiet · Certain</h1>
+    <p class="lead" style="max-width:42rem;margin-top:var(--s-3)">Il sistema Apple-grade di RePhoto. Light only. Ogni valore viene dai token in <span class="mono">brand/tokens.css</span>.</p>
+  </div>
+
+  <section>
+    <h2 class="sec">Logo — Focus Lock</h2>
+    <div class="grid2">
+      <div class="card center" style="height:140px"><svg width="76" height="76" viewBox="0 0 100 100" fill="none" style="color:var(--c-ink)"><g stroke="currentColor" stroke-width="3.6" stroke-linecap="round"><path d="M22 36 V28 a6 6 0 0 1 6-6 H36"/><path d="M64 22 H72 a6 6 0 0 1 6 6 V36"/><path d="M78 64 V72 a6 6 0 0 1-6 6 H64"/><path d="M36 78 H28 a6 6 0 0 1-6-6 V64"/></g><circle cx="50" cy="50" r="7.5" fill="var(--c-accent)"/></svg></div>
+      <div class="card center" style="height:140px;gap:10px;flex-direction:row;display:flex;align-items:center;justify-content:center"><svg width="34" height="34" viewBox="0 0 100 100" fill="none" style="color:var(--c-ink)"><g stroke="currentColor" stroke-width="3.6" stroke-linecap="round"><path d="M22 36 V28 a6 6 0 0 1 6-6 H36"/><path d="M64 22 H72 a6 6 0 0 1 6 6 V36"/><path d="M78 64 V72 a6 6 0 0 1-6 6 H64"/><path d="M36 78 H28 a6 6 0 0 1-6-6 V64"/></g><circle cx="50" cy="50" r="7.5" fill="var(--c-accent)"/></svg><span style="font-weight:600;font-size:1.5rem;letter-spacing:-.02em">RePhoto</span></div>
+    </div>
+  </section>
+
+  <section>
+    <h2 class="sec">Colore</h2>
+    <p class="lbl">Neutri (il sistema)</p>
+    <div class="swatches">
+      <div class="sw"><div class="c" style="background:var(--c-canvas)"></div><div class="m"><b>Ground</b><span>--c-canvas</span></div></div>
+      <div class="sw"><div class="c" style="background:var(--c-surface);border-bottom:1px solid var(--c-line)"></div><div class="m"><b>Surface</b><span>--c-surface</span></div></div>
+      <div class="sw"><div class="c" style="background:var(--c-sunken)"></div><div class="m"><b>Sunken</b><span>--c-sunken</span></div></div>
+      <div class="sw"><div class="c" style="background:var(--c-ink)"></div><div class="m"><b>Ink</b><span>--c-ink</span></div></div>
+      <div class="sw"><div class="c" style="background:var(--c-ink-2)"></div><div class="m"><b>Secondary</b><span>--c-ink-2</span></div></div>
+      <div class="sw"><div class="c" style="background:var(--c-ink-3)"></div><div class="m"><b>Tertiary</b><span>--c-ink-3</span></div></div>
+    </div>
+    <p class="lbl" style="margin-top:var(--s-5)">Accento — un solo blu, usato raramente</p>
+    <div class="swatches">
+      <div class="sw"><div class="c" style="background:var(--c-accent)"></div><div class="m"><b>Accent</b><span>--c-accent</span></div></div>
+      <div class="sw"><div class="c" style="background:var(--c-accent-hover)"></div><div class="m"><b>Hover</b><span>--c-accent-hover</span></div></div>
+      <div class="sw"><div class="c" style="background:var(--c-accent-soft)"></div><div class="m"><b>Soft / selection</b><span>--c-accent-soft</span></div></div>
+    </div>
+    <p class="lbl" style="margin-top:var(--s-5)">Semantici (sobri) — icona + testo + colore</p>
+    <div class="demo-row">
+      <span class="badge badge-success">Indicizzata</span>
+      <span class="badge badge-warning">In attesa</span>
+      <span class="badge badge-danger">Errore</span>
+      <span class="badge badge-info">Nuove</span>
+      <span class="badge badge-neutral">In coda</span>
+    </div>
+  </section>
+
+  <section>
+    <h2 class="sec">Tipografia — Geist</h2>
+    <div class="type-item"><span class="tag">display-1</span><span class="display-1" style="font-size:3rem">Ritrova</span></div>
+    <div class="type-item"><span class="tag">display-2</span><span class="display-2">Le tue foto</span></div>
+    <div class="type-item"><span class="tag">h1</span><h1>Titolo pagina</h1></div>
+    <div class="type-item"><span class="tag">h2</span><h2>Sezione</h2></div>
+    <div class="type-item"><span class="tag">h3</span><h3>Sottosezione</h3></div>
+    <div class="type-item"><span class="tag">lead</span><span class="lead">Testo guida, calmo e leggibile.</span></div>
+    <div class="type-item"><span class="tag">body</span><span>Corpo del testo: preciso, sobrio, certo. Frasi brevi.</span></div>
+    <div class="type-item"><span class="tag">mono</span><span class="mono">148.230 foto · 18 MB/s</span></div>
+    <p class="muted" style="margin-top:var(--s-4)">Niente eyebrow sopra i titoli (bandito). La gerarchia è dimensione + peso + spazio.</p>
+  </section>
+
+  <section>
+    <h2 class="sec">Bottoni</h2>
+    <div class="demo-row">
+      <button class="btn btn-primary" data-press>Trova le mie foto</button>
+      <button class="btn btn-secondary" data-press>Secondario</button>
+      <button class="btn btn-ghost" data-press>Ghost</button>
+      <button class="btn btn-danger" data-press>Elimina</button>
+      <button class="btn btn-primary" disabled>Disabilitato</button>
+      <a class="link-more" href="#"><span>Come funziona</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></a>
+    </div>
+  </section>
+
+  <section>
+    <h2 class="sec">Campi & consenso</h2>
+    <div class="grid2">
+      <div class="field"><label class="label">Email</label><input class="input" type="email" placeholder="nome@email.it"><span class="hint">Ti invieremo un link di accesso.</span></div>
+      <div class="field field-error"><label class="label">Email</label><input class="input" value="sbagliata@"><span class="error-text">Indirizzo non valido.</span></div>
+    </div>
+    <label class="check" style="margin-top:var(--s-4);max-width:560px">
+      <input type="checkbox"><span class="box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 7"/></svg></span>
+      <span class="check-label">Acconsento all'uso del selfie per riconoscere il mio volto nelle foto dell'evento (dato biometrico, art. 9 GDPR). Il selfie viene cancellato dopo la ricerca.</span>
+    </label>
+  </section>
+
+  <section>
+    <h2 class="sec">Card, stat, foto</h2>
+    <div class="grid2">
+      <div class="card"><h3>Card</h3><p class="muted" style="margin-top:6px">Superficie bianca su ground, hairline + ombra soffice. Mai annidata.</p></div>
+      <div class="stat"><div class="num">148.230</div><div class="cap">Foto totali</div></div>
+    </div>
+    <p class="lbl" style="margin-top:var(--s-5)">Photo tiles</p>
+    <div class="tiles">
+      <div class="photo-tile"><img src="assets/photos/p-01.jpg" alt=""></div>
+      <div class="photo-tile"><img src="assets/photos/p-03.jpg" alt=""></div>
+      <div class="photo-tile"><img src="assets/photos/p-06.jpg" alt=""></div>
+      <div class="photo-tile"><img src="assets/photos/p-07.jpg" alt=""></div>
+      <div class="photo-tile"><img src="assets/photos/p-11.jpg" alt=""></div>
+    </div>
+  </section>
+
+  <section>
+    <h2 class="sec">Controlli</h2>
+    <p class="lbl">Segmented</p>
+    <div class="segmented" role="tablist"><button aria-selected="true">Originali</button><button aria-selected="false">Per il web</button></div>
+    <p class="lbl" style="margin-top:var(--s-5)">Chip</p>
+    <div class="demo-row"><button class="chip" data-press>Tutte</button><button class="chip is-active" data-press>Caricate</button><button class="chip" data-press>Errore</button></div>
+    <p class="lbl" style="margin-top:var(--s-5)">Avatar stack · Progress</p>
+    <div class="demo-row"><div class="avatar-stack"><img class="avatar" src="assets/photos/p-02.jpg" alt=""><img class="avatar" src="assets/photos/p-05.jpg" alt=""><span class="avatar avatar-more">+8</span></div><div class="progress" style="width:240px"><span style="width:62%"></span></div></div>
+  </section>
+
+  <section>
+    <h2 class="sec">Banner</h2>
+    <div class="stack">
+      <div class="banner banner-info"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01" stroke-linecap="round"/></svg> Evento riservato: usa l'indirizzo con cui sei stato invitato.</div>
+      <div class="banner banner-danger"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M15 9l-6 6M9 9l6 6" stroke-linecap="round"/></svg> Questo link non è più valido.</div>
+    </div>
+  </section>
+
+  <section>
+    <h2 class="sec">Motion</h2>
+    <p class="lead" style="max-width:46rem">Un solo momento autoriale — <b>"Recognition"</b> sulla landing: la scansione trova le tue foto. Tutto il resto è feedback quieto (press, hover, selezione, sheet). Arrivi con <span class="mono">cubic-bezier(.16,1,.3,1)</span>, uscite più rapide, niente rimbalzi. Rispetta <span class="mono">prefers-reduced-motion</span>. Le superfici del browser (selezione, caret, scrollbar, focus) sono tematizzate dal palette.</p>
+  </section>
+</main>
+
+<script src="brand/motion.js"></script>
+</body>
+</html>

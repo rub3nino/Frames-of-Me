@@ -1,7 +1,7 @@
 export { migrate } from "./migrate.js";
 export { MemoryDatabase } from "./memory.js";
 export { PostgresDatabase } from "./postgres.js";
-export { seedDemo } from "./seed.js";
+export { seedDemo, shouldSeedDemo } from "./seed.js";
 export { createSql } from "./sql.js";
 export type { CreateSqlOptions } from "./sql.js";
 export { DuplicateKeyError } from "./types.js";

@@ -1,0 +1,25 @@
+{
+  "name": "@rephoto/partecipanti",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "predev": "node scripts/fetch-mediapipe.mjs",
+    "dev": "vite",
+    "prebuild": "node scripts/fetch-mediapipe.mjs",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@mediapipe/tasks-vision": "^1.1.0",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "react-router-dom": "^7.1.3"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.13",
+    "@types/react-dom": "^19.1.9",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.9.2",
+    "vite": "^6.0.11"
+  }
+}

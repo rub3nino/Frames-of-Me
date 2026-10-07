@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Informazioni pratiche — Conferenza Europea di Gioventù e Famiglie 2026</title>
+<meta name="description" content="Iscrizioni a gruppi, alloggio e prezzi, pasti inclusi e opzionali, logistica in loco, età minima e consenso per i minori della Conferenza 2026.">
+<meta name="theme-color" content="#F5F5F7">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../packages/ui/tokens.css">
+<link rel="stylesheet" href="../../packages/ui/base.css">
+<link rel="stylesheet" href="../../packages/ui/components.css">
+<link rel="stylesheet" href="site.css">
+<style>
+  .info-block { padding: var(--s-9) 0; border-top: 1px solid var(--c-line); scroll-margin-top: calc(var(--header-h) + var(--s-5)); }
+  .info-block:first-of-type { border-top: 0; padding-top: var(--s-7); }
+  .info-grid { display: grid; grid-template-columns: 17rem 1fr; gap: var(--s-7); }
+  .info-grid > .info-aside h2 { margin-bottom: var(--s-3); }
+  .info-grid > .info-aside p { color: var(--c-ink-2); font-size: var(--fs-sm); max-width: 32ch; }
+  @media (max-width: 820px) { .info-grid { grid-template-columns: 1fr; gap: var(--s-5); } }
+
+  .spec { display: grid; }
+  .spec-row { display: grid; grid-template-columns: 1fr; gap: var(--s-1); padding: var(--s-4) 0; border-top: 1px solid var(--c-line); }
+  .spec-row:first-child { border-top: 0; padding-top: 0; }
+  .spec-row .k { font-weight: var(--fw-medium); }
+  .spec-row .v { color: var(--c-ink-2); font-size: var(--fs-sm); }
+  .spec-row .v .mono { color: var(--c-ink); }
+
+  .meals { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--s-5); }
+  @media (max-width: 560px) { .meals { grid-template-columns: 1fr; } }
+  .meals .card h3 { font-size: var(--fs-h3); margin-bottom: var(--s-3); }
+  .meals .card ul { list-style: none; display: grid; gap: var(--s-2); }
+  .meals .card li { display: grid; grid-template-columns: 20px 1fr; gap: var(--s-2); align-items: start; font-size: var(--fs-sm); color: var(--c-ink-2); }
+  .meals .card li svg { width: 18px; height: 18px; margin-top: 2px; color: var(--c-success); }
+  .meals .card li.opt svg { color: var(--c-ink-4); }
+
+  .price-table { width: 100%; }
+  .price-table .mono { font-feature-settings: "tnum" 1; }
+
+  .logistics { list-style: none; display: grid; gap: 0; }
+  .logistics li { display: grid; grid-template-columns: 2.5rem 1fr; gap: var(--s-4); padding: var(--s-4) 0; border-top: 1px solid var(--c-line); }
+  .logistics li:first-child { border-top: 0; }
+  .logistics .n { font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--c-ink-3); }
+  .logistics .k { font-weight: var(--fw-medium); margin-bottom: 2px; }
+  .logistics .d { color: var(--c-ink-2); font-size: var(--fs-sm); }
+</style>
+</head>
+<body>
+
+<header class="site-header">
+  <div class="site-header-inner page">
+    <a class="brand" href="index.html" aria-label="RePhoto — home">
+      <svg viewBox="0 0 100 100" fill="none" aria-hidden="true"><g stroke="currentColor" stroke-width="3.6" stroke-linecap="round"><path d="M22 36 V28 a6 6 0 0 1 6-6 H36"/><path d="M64 22 H72 a6 6 0 0 1 6 6 V36"/><path d="M78 64 V72 a6 6 0 0 1-6 6 H64"/><path d="M36 78 H28 a6 6 0 0 1-6-6 V64"/></g><circle cx="50" cy="50" r="7.5" fill="var(--c-accent)"/></svg>
+      RePhoto
+    </a>
+    <nav class="site-nav" id="siteNav" aria-label="Navigazione principale">
+      <a href="programma.html">Programma</a>
+      <a href="ospiti.html">Ospiti</a>
+      <a href="info.html" aria-current="page">Informazioni</a>
+      <a href="edizioni.html">Edizioni</a>
+      <a href="faq.html">FAQ</a>
+      <a href="contatti.html">Contatti</a>
+    </nav>
+    <div class="site-header-actions">
+      <div class="lang-switch" role="group" aria-label="Lingua">
+        <button type="button" data-lang="ro">RO</button>
+        <button type="button" data-lang="it" class="is-active" aria-pressed="true">IT</button>
+        <button type="button" data-lang="en">EN</button>
+      </div>
+      <a class="btn btn-primary btn-sm" href="participant/iscrizione.html" data-press>Trova le tue foto</a>
+      <button class="nav-toggle" type="button" data-nav-toggle aria-controls="siteNav" aria-expanded="false" aria-label="Apri il menu">
+        <svg class="ico-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+        <svg class="ico-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+
+<main>
+  <section class="page-intro page">
+    <h1 class="display-2">Informazioni pratiche.</h1>
+    <p class="mono-meta">BIRUITORI 2026 · ~3000 posti · età minima 14 anni</p>
+    <p class="lead">Tutto ciò che serve prima di partire: come iscriversi, dove si dorme, cosa è incluso, come funziona l'arrivo e cosa vale per i minori. L'iscrizione è gestita dagli organizzatori.</p>
+  </section>
+
+  <div class="page">
+    <!-- Iscrizioni -->
+    <section class="info-block" id="iscrizioni">
+      <div class="info-grid">
+        <div class="info-aside">
+          <h2>Iscrizioni</h2>
+          <p>Ci si iscrive a gruppi, tramite il capogruppo o la propria chiesa.</p>
+        </div>
+        <div>
+          <div class="spec">
+            <div class="spec-row"><span class="k">Modalità</span><span class="v">A gruppi, tramite capogruppo o chiesa locale. Le iscrizioni individuali passano comunque per un gruppo di riferimento.</span></div>
+            <div class="spec-row"><span class="k">Posti disponibili</span><span class="v"><span class="mono">~3000</span> posti totali, assegnati in ordine di conferma del pagamento.</span></div>
+            <div class="spec-row"><span class="k">Scadenza pagamento</span><span class="v">Il saldo va completato entro la scadenza comunicata dagli organizzatori al momento della conferma.</span></div>
+            <div class="spec-row"><span class="k">Accesso</span><span class="v">L'iscrizione copre l'intera conferenza: non è previsto l'accesso per singola giornata.</span></div>
+          </div>
+          <div class="banner banner-info" style="margin-top:var(--s-6)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.5v.5"/></svg>
+            <div>La registrazione e i pagamenti sono gestiti dagli organizzatori. Questo sito mostra le informazioni pratiche e il servizio foto; per iscriverti usa il sito ufficiale.</div>
+          </div>
+          <p style="margin-top:var(--s-5)">
+            <a class="btn btn-secondary" href="https://conferintaeuropeana.it" target="_blank" rel="noopener noreferrer">Vai al sito ufficiale di registrazione</a>
+          </p>
+          <p style="margin-top:var(--s-3)"><a class="link-more" href="https://conferintaeuropeana.it" target="_blank" rel="noopener noreferrer"><span>Fonte ufficiale · conferintaeuropeana.it</span></a></p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Alloggio & prezzi -->
+    <section class="info-block" id="alloggio">
+      <div class="info-grid">
+        <div class="info-aside">
+          <h2>Alloggio &amp; prezzi</h2>
+          <p>Sistemazioni in struttura, in camere condivise per gruppo o per famiglia.</p>
+        </div>
+        <div>
+          <table class="table price-table">
+            <thead>
+              <tr><th>Sistemazione</th><th>Incluso</th><th style="text-align:right">A persona</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Camera condivisa (gruppo)</td><td>Pernottamento + pasti principali</td><td style="text-align:right" class="mono">€ 120</td></tr>
+              <tr><td>Camera famiglia</td><td>Pernottamento + pasti principali</td><td style="text-align:right" class="mono">€ 150</td></tr>
+              <tr><td>Solo partecipazione (esterni)</td><td>Accesso alle sessioni, pasti esclusi</td><td style="text-align:right" class="mono">€ 60</td></tr>
+              <tr><td>Bambini (0–6 anni)</td><td>Con i genitori, senza posto letto dedicato</td><td style="text-align:right" class="mono">Gratis</td></tr>
+            </tbody>
+          </table>
+          <p class="hint" style="margin-top:var(--s-4)">Prezzi indicativi per i tre giorni. Gli importi definitivi sono confermati dagli organizzatori in fase di iscrizione. Cosa portare: documento, conferma dell'iscrizione, necessario personale e una borraccia.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Pasti -->
+    <section class="info-block" id="pasti">
+      <div class="info-grid">
+        <div class="info-aside">
+          <h2>Pasti</h2>
+          <p>Cosa è compreso nella quota e cosa si può aggiungere sul posto.</p>
+        </div>
+        <div class="meals">
+          <div class="card">
+            <h3>Inclusi</h3>
+            <ul>
+              <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> Colazione (sabato e domenica)</li>
+              <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> Pranzo (sabato)</li>
+              <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> Cena (venerdì e sabato)</li>
+              <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> Acqua ai pasti</li>
+            </ul>
+          </div>
+          <div class="card">
+            <h3>Opzionali</h3>
+            <ul>
+              <li class="opt"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg> Pranzo al sacco della domenica</li>
+              <li class="opt"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg> Caffetteria e snack (buoni dedicati)</li>
+              <li class="opt"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg> Opzioni senza glutine / vegetariane su richiesta</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Logistica -->
+    <section class="info-block" id="logistica">
+      <div class="info-grid">
+        <div class="info-aside">
+          <h2>Logistica in loco</h2>
+          <p>Cosa succede quando arrivi e come ti muovi durante i tre giorni.</p>
+        </div>
+        <div>
+          <ul class="logistics">
+            <li><span class="n">01</span><div><div class="k">Reception</div><div class="d">All'arrivo ti presenti alla reception con la conferma dell'iscrizione. Il capogruppo può ritirare i materiali per tutto il gruppo.</div></div></li>
+            <li><span class="n">02</span><div><div class="k">Braccialetto e badge</div><div class="d">Ricevi un braccialetto identificativo e un badge con il tuo nome: danno accesso alle sale e ai pasti.</div></div></li>
+            <li><span class="n">03</span><div><div class="k">Voucher pasti</div><div class="d">I pasti inclusi si ritirano con i voucher consegnati al check-in; gli extra si pagano con i buoni della caffetteria.</div></div></li>
+            <li><span class="n">04</span><div><div class="k">Chiavi camera</div><div class="d">Le chiavi vengono assegnate per camera; una copia resta al referente del gruppo. Check-out la domenica entro le 14:00.</div></div></li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- Età minima e minori -->
+    <section class="info-block" id="minori">
+      <div class="info-grid">
+        <div class="info-aside">
+          <h2>Età minima e minori</h2>
+          <p>La conferenza è pensata per famiglie e giovani; i minori sono i benvenuti con alcune tutele.</p>
+        </div>
+        <div>
+          <div class="spec">
+            <div class="spec-row"><span class="k">Età minima</span><span class="v">La partecipazione autonoma è dai <span class="mono">14 anni</span>. I bambini più piccoli partecipano con i genitori.</span></div>
+            <div class="spec-row"><span class="k">Minori di 18 anni</span><span class="v">Chi ha meno di 18 anni partecipa all'interno di un gruppo con un referente adulto responsabile.</span></div>
+            <div class="spec-row"><span class="k">Consenso dei genitori</span><span class="v">Per i minori di 18 anni serve il consenso di un genitore o tutore, sia per la partecipazione sia per l'uso del servizio foto (riconoscimento del volto).</span></div>
+            <div class="spec-row"><span class="k">Servizio foto e minori</span><span class="v">Per i minori il riconoscimento facciale è usato solo con il consenso del genitore; il selfie non viene conservato e i dati si possono cancellare in ogni momento.</span></div>
+          </div>
+          <p style="margin-top:var(--s-5)"><a class="link-more" href="faq.html#foto"><span>Come funziona il servizio foto e la privacy dei minori</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></a></p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Capigruppo -->
+    <section class="info-block" id="capigruppo">
+      <div class="info-grid">
+        <div class="info-aside">
+          <h2>Per i capigruppo</h2>
+          <p>Come far arrivare le foto a tutto il tuo gruppo, in modo protetto.</p>
+        </div>
+        <div>
+          <p style="color:var(--c-ink-2);max-width:60ch;margin-bottom:var(--s-5)">Per proteggere i partecipanti, alcune edizioni mostrano le foto solo a chi è in elenco. Come capogruppo fornisci allo staff le email del tuo gruppo: chi è in elenco potrà cercare le proprie foto con la stessa email usata per l'iscrizione.</p>
+          <div class="spec">
+            <div class="spec-row"><span class="k">Cosa fa il capogruppo</span><span class="v">Consegna allo staff l'elenco delle email dei partecipanti del gruppo.</span></div>
+            <div class="spec-row"><span class="k">Cosa fa il partecipante</span><span class="v">Cerca le foto usando la stessa email con cui si è iscritto.</span></div>
+            <div class="spec-row"><span class="k">Se non sei in elenco</span><span class="v">Contatta il tuo capogruppo o lo staff: verrà aggiunto all'elenco e potrai accedere.</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <section class="section-sm page">
+    <div class="cta-band">
+      <div class="cta-band-text">
+        <h2 class="display-2">Come avere le tue foto.</h2>
+        <p>Dopo l'evento, un selfie basta a trovarti tra tutti gli scatti. Il selfie non viene conservato.</p>
+      </div>
+      <a class="btn btn-primary btn-lg" href="participant/iscrizione.html" data-press>Trova le tue foto</a>
+    </div>
+  </section>
+</main>
+
+<footer class="site-footer">
+  <div class="page">
+    <div class="footer-top">
+      <div class="footer-brand">
+        <a class="brand" href="index.html">
+          <svg viewBox="0 0 100 100" fill="none" aria-hidden="true"><g stroke="currentColor" stroke-width="3.6" stroke-linecap="round"><path d="M22 36 V28 a6 6 0 0 1 6-6 H36"/><path d="M64 22 H72 a6 6 0 0 1 6 6 V36"/><path d="M78 64 V72 a6 6 0 0 1-6 6 H64"/><path d="M36 78 H28 a6 6 0 0 1-6-6 V64"/></g><circle cx="50" cy="50" r="7.5" fill="var(--c-accent)"/></svg>
+          RePhoto
+        </a>
+        <p>La memoria della Conferenza Europea di Gioventù e Famiglie: ritrova le tue foto con un selfie.</p>
+      </div>
+      <div class="footer-col">
+        <h3>Conferenza</h3>
+        <ul>
+          <li><a href="programma.html">Programma</a></li>
+          <li><a href="ospiti.html">Ospiti</a></li>
+          <li><a href="info.html">Informazioni pratiche</a></li>
+          <li><a href="info.html#iscrizioni">Iscrizioni</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h3>Foto</h3>
+        <ul>
+          <li><a href="participant/iscrizione.html">Trova le tue foto</a></li>
+          <li><a href="faq.html#foto">Come funziona</a></li>
+          <li><a href="faq.html#foto">FAQ foto</a></li>
+          <li><a href="participant/i-miei-dati.html">Gestisci i miei dati</a></li>
+          <li><a href="photographer/invito.html">Per i fotografi</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h3>Community</h3>
+        <ul>
+          <li><a href="edizioni.html">Edizioni precedenti</a></li>
+          <li><a href="contatti.html#newsletter">Newsletter</a></li>
+          <li><a href="contatti.html">Organizzatori</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h3>Contatti</h3>
+        <ul>
+          <li><a href="mailto:info@conferintaeuropeana.it">info@conferintaeuropeana.it</a></li>
+          <li><a href="tel:+390000000000">+39 000 000 0000</a></li>
+          <li><a href="contatti.html">Sede &amp; social</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-legal">
+      <span>© 2026 RePhoto · Conferenza Europea</span>
+      <a href="#">Informativa privacy</a>
+      <a href="#">Termini</a>
+      <a href="#">Cookie</a>
+      <a href="#">Informativa minori</a>
+      <a href="#">Accessibilità</a>
+      <span class="grow"></span>
+      <a href="admin/login.html">Area staff</a>
+    </div>
+  </div>
+</footer>
+
+<script src="../../packages/ui/motion.js"></script>
+<script src="site.js"></script>
+</body>
+</html>

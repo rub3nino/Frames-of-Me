@@ -113,6 +113,7 @@ type JobRow = {
 
 export class MemoryDatabase implements Database {
   private readonly users = new Map<string, UserRow>();
+  private readonly passwords = new Map<string, string>();
   private readonly events = new Map<string, EventRow>();
   private readonly links: MagicLink[] = [];
   private readonly sessions = new Map<string, { userId: string; expiresAt: Date }>();
@@ -222,6 +223,19 @@ export class MemoryDatabase implements Database {
     };
     this.users.set(user.id, user);
     return user;
+  }
+
+  async setUserPassword(userId: string, passwordHash: string): Promise<void> {
+    this.passwords.set(userId, passwordHash);
+  }
+
+  async findUserForLogin(
+    email: string,
+    role: Role,
+  ): Promise<{ user: UserRow; passwordHash: string | null } | null> {
+    const user = await this.findUserByEmailRole(email, role);
+    if (!user) return null;
+    return { user, passwordHash: this.passwords.get(user.id) ?? null };
   }
 
   async insertMagicLink(input: {
