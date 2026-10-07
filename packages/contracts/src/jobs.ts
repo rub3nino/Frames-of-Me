@@ -66,7 +66,12 @@ export type EmailPayload = z.infer<typeof emailPayloadSchema>;
 export const retentionPayloadSchema = z
   .object({
     eventId: z.string().uuid(),
-    actorId: z.string().uuid(),
+    /**
+     * The admin who asked, or null when the scheduler enqueued it (v6 G). It is not a free
+     * identifier: `audit_log.actor_id` references `users (id)`, so an invented uuid would
+     * break every audit row the job writes.
+     */
+    actorId: z.string().uuid().nullable().default(null),
   })
   .strict();
 

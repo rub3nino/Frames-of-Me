@@ -22,6 +22,7 @@ import { LiveSection } from "@/components/admin/live";
 import { ModerationSection } from "@/components/admin/moderation";
 import { OpsSection } from "@/components/admin/ops";
 import { ParticipantsSection } from "@/components/admin/participants";
+import { RetentionSection } from "@/components/admin/retention"; // v6 G (agent G)
 
 type Section =
   | "eventi"
@@ -154,6 +155,7 @@ function AdminHome() {
       </nav>
 
       {section === "stato" ? <StatusSection /> : null}
+      {section === "stato" ? <RetentionSection /> : null}
       {section === "eventi" ? (
         <EventsSection
           events={events}

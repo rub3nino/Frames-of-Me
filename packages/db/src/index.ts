@@ -71,5 +71,11 @@ export type {
   ModerationState,
   ReportReason,
   ReportRow,
+  // v6 (agent G): privacy and retention scheduling
+  ConsentState,
+  ConsentWithdrawal,
+  RetentionAlarmMail,
+  RetentionOutcome,
+  RetentionStatusRow,
 } from "./types.js";
 export { AlbumRecognitionLockedError, AlbumRecognitionNotAllowedError } from "./types.js";

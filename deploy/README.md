@@ -468,3 +468,86 @@ Con la variante `AX` (server dedicato con NVMe locali da 2 × 1,9 TB) si evita i
 - `docker compose -f deploy/compose.yml --env-file deploy/.env.production.example config` valida.
 - `Caddyfile` validato con `caddy validate` nell'immagine `caddy:2-alpine`.
 - `apps/api`: `npx tsc --noEmit` e `node --import tsx --test apps/api/test/routes.test.ts` verdi, incluso il test che controlla che le URL firmate usino `S3_PUBLIC_ENDPOINT`.
+- v6 G (ritiro del consenso, retention automatica, allarme per e-mail): `pnpm test` verde (247 test, 0 falliti) con `TEST_DATABASE_URL` su un `pgvector/pgvector:pg16` reale, quindi comprese le prove di cancellazione di `packages/db/src/privacy.pg.test.ts`; `docker compose --env-file deploy/.env.production.example -f deploy/compose.yml config` mostra le cinque variabili `RETENTION_*` su api e worker; `pnpm --filter @rephoto/web build` compila la pagina `/i-miei-dati`. Non provato su un host di produzione.
+
+## 11 bis. Retention automatica (v6 G)
+
+**Prima della v6 nessuno lanciava la retention**: il job `retention` funzionava e `/admin` lo accodava, ma in `deploy/` non c'era né cron né timer, quindi il giorno 90 non arrivava mai da solo. Ora lo scheduler sta **dentro il worker**: nessun cron sull'host, niente da installare a mano, niente che si perda spostando il VPS. Vale anche il contrario: **se il worker è spento, la retention non gira** — ed è per questo che c'è l'allarme.
+
+### Come funziona
+
+- a ogni tick (`RETENTION_TICK_SECONDS`, default **300 s**) ogni replica del worker guarda tutti gli eventi e prova a *rivendicare* la finestra corrente;
+- la finestra è lunga `RETENTION_WINDOW_HOURS` (default **24 h**) ed è allineata all'epoch in **UTC**: con 24 cambia alle **00:00 UTC**, quindi il job parte al primo tick dopo mezzanotte UTC (circa 5 minuti dopo), non all'ora in cui è stato avviato il container;
+- la rivendicazione è una riga in `retention_schedule` (migrazione 015) e riesce **una volta sola per evento per finestra**, anche con `WORKER_REPLICAS=2` che tickano insieme; la chiave di dedupe della coda (`retention:<eventId>`) è la seconda garanzia;
+- il job cancella le foto oltre la retention **album per album** (`albums.retention_days` se c'è, altrimenti `events.retention_days`), con i loro template, derivati e originali, e azzera la parte biometrica delle gallerie il cui match è anteriore al cutoff. Dettaglio e conseguenze legali: `docs/DPIA.md` §8 e §8 bis;
+- `RETENTION_SCHEDULER=false` lo spegne (chi preferisce un cron esterno che chiami `POST /v1/admin/retention/run`). Lo schermo admin lo dichiara.
+
+| Variabile | Default | Cosa fa |
+| --- | --- | --- |
+| `RETENTION_SCHEDULER` | `true` | Accende lo scheduler nel worker |
+| `RETENTION_WINDOW_HOURS` | `24` | Al massimo un job per evento per finestra |
+| `RETENTION_TICK_SECONDS` | `300` | Ogni quanto il worker controlla se c'è una finestra da rivendicare |
+| `RETENTION_ALARM_MAIL` | `true` | Manda l'allarme per e-mail (mailer già configurato, nessun trasporto nuovo) |
+| `RETENTION_ALARM_EMAIL` | *(vuoto)* | Destinatari, separati da virgola. Vuoto ⇒ ripiega su `BOOTSTRAP_ADMINS` |
+
+### L'allarme per e-mail
+
+Un allarme che nessuno riceve non è un allarme: una retention che si ferma il venerdì tiene dati personali oltre il periodo di conservazione, e `skipped` e `never` sono proprio gli stati che si verificano quando il worker è giù, cioè quando nessuno sta guardando nemmeno i suoi log. Quindi:
+
+- **chi lo riceve**: `RETENTION_ALARM_EMAIL` (lista separata da virgola), altrimenti `BOOTSTRAP_ADMINS`. Con entrambe vuote non parte nulla e il worker logga `alarmMail: "no-recipient"` — configurazione da correggere, non silenzio voluto;
+- **quando**: su `failed`, `job_error` e `skipped`. Un `failed` appena accaduto parte subito, gli altri al tick in cui vengono visti (entro `RETENTION_TICK_SECONDS`);
+- **quanto spesso**: **una volta per finestra**, non una per tick. Lo stato «già avvisato» sta in `retention_schedule` accanto alla finestra rivendicata (migrazione 015), quindi la soppressione è condivisa dalle repliche del worker **e sopravvive a un riavvio**. Senza questo, a 300 s di tick, sarebbero 288 messaggi identici al giorno: l'indirizzo finirebbe filtrato e l'allarme sarebbe come non averlo. Un motivo **diverso** nella stessa finestra è informazione nuova e parte;
+- **quando rientra**: un solo messaggio «retention rientrata», così un problema risolto non resta aperto nella testa di qualcuno. Arriva al primo tick **dopo** un'esecuzione riuscita: l'allarme viene giudicato sullo stato *precedente* alla rivendicazione (altrimenti un `skipped` verrebbe cancellato dalla stessa esecuzione che chiude il buco), quindi arrivare al confine di una finestra in stato cattivo costa un messaggio in più, seguito da quello di rientro;
+- **se l'invio fallisce** (SMTP giù) la rivendicazione viene rilasciata e il tick successivo riprova: un singolo singhiozzo del provider non seppellisce l'allarme per una finestra intera;
+- la **riga di log** e il **riquadro rosso** su `/admin` → Stato restano identici: sono la diagnosi, la mail è solo la convocazione. `RETENTION_ALARM_MAIL=false` lascia soltanto quei due;
+- `never` (evento che lo scheduler non ha ancora raggiunto) **non** viene spedito: è uno stato transitorio, perché lo stesso tick che lo vedrebbe rivendica la finestra. Resta visibile sullo schermo.
+
+**Quello che questa mail non può fare.** Non può arrivare da un processo che non sta girando: se il worker è spento, o il container non parte, nessuno manda niente. Quel caso si vede in due modi, entrambi indiretti: lo stato **`skipped`** al primo avvio successivo (con la sua mail, perché la finestra è passata senza esecuzioni) e il **monitoraggio di disponibilità** dell'host e dei container (§7, uptime-kuma), che è un'altra cosa e non è collegata a questo allarme. Nessun servizio nuovo è stato aggiunto per chiudere il buco, ed è una scelta: la decisione su come sorvegliare l'host è di chi gestisce l'infrastruttura finale. Allo stesso modo **non** c'è un ritentativo automatico del job di retention: i cinque tentativi sono quelli della coda, e cosa fare dopo è una decisione di chi opera, non un ciclo.
+
+### Verificare un'esecuzione
+
+1. **Dallo schermo admin** (il modo normale): `/admin` → **Stato** → riquadro **Retention**. Per ogni evento: ultima esecuzione, prossima finestra, numero di esecuzioni, esito della pianificazione e stato dell'ultimo job. Un riquadro rosso è un allarme: pianificazione `failed`, job in `error`, oppure `skipped` (più di due finestre senza esecuzioni: il worker è stato giù).
+
+2. **Dall'API**, con un cookie di sessione admin:
+
+```bash
+curl -s -b "rephoto_session=$TOKEN" https://$DOMAIN/v1/admin/retention/schedule | jq
+# {
+#   "enabled": true,
+#   "windowSeconds": 86400,
+#   "events": [ { "slug": "conferenza-2026", "retentionDays": 90,
+#                 "lastRunAt": "...", "nextRunAt": "...", "runs": 3,
+#                 "outcome": "enqueued", "jobStatus": "done", "alarm": null } ]
+# }
+```
+
+3. **Dai log del worker** (`deploy/scripts/logs.sh worker`): ogni esecuzione del job lascia la riga JSON `"type":"retention","outcome":"done"` con la durata; un allarme lascia una riga `{"alarm":"retention","reason":"skipped|failed|job_error", ...}`. Grep utile per un controllo rapido:
+
+```bash
+docker compose logs --since 48h worker | grep -E '"type":"retention"|"alarm":"retention"'
+```
+
+4. **Dal database**, se serve la prova per il DPO:
+
+```bash
+docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c \
+  "select e.slug, s.window_start, s.claimed_at, s.runs, s.last_outcome, s.last_error
+     from retention_schedule s join events e on e.id = s.event_id order by e.slug"
+# e le cancellazioni che il job ha fatto (attore nullo = scheduler, non una persona):
+docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c \
+  "select created_at, target, meta from audit_log
+     where action = 'photo.deleted' and meta->>'retention' = 'true'
+     order by created_at desc limit 10"
+# una riga per esecuzione dello scheduler:
+docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c \
+  "select created_at, target, meta from audit_log where action = 'retention.scheduled'
+     order by created_at desc limit 10"
+```
+
+5. **Forzare un'esecuzione subito**, senza aspettare la finestra (per una prova o dopo un `skipped`): il bottone **Esegui adesso** nel riquadro Retention, o la rotta `POST /v1/admin/retention/run` con `{ "eventId": "…" }`. Passa dalla stessa coda e dallo stesso job; l'attore dell'audit è l'admin invece di essere nullo, e la finestra dello scheduler non viene consumata.
+
+**Avvertenze.**
+
+- la retention cancella **davvero** foto, originali e template: su un evento appena importato con `retention_days` basso la prima esecuzione può svuotare l'archivio. Controllare `events.retention_days` e `albums.retention_days` prima di accendere lo scheduler su un evento di produzione;
+- l'allarme ha un destinatario (sopra) ma **è una e-mail, non una sveglia**: se la posta del provider è in ritardo o il messaggio finisce in spam, nessuno viene svegliato. E non può arrivare se il worker è spento (sopra);
+- lo scheduler **non** è stato provato su un VPS di produzione: quanto sopra è verificato in locale (test contro Postgres reale con pgvector e test del worker) e con `docker compose config`.

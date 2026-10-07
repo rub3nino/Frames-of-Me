@@ -472,3 +472,56 @@ export type ModerateResponse = {
   state: ModerationState;
   purged: boolean;
 };
+
+// ---- privacy and retention v6 (agent G) ---------------------------------------------------
+
+/** GET /v1/events/:slug/privacy (privacyStateResponseSchema). */
+export type PrivacyState = {
+  event: { slug: string; name: string };
+  consent: { grantedAt: string; textVersion: string } | null;
+  withdrawnAt: string | null;
+  gallery: {
+    photos: number;
+    selfieVector: boolean;
+    anchors: number;
+    matchedAt: string | null;
+  } | null;
+  uploads: number;
+};
+
+/** POST /v1/events/:slug/consent/withdraw and the admin twin (consentWithdrawResponseSchema). */
+export type ConsentWithdrawResponse = {
+  withdrawnAt: string;
+  deleted: {
+    consents: number;
+    gallery: boolean;
+    galleryItems: number;
+    selfieVector: boolean;
+    anchors: number;
+    faceVectors: number;
+    selfieObjects: number;
+    feedback: number;
+    matchRuns: number;
+  };
+};
+
+/** GET /v1/admin/retention/schedule (adminRetentionScheduleResponseSchema). */
+export type AdminRetentionSchedule = {
+  enabled: boolean;
+  windowSeconds: number;
+  events: Array<{
+    eventId: string;
+    slug: string;
+    retentionDays: number;
+    lastRunAt: string | null;
+    windowStart: string | null;
+    nextRunAt: string;
+    runs: number;
+    outcome: "enqueued" | "failed" | null;
+    jobId: string | null;
+    jobStatus: "queued" | "running" | "done" | "error" | null;
+    jobError: string | null;
+    jobFinishedAt: string | null;
+    alarm: "failed" | "job_error" | "skipped" | "never" | null;
+  }>;
+};

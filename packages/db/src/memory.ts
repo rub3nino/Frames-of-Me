@@ -72,6 +72,12 @@ import type {
   ModerationState,
   ReportReason,
   ReportRow,
+  // v6 (agent G)
+  ConsentState,
+  ConsentWithdrawal,
+  RetentionAlarmMail,
+  RetentionOutcome,
+  RetentionStatusRow,
 } from "./types.js";
 
 /** Same cap as PostgresDatabase.findGalleriesByQueryVector. */
@@ -93,7 +99,14 @@ type MagicLink = {
   createdAt: Date;
 };
 
-type Consent = { userId: string; eventId: string; withdrawnAt: Date | null };
+type Consent = {
+  userId: string;
+  eventId: string;
+  withdrawnAt: Date | null;
+  // v6 (agent G): read back by findConsentState / the privacy page.
+  grantedAt: Date;
+  textVersion: string;
+};
 
 type FaceRow = FaceInsert & { id: string; photoId: string; eventId: string };
 
@@ -172,6 +185,8 @@ export class MemoryDatabase implements Database {
   // v6 (agent C): photos.moderation_state/moderated_by/moderated_at and `reports`.
   private readonly moderation = new Map<string, { moderatedBy: string | null; moderatedAt: Date | null }>();
   private readonly reports: ReportRow[] = [];
+  // v6 (agent G): retention_schedule (migration 015).
+  private readonly retentionSchedule = new Map<string, RetentionScheduleStored>();
 
   async seedDemo(): Promise<void> {
     if (!(await this.findEventBySlug("demo"))) {
@@ -326,11 +341,17 @@ export class MemoryDatabase implements Database {
     ip: string;
     userAgent: string;
   }): Promise<{ id: string; grantedAt: Date }> {
-    void input.textVersion;
     void input.ip;
     void input.userAgent;
-    this.consents.push({ userId: input.userId, eventId: input.eventId, withdrawnAt: null });
-    return { id: randomUUID(), grantedAt: new Date() };
+    const grantedAt = new Date();
+    this.consents.push({
+      userId: input.userId,
+      eventId: input.eventId,
+      withdrawnAt: null,
+      grantedAt,
+      textVersion: input.textVersion,
+    });
+    return { id: randomUUID(), grantedAt };
   }
 
   async hasActiveConsent(userId: string, eventId: string): Promise<boolean> {
@@ -2019,6 +2040,217 @@ export class MemoryDatabase implements Database {
     return count;
   }
 
+  // ---- privacy and retention scheduling v6 (agent G) ---------------------------------------
+
+  async findConsentState(userId: string, eventId: string): Promise<ConsentState> {
+    const rows = this.consents
+      .filter((row) => row.userId === userId && row.eventId === eventId)
+      .sort((a, b) => b.grantedAt.getTime() - a.grantedAt.getTime());
+    const active = rows.find((row) => row.withdrawnAt === null);
+    const withdrawn = rows.find((row) => row.withdrawnAt !== null)?.withdrawnAt ?? null;
+    const gallery = this.galleryOf(userId, eventId);
+    return {
+      grantedAt: active?.grantedAt ?? null,
+      textVersion: active?.textVersion ?? null,
+      withdrawnAt: withdrawn,
+      gallery: gallery
+        ? {
+            photos: this.items.filter((item) => item.galleryId === gallery.id).length,
+            selfieVector: gallery.queryEmbedding !== null,
+            anchors: gallery.anchorFaceIds.length,
+            matchedAt: gallery.matchedAt,
+          }
+        : null,
+    };
+  }
+
+  async withdrawConsent(input: { userId: string; eventId: string }): Promise<ConsentWithdrawal> {
+    let consents = 0;
+    for (const row of this.consents) {
+      if (row.userId !== input.userId || row.eventId !== input.eventId) continue;
+      if (row.withdrawnAt !== null) continue;
+      row.withdrawnAt = new Date();
+      consents += 1;
+    }
+    const gallery = this.galleryOf(input.userId, input.eventId);
+    const anchors = gallery ? [...gallery.anchorFaceIds] : [];
+    const items = gallery ? this.items.filter((item) => item.galleryId === gallery.id) : [];
+    const itemFaceIds = items
+      .map((item) => this.faces.find((face) => face.id === item.faceId)?.externalId)
+      .filter((id): id is string => id !== undefined);
+    const externalFaceIds = [...new Set([...anchors, ...itemFaceIds])];
+    const selfieKeys: string[] = [];
+    let galleryItems = 0;
+    let selfieVector = false;
+    if (gallery) {
+      galleryItems = items.length;
+      selfieVector = gallery.queryEmbedding !== null;
+      if (gallery.selfieKey) selfieKeys.push(gallery.selfieKey);
+      for (let index = this.items.length - 1; index >= 0; index -= 1) {
+        if (this.items[index]?.galleryId === gallery.id) this.items.splice(index, 1);
+      }
+      const position = this.galleries.indexOf(gallery);
+      if (position >= 0) this.galleries.splice(position, 1);
+    }
+    // No vector store here: the fake engine owns the templates, and the api hands it
+    // `externalFaceIds` through FaceEngine.deleteFaces. Other galleries lose the anchors
+    // that pointed at those templates, exactly as in Postgres.
+    if (externalFaceIds.length > 0) {
+      for (const row of this.galleries) {
+        if (row.eventId !== input.eventId) continue;
+        row.anchorFaceIds = row.anchorFaceIds.filter((id) => !externalFaceIds.includes(id));
+      }
+    }
+    let feedback = 0;
+    for (let index = this.feedback.length - 1; index >= 0; index -= 1) {
+      const row = this.feedback[index];
+      if (row?.userId === input.userId && row.eventId === input.eventId) {
+        this.feedback.splice(index, 1);
+        feedback += 1;
+      }
+    }
+    let matchRuns = 0;
+    for (let index = this.matchRunRows.length - 1; index >= 0; index -= 1) {
+      const row = this.matchRunRows[index];
+      if (row?.userId !== input.userId || row.eventId !== input.eventId) continue;
+      for (let hit = this.matchHitRows.length - 1; hit >= 0; hit -= 1) {
+        if (this.matchHitRows[hit]?.runId === row.id) this.matchHitRows.splice(hit, 1);
+      }
+      this.matchRunRows.splice(index, 1);
+      matchRuns += 1;
+    }
+    return {
+      consents,
+      galleryDeleted: gallery !== undefined,
+      galleryItems,
+      selfieVector,
+      anchors: anchors.length,
+      faceVectors: 0,
+      externalFaceIds,
+      selfieKeys,
+      feedback,
+      matchRuns,
+    };
+  }
+
+  async claimRetentionWindow(input: {
+    eventId: string;
+    windowStart: Date;
+    windowSeconds: number;
+  }): Promise<boolean> {
+    const existing = this.retentionSchedule.get(input.eventId);
+    if (existing && existing.windowStart.getTime() >= input.windowStart.getTime()) return false;
+    this.retentionSchedule.set(input.eventId, {
+      windowStart: input.windowStart,
+      windowSeconds: input.windowSeconds,
+      claimedAt: new Date(),
+      runs: (existing?.runs ?? 0) + 1,
+      lastOutcome: "enqueued",
+      lastJobId: null,
+      lastError: null,
+      // A claim does not clear the notified alarm: the suppression is per window, and the
+      // claim happens in the same window the alarm was reported in.
+      notifiedAlarm: existing?.notifiedAlarm ?? null,
+      notifiedWindow: existing?.notifiedWindow ?? null,
+    });
+    return true;
+  }
+
+  async recordRetentionRun(input: {
+    eventId: string;
+    outcome: RetentionOutcome;
+    jobId?: string | null;
+    error?: string | null;
+  }): Promise<void> {
+    const row = this.retentionSchedule.get(input.eventId);
+    if (!row) return;
+    row.lastOutcome = input.outcome;
+    row.lastJobId = input.jobId ?? null;
+    row.lastError = input.error ?? null;
+  }
+
+  async listRetentionStatus(): Promise<RetentionStatusRow[]> {
+    const rows: RetentionStatusRow[] = [];
+    for (const event of [...this.events.values()].sort(
+      (a, b) => a.createdAt.getTime() - b.createdAt.getTime() || compareText(a.id, b.id),
+    )) {
+      const state = this.retentionSchedule.get(event.id);
+      const job = [...this.jobs]
+        .filter(
+          (row) =>
+            row.type === "retention" &&
+            (row.payload as { eventId?: unknown } | null)?.eventId === event.id,
+        )
+        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || compareText(b.id, a.id))[0];
+      rows.push({
+        eventId: event.id,
+        slug: event.slug,
+        retentionDays: event.retentionDays,
+        windowStart: state?.windowStart ?? null,
+        windowSeconds: state?.windowSeconds ?? null,
+        claimedAt: state?.claimedAt ?? null,
+        runs: state?.runs ?? 0,
+        lastOutcome: state?.lastOutcome ?? null,
+        lastJobId: state?.lastJobId ?? null,
+        lastError: state?.lastError ?? null,
+        lastJob: job
+          ? {
+              id: job.id,
+              status: job.status,
+              error: job.lastError,
+              finishedAt: job.finishedAt,
+            }
+          : null,
+      });
+    }
+    return rows;
+  }
+
+  async listAlbumPhotosCreatedBefore(
+    albumId: string,
+    cutoff: Date,
+    limit?: number,
+  ): Promise<PhotoRow[]> {
+    const rows = [...this.photos.values()]
+      .filter((photo) => photo.albumId === albumId && photo.createdAt < cutoff)
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+    return limit === undefined ? rows : rows.slice(0, limit);
+  }
+
+  async claimRetentionAlarmMail(input: {
+    eventId: string;
+    alarm: RetentionAlarmMail;
+    window: Date;
+  }): Promise<boolean> {
+    const row = this.retentionSchedule.get(input.eventId);
+    if (!row) return false;
+    const fresh =
+      row.notifiedWindow === null ||
+      row.notifiedWindow.getTime() < input.window.getTime() ||
+      row.notifiedAlarm !== input.alarm;
+    if (!fresh) return false;
+    row.notifiedAlarm = input.alarm;
+    row.notifiedWindow = input.window;
+    return true;
+  }
+
+  async clearRetentionAlarmMail(eventId: string): Promise<RetentionAlarmMail | null> {
+    const row = this.retentionSchedule.get(eventId);
+    if (!row || row.notifiedAlarm === null) return null;
+    const previous = row.notifiedAlarm;
+    row.notifiedAlarm = null;
+    row.notifiedWindow = null;
+    return previous;
+  }
+
+  async countPhotosByUploader(eventId: string, userId: string): Promise<number> {
+    let count = 0;
+    for (const photo of this.photos.values()) {
+      if (photo.eventId === eventId && photo.photographerId === userId) count += 1;
+    }
+    return count;
+  }
+
   async setPhotoModeration(input: {
     photoId: string;
     state: ModerationState;
@@ -2213,6 +2445,30 @@ export class MemoryDatabase implements Database {
     const row = this.derivatives.find((item) => item.photoId === photoId && item.kind === kind);
     return row ? row.s3Key : null;
   }
+  /** Test helper: the ids of the jobs of one type, oldest first. */
+  jobIdsByType(type: JobType): string[] {
+    return this.jobs.filter((row) => row.type === type).map((row) => row.id);
+  }
+
+  /** Test helper: forces a terminal job state, as five failed attempts would. */
+  setJobStatus(id: string, status: "queued" | "running" | "done" | "error"): void {
+    const job = this.jobs.find((row) => row.id === id);
+    if (!job) throw new Error("missing job");
+    job.status = status;
+  }
+
+  /** Test helper: the retention scheduler state of one event, as migration 015 stores it. */
+  retentionScheduleOf(eventId: string): RetentionScheduleStored | undefined {
+    const row = this.retentionSchedule.get(eventId);
+    return row ? { ...row } : undefined;
+  }
+
+  /** Test helper: backdates the last claim, so the scheduler sees a skipped window. */
+  setRetentionClaimedAt(eventId: string, claimedAt: Date): void {
+    const row = this.retentionSchedule.get(eventId);
+    if (!row) throw new Error("missing retention schedule");
+    row.claimedAt = claimedAt;
+  }
 }
 
 type FeedbackRow = {
@@ -2304,3 +2560,18 @@ function identityKey(provider: IdentityProvider, subject: string): string {
 function eventCodeKey(eventId: string, code: string): string {
   return `${eventId}\u0000${code}`;
 }
+
+// ---- privacy and retention scheduling v6 (agent G) ----------------------------------------
+
+type RetentionScheduleStored = {
+  windowStart: Date;
+  windowSeconds: number;
+  claimedAt: Date;
+  runs: number;
+  lastOutcome: RetentionOutcome;
+  lastJobId: string | null;
+  lastError: string | null;
+  /** The alarm already mailed, and the window it was mailed for (migration 015). */
+  notifiedAlarm: RetentionAlarmMail | null;
+  notifiedWindow: Date | null;
+};

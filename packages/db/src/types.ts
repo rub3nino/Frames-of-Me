@@ -630,6 +630,78 @@ export interface Database {
     albumId: string,
     input: { limit: number; cursor?: UploadCursor },
   ): Promise<{ items: AlbumPhoto[]; nextCursor: UploadCursor | null }>;
+  // ---- privacy and retention scheduling v6 (agent G) -------------------------------------
+  /** What the participant sees on "I miei dati", and what an admin sees for them. */
+  findConsentState(userId: string, eventId: string): Promise<ConsentState>;
+  /**
+   * Withdraws the consent of one participant for one event and removes the biometric
+   * material that identifies them, in one transaction:
+   *
+   * - every active `consents` row of the pair gets `withdrawn_at = now()`;
+   * - the personal match gallery goes, with its `gallery_items`, its anchors and its
+   *   `galleries.query_embedding` (the selfie template) — `selfieKeys` comes back so the
+   *   caller can delete the kept selfie objects as well;
+   * - the `face_vectors` rows of the faces the system had *identified as this person*
+   *   (the gallery's anchors plus the face behind every gallery item) are deleted, and
+   *   those ids are removed from the anchor arrays of every other gallery of the event so
+   *   no gallery is left pointing at a template that no longer exists;
+   * - their `gallery_feedback` and `match_runs` (with `match_hits`) for the event go too.
+   *
+   * What deliberately stays: the photos themselves and their `faces` rows (bounding box
+   * and confidence, no template), the `users` row, and the withdrawn `consents` rows —
+   * see docs/DPIA.md §3 bis. Re-consent is a new `consents` row and never brings a
+   * deleted vector back.
+   *
+   * Idempotent: a second call on the same pair returns zeroes.
+   */
+  withdrawConsent(input: { userId: string; eventId: string }): Promise<ConsentWithdrawal>;
+  /**
+   * Claims the retention run of `windowStart` for one event. True exactly once per
+   * (event, window) even with several workers calling at the same moment; false when this
+   * window was already claimed (migration 015 explains the statement).
+   */
+  claimRetentionWindow(input: {
+    eventId: string;
+    windowStart: Date;
+    windowSeconds: number;
+  }): Promise<boolean>;
+  /** Outcome of the claimed run, for the admin status screen and the alarm. */
+  recordRetentionRun(input: {
+    eventId: string;
+    outcome: RetentionOutcome;
+    jobId?: string | null;
+    error?: string | null;
+  }): Promise<void>;
+  /** One row per event: the scheduler state and the last `retention` job of that event. */
+  listRetentionStatus(): Promise<RetentionStatusRow[]>;
+  /**
+   * Takes the right to send the alarm mail of `alarm` for `window`. True exactly once per
+   * (event, window, alarm kind), so a failure that lasts a week is one message per window
+   * and not one per tick, and two workers never both send. A different alarm kind inside the
+   * same window is new information and gets its own message.
+   *
+   * False when the row does not exist yet: the `never` alarm has nothing to claim, and the
+   * same tick that would report it also creates the row by claiming the window.
+   */
+  claimRetentionAlarmMail(input: {
+    eventId: string;
+    alarm: RetentionAlarmMail;
+    window: Date;
+  }): Promise<boolean>;
+  /**
+   * Clears the notified alarm of an event that is healthy again and returns what it was, so
+   * the caller can send one "resolved" message. Null when there was nothing to clear, which
+   * is the normal case on every tick.
+   */
+  clearRetentionAlarmMail(eventId: string): Promise<RetentionAlarmMail | null>;
+  /** Oldest first. The album-scoped form of `listPhotosCreatedBefore` (albums.retention_days). */
+  listAlbumPhotosCreatedBefore(albumId: string, cutoff: Date, limit?: number): Promise<PhotoRow[]>;
+  /**
+   * Photos of the event this user uploaded (`photos.photographer_id`, which since v6 also
+   * holds participants). Shown on "I miei dati": those photos are their own uploads, not
+   * biometric data about them, and a consent withdrawal does not delete them.
+   */
+  countPhotosByUploader(eventId: string, userId: string): Promise<number>;
 }
 
 // ---- albums and vector isolation v6 (agent A) ---------------------------------------------
@@ -956,3 +1028,73 @@ export type AlbumPhoto = {
   thumbKey: string;
   webKey: string;
 };
+// ---- privacy and retention scheduling v6 (agent G) ----------------------------------------
+
+export type ConsentState = {
+  /** When the still-active consent was granted; null when there is none (never given, or withdrawn). */
+  grantedAt: Date | null;
+  /** `consents.text_version` of the active consent. */
+  textVersion: string | null;
+  /** The most recent withdrawal of this pair, when there is one. */
+  withdrawnAt: Date | null;
+  /** The personal match gallery as it stands, or null when there is none. */
+  gallery: {
+    photos: number;
+    /** `galleries.query_embedding is not null`: the selfie template is stored. */
+    selfieVector: boolean;
+    anchors: number;
+    matchedAt: Date | null;
+  } | null;
+};
+
+/** Counts of everything one withdrawal removed. Every field is zero on a repeated call. */
+export type ConsentWithdrawal = {
+  consents: number;
+  galleryDeleted: boolean;
+  galleryItems: number;
+  /** The gallery held `query_embedding` and it was deleted with it. */
+  selfieVector: boolean;
+  anchors: number;
+  /** Rows deleted from `face_vectors` (0 on a server without pgvector). */
+  faceVectors: number;
+  /**
+   * The identified faces of this person, as engine ids. The caller passes them to
+   * `FaceEngine.deleteFaces` as well, which is what removes them from a Rekognition
+   * collection or the `face_index` of the fake engine.
+   */
+  externalFaceIds: string[];
+  /** `galleries.selfie_key` values to delete from the object store (KEEP_SELFIES only). */
+  selfieKeys: string[];
+  feedback: number;
+  matchRuns: number;
+};
+
+export type RetentionOutcome = "enqueued" | "failed";
+
+export type RetentionStatusRow = {
+  eventId: string;
+  slug: string;
+  retentionDays: number;
+  /** Start of the last window the scheduler claimed for this event; null = never run. */
+  windowStart: Date | null;
+  windowSeconds: number | null;
+  claimedAt: Date | null;
+  runs: number;
+  lastOutcome: RetentionOutcome | null;
+  lastJobId: string | null;
+  lastError: string | null;
+  /** The last `retention` job of the event, whatever enqueued it (scheduler or admin). */
+  lastJob: {
+    id: string;
+    status: "queued" | "running" | "done" | "error";
+    error: string | null;
+    finishedAt: Date | null;
+  } | null;
+};
+
+/**
+ * The alarm kinds that get an e-mail. `never` is deliberately absent: it is a screen state
+ * for an event the scheduler has not reached yet, and the tick that would report it claims
+ * the window anyway. It is `RetentionAlarm` of `@rephoto/contracts` minus `never`.
+ */
+export type RetentionAlarmMail = "failed" | "job_error" | "skipped";

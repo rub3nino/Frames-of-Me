@@ -213,6 +213,44 @@ export const envSchema = z
       blankToUndefined,
       z.coerce.number().int().min(0).default(30),
     ),
+    // --- v6 privacy and retention scheduling (agent G) ------------------------
+    /**
+     * The retention scheduler runs inside the worker (every replica; the claim in
+     * `retention_schedule` makes it exactly one run per window). "false" turns it off,
+     * for a deployment that prefers a host cron calling POST /v1/admin/retention/run.
+     */
+    RETENTION_SCHEDULER: z.preprocess(
+      blankToUndefined,
+      z.enum(["true", "false"]).default("true"),
+    ),
+    /**
+     * Length of the retention window: at most one `retention` job per event per window.
+     * Windows are aligned to the Unix epoch in UTC, so the default 24 h turns over at
+     * 00:00 UTC and the job is enqueued at the first tick after that.
+     */
+    RETENTION_WINDOW_HOURS: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().int().min(1).max(168).default(24),
+    ),
+    /** How often the worker looks for a window to claim. Well below the window. */
+    RETENTION_TICK_SECONDS: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().int().min(10).max(3600).default(300),
+    ),
+    /**
+     * Send the retention alarm by e-mail (the existing mailer, no new transport). "false"
+     * leaves only the log line and the red box on /admin → Stato, which nobody watches at
+     * three in the morning.
+     */
+    RETENTION_ALARM_MAIL: z.preprocess(
+      blankToUndefined,
+      z.enum(["true", "false"]).default("true"),
+    ),
+    /**
+     * Who receives it, comma-separated. Empty = fall back to `BOOTSTRAP_ADMINS`; with both
+     * empty nothing is sent and the worker logs `alarmMail: "no-recipient"` once per window.
+     */
+    RETENTION_ALARM_EMAIL: z.preprocess(blankToUndefined, z.string().default("")),
   })
   .superRefine((env, ctx) => {
     if (env.INSIGHTFACE_SURE_COSINE <= env.INSIGHTFACE_MIN_COSINE) {
@@ -282,6 +320,9 @@ export const envSchema = z
     KEEP_SELFIES: env.KEEP_SELFIES === "true",
     LOG_IDS: env.LOG_IDS === "true",
     OAUTH_STATE_SECRET: env.OAUTH_STATE_SECRET ?? env.SESSION_SECRET,
+    // v6 (agent G)
+    RETENTION_SCHEDULER: env.RETENTION_SCHEDULER === "true",
+    RETENTION_ALARM_MAIL: env.RETENTION_ALARM_MAIL === "true",
   }));
 
 export type Env = z.infer<typeof envSchema>;

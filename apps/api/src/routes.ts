@@ -92,6 +92,8 @@ import {
 import { purgePhoto } from "./purge.js";
 import { registerAdminV6Routes } from "./routes.admin-v6.js";
 import { registerCrowdRoutes } from "./routes.crowd.js";
+// v6 G (agent G): the privacy routes live in their own file; this is the only line they add here.
+import { registerPrivacyRoutes } from "./routes.privacy.js";
 
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -1393,6 +1395,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
 
   registerAdminV6Routes(app, deps); // v6 D (agent D): admin console, routes.admin-v6.ts
   registerCrowdRoutes(app, deps);
+  registerPrivacyRoutes(app, deps); // v6 G (agent G): apps/api/src/routes.privacy.ts
 }
 
 // ---- admin and participant tooling v5 (agent D) helpers --------------------------------------

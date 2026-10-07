@@ -8,6 +8,8 @@ import { FaceServiceBreaker } from "./breaker.js";
 import type { WorkerDeps } from "./handlers.js";
 import { runHousekeeping, runWorkerLoop } from "./loop.js";
 import { createCloudWatchPublisher, publishQueueDepth } from "./metrics.js";
+// v6 G (agent G): nothing scheduled the retention job before this.
+import { runRetentionScheduler } from "./retention-scheduler.js";
 
 const IDLE_MS = 500;
 const SHUTDOWN_MS = 60_000;
@@ -47,6 +49,20 @@ const housekeeping = (): void => {
 };
 housekeeping();
 timers.push(setInterval(housekeeping, HOUSEKEEPING_MS));
+
+// v6 G: the retention scheduler. Every replica ticks; the claim in `retention_schedule`
+// makes it exactly one run per event per window (RETENTION_WINDOW_HOURS).
+if (env.RETENTION_SCHEDULER) {
+  const retention = (): void => {
+    void runRetentionScheduler(deps).catch((error: unknown) => {
+      console.error(
+        JSON.stringify({ ts: new Date().toISOString(), alarm: "retention", reason: "tick", error: String(error) }),
+      );
+    });
+  };
+  retention();
+  timers.push(setInterval(retention, env.RETENTION_TICK_SECONDS * 1000));
+}
 
 if (env.WORKER_PUBLISH_METRICS) {
   const publish = createCloudWatchPublisher(env.AWS_REGION);
