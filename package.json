@@ -14,7 +14,7 @@
     "dev:web": "npm run dev -w @rephoto/web",
     "db:migrate": "node --env-file=.env --import tsx packages/db/src/migrate.ts",
     "db:seed": "node --env-file=.env --import tsx packages/db/src/seed.ts",
-    "test": "node --import tsx --test packages/contracts/src/collection-id.test.ts packages/contracts/src/jobs.test.ts packages/face-engine/src/face-engine.test.ts packages/face-engine/src/insightface.test.ts packages/db/src/memory.test.ts apps/worker/test/mvp.test.ts apps/worker/test/v2.test.ts apps/worker/test/v3.test.ts apps/worker/test/v4.test.ts apps/worker/test/v5.test.ts apps/web/lib/resize.worker.test.ts apps/api/test/routes.test.ts apps/api/test/mailer.test.ts",
+    "test": "node --import tsx --test packages/contracts/src/collection-id.test.ts packages/contracts/src/jobs.test.ts packages/face-engine/src/face-engine.test.ts packages/face-engine/src/insightface.test.ts packages/db/src/memory.test.ts packages/db/src/pagination.test.ts apps/worker/test/mvp.test.ts apps/worker/test/v2.test.ts apps/worker/test/v3.test.ts apps/worker/test/v4.test.ts apps/worker/test/v5.test.ts apps/web/lib/resize.worker.test.ts apps/api/test/routes.test.ts apps/api/test/mailer.test.ts",
     "ingest": "node --env-file=.env --import tsx scripts/ingest/ingest.ts",
     "seed:test": "node --env-file=.env --import tsx scripts/seed-test.ts"
   },

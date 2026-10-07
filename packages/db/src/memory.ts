@@ -1445,9 +1445,12 @@ export class MemoryDatabase implements Database {
   async listFeedback(
     userId: string,
     eventId: string,
+    photoIds?: readonly string[],
   ): Promise<Array<{ photoId: string; verdict: FeedbackVerdict }>> {
+    const wanted = photoIds ? new Set(photoIds) : null;
     return this.feedback
       .filter((row) => row.userId === userId && row.eventId === eventId)
+      .filter((row) => wanted === null || wanted.has(row.photoId))
       .map((row) => ({ photoId: row.photoId, verdict: row.verdict }));
   }
 

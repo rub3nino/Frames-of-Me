@@ -245,12 +245,20 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const cursor = query.data.cursor ? decodeGalleryCursor(query.data.cursor) : undefined;
     if (cursor === null) throw new ApiError(400, MESSAGES.validation);
     const limit = query.data.limit;
-    const [latest, gallery, page, feedbackRows] = await Promise.all([
+    const [latest, gallery, page] = await Promise.all([
       deps.db.latestMatchJob(user.id, event.id),
       deps.db.findGalleryByUser(user.id, event.id),
       deps.db.listGalleryPage(user.id, event.id, { limit, ...(cursor ? { cursor } : {}) }),
-      deps.db.listFeedback(user.id, event.id),
     ]);
+    // v6 (F4): the feedback read is scoped to the photos of this page. It used to load the user's
+    // whole event feedback on every gallery request, which grows with the gallery, not the page.
+    // It costs one extra round trip because the page's photo ids are the input; the response is
+    // unchanged (only the ids of this page are ever looked up below).
+    const feedbackRows = await deps.db.listFeedback(
+      user.id,
+      event.id,
+      page.items.map((row) => row.photoId),
+    );
     const status = galleryStatus(latest?.status ?? null, gallery !== null, page.total);
     // v5 (D): `not_me` items stay in the page with the flag; the web hides them under "Nascoste".
     const feedbackByPhoto = new Map(feedbackRows.map((row) => [row.photoId, row.verdict]));

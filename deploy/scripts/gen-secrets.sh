@@ -3,7 +3,7 @@
 #
 #   ./scripts/gen-secrets.sh [.env.production]
 #
-# - POSTGRES_PASSWORD, MINIO_ROOT_PASSWORD: 32 url-safe chars
+# - POSTGRES_PASSWORD, MINIO_ROOT_PASSWORD, S3_APP_SECRET_KEY: 32 url-safe chars
 # - SESSION_SECRET: 48 url-safe chars
 # - STATUS_BASIC_AUTH_HASH: bcrypt of a random password printed ONCE on stderr (write it in the
 #   password manager); `$` are doubled so compose interpolation leaves the hash intact.
@@ -40,6 +40,9 @@ set_if_generate() {
 
 set_if_generate POSTGRES_PASSWORD "$(random_token 24)"
 set_if_generate MINIO_ROOT_PASSWORD "$(random_token 24)"
+# The bucket-scoped credentials api and worker run with (v6 F2); distinct from the root password
+# on purpose, so rotating one does not touch the other.
+set_if_generate S3_APP_SECRET_KEY "$(random_token 24)"
 set_if_generate SESSION_SECRET "$(random_token 36)"
 
 if grep -qE '^STATUS_BASIC_AUTH_HASH=.*GENERATE' "$target"; then
