@@ -566,6 +566,11 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     }
     const stored = await deps.objects.head(session.objectKey);
     if (!stored || stored.bytes <= 0) throw new ApiError(400, MESSAGES.validation);
+    if (stored.contentType !== session.contentType) {
+      await deps.db.markUploadSession(session.id, "aborted");
+      await deps.objects.delete(session.objectKey);
+      throw new ApiError(400, MESSAGES.validation);
+    }
     const discard = async (status: 400 | 404, message: string): Promise<never> => {
       await deps.db.markUploadSession(session.id, "aborted");
       await deps.objects.delete(session.objectKey);
