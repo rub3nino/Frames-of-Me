@@ -4,8 +4,12 @@ import { describe, it } from "node:test";
 import {
   FakeFaceEngine,
   MemoryFaceIndexStore,
+  RateLimitedFaceEngine,
   SqlFaceIndexStore,
+  TokenBucket,
   createFaceEngine,
+  readTps,
+  type FaceEngine,
   type FaceIndexStore,
 } from "./index.ts";
 import {
@@ -210,6 +214,7 @@ describe("FakeFaceEngine", () => {
         await inner.upsert(record);
       },
       findByColor: (eventId, r, g, b) => inner.findByColor(eventId, r, g, b),
+      findById: (id) => inner.findById(id),
       deleteIds: (eventId, ids) => inner.deleteIds(eventId, ids),
       deleteEvent: (eventId) => inner.deleteEvent(eventId),
     };
@@ -352,7 +357,8 @@ describe("createFaceEngine", () => {
       calls += 1;
     });
     const created = createFaceEngine({ FACE_ENGINE: "rekognition" });
-    assert.ok(created instanceof RekognitionFaceEngine);
+    // Rekognition is wrapped in the per-process rate limiter.
+    assert.ok(created instanceof RateLimitedFaceEngine);
     assert.equal(calls, 0);
     const injected = new RekognitionFaceEngine({
       env: { FACE_ENGINE: "rekognition" },
@@ -428,6 +434,9 @@ describe("RekognitionFaceEngine", () => {
           ],
         };
       },
+      async searchFaces() {
+        return { FaceMatches: [] };
+      },
       async deleteFaces(input) {
         calls.push(`delete:${input.FaceIds.join(",")}`);
       },
@@ -492,6 +501,9 @@ describe("RekognitionFaceEngine", () => {
         error.name = "ResourceNotFoundException";
         throw error;
       },
+      async searchFaces() {
+        return { FaceMatches: [] };
+      },
       async deleteFaces() {
         const error = new Error("missing");
         error.name = "ResourceNotFoundException";
@@ -550,6 +562,9 @@ describe("RekognitionFaceEngine", () => {
         calls.push("searchFacesByImage");
         return { FaceMatches: [] };
       },
+      async searchFaces() {
+        return { FaceMatches: [] };
+      },
       async deleteFaces() {
         calls.push("deleteFaces");
       },
@@ -593,6 +608,9 @@ describe("RekognitionFaceEngine", () => {
       async searchFacesByImage() {
         return { FaceMatches: [] };
       },
+      async searchFaces() {
+        return { FaceMatches: [] };
+      },
       async deleteFaces() {
         return undefined;
       },
@@ -628,6 +646,9 @@ describe("RekognitionFaceEngine", () => {
       },
       async searchFacesByImage() {
         return {};
+      },
+      async searchFaces() {
+        return { FaceMatches: [] };
       },
       async deleteFaces() {
         return undefined;
@@ -674,6 +695,9 @@ function recordingClient(onCall: () => void): RekognitionFaceClient {
       onCall();
       return {};
     },
+    async searchFaces() {
+      return { FaceMatches: [] };
+    },
     async deleteFaces() {
       onCall();
     },
@@ -682,3 +706,226 @@ function recordingClient(onCall: () => void): RekognitionFaceClient {
     },
   };
 }
+
+describe("searchFaces", () => {
+  it("fake: returns same-color faces of the event, excluding the anchor", async () => {
+    const face = engine();
+    await face.indexPhoto({
+      eventId: "event-1",
+      photoId: "photo-a",
+      imageBytes: solidPng(255, 0, 0),
+      contentType: "image/png",
+    });
+    await face.indexPhoto({
+      eventId: "event-1",
+      photoId: "photo-b",
+      imageBytes: solidPng(255, 0, 0),
+      contentType: "image/png",
+    });
+    await face.indexPhoto({
+      eventId: "event-1",
+      photoId: "photo-c",
+      imageBytes: solidPng(0, 0, 255),
+      contentType: "image/png",
+    });
+    await face.indexPhoto({
+      eventId: "event-2",
+      photoId: "photo-d",
+      imageBytes: solidPng(255, 0, 0),
+      contentType: "image/png",
+    });
+    const hits = await face.searchFaces({ eventId: "event-1", externalFaceId: "fake-photo-a" });
+    assert.deepEqual(hits, [
+      { externalFaceId: "fake-photo-b", photoId: "photo-b", similarity: 99 },
+    ]);
+    assert.deepEqual(
+      await face.searchFaces({ eventId: "event-1", externalFaceId: "fake-missing" }),
+      [],
+    );
+    assert.deepEqual(
+      await face.searchFaces({ eventId: "event-2", externalFaceId: "fake-photo-a" }),
+      [],
+    );
+  });
+
+  it("fake: SqlFaceIndexStore looks the anchor up by id", async () => {
+    const queries: string[] = [];
+    const store = new SqlFaceIndexStore({
+      async query<T>(sql: string, params?: readonly unknown[]) {
+        queries.push(sql.replace(/\s+/g, " ").trim());
+        if (sql.includes("WHERE external_face_id = $1")) {
+          return {
+            rows: [
+              { external_face_id: params?.[0], photo_id: "photo-a", event_id: "event-1", r: 15, g: 0, b: 0 },
+            ] as T[],
+          };
+        }
+        return {
+          rows: [
+            { external_face_id: "fake-photo-a", photo_id: "photo-a", event_id: "event-1", r: 15, g: 0, b: 0 },
+            { external_face_id: "fake-photo-b", photo_id: "photo-b", event_id: "event-1", r: 15, g: 0, b: 0 },
+          ] as T[],
+        };
+      },
+    });
+    const face = new FakeFaceEngine(store);
+    const hits = await face.searchFaces({ eventId: "event-1", externalFaceId: "fake-photo-a" });
+    assert.deepEqual(hits, [
+      { externalFaceId: "fake-photo-b", photoId: "photo-b", similarity: 99 },
+    ]);
+    assert.equal(queries.length, 2);
+    assert.match(queries[0] ?? "", /WHERE external_face_id = \$1/);
+    assert.match(queries[1] ?? "", /r = \$2 AND g = \$3 AND b = \$4/);
+  });
+
+  it("rekognition: calls SearchFaces, filters by similarity and drops the anchor", async () => {
+    const inputs: unknown[] = [];
+    const client: RekognitionFaceClient = {
+      async createCollection() {
+        return undefined;
+      },
+      async indexFaces() {
+        return {};
+      },
+      async searchFacesByImage() {
+        return {};
+      },
+      async searchFaces(input) {
+        inputs.push(input);
+        return {
+          FaceMatches: [
+            { Similarity: 99.9, Face: { FaceId: "face-1", ExternalImageId: "photo-1" } },
+            { Similarity: 97, Face: { FaceId: "face-2", ExternalImageId: "photo-2" } },
+            { Similarity: 80, Face: { FaceId: "face-3", ExternalImageId: "photo-3" } },
+            { Similarity: 95, Face: { FaceId: "face-4" } },
+          ],
+        };
+      },
+      async deleteFaces() {
+        return undefined;
+      },
+      async deleteCollection() {
+        return undefined;
+      },
+    };
+    const face = new RekognitionFaceEngine({
+      client,
+      env: { REKOGNITION_COLLECTION_PREFIX: "rephoto-", REKOGNITION_SEARCH_MAX_FACES: "7" },
+    });
+    const hits = await face.searchFaces({ eventId: "event-1", externalFaceId: "face-1" });
+    assert.deepEqual(hits, [{ externalFaceId: "face-2", photoId: "photo-2", similarity: 97 }]);
+    assert.deepEqual(inputs, [
+      { CollectionId: "rephoto-event-1", FaceId: "face-1", MaxFaces: 7, FaceMatchThreshold: 90 },
+    ]);
+  });
+
+  it("rekognition: a missing collection or face is an empty result, throttles propagate", async () => {
+    let name = "ResourceNotFoundException";
+    const client: RekognitionFaceClient = {
+      async createCollection() {
+        return undefined;
+      },
+      async indexFaces() {
+        return {};
+      },
+      async searchFacesByImage() {
+        return {};
+      },
+      async searchFaces() {
+        const error = new Error("nope");
+        error.name = name;
+        throw error;
+      },
+      async deleteFaces() {
+        return undefined;
+      },
+      async deleteCollection() {
+        return undefined;
+      },
+    };
+    const face = new RekognitionFaceEngine({ client, env: {} });
+    assert.deepEqual(await face.searchFaces({ eventId: "e", externalFaceId: "f" }), []);
+    name = "ThrottlingException";
+    await assert.rejects(
+      () => face.searchFaces({ eventId: "e", externalFaceId: "f" }),
+      (error: unknown) => error instanceof RekognitionThrottleError,
+    );
+  });
+});
+
+describe("RateLimitedFaceEngine", () => {
+  it("limits index and search calls, keeps order and leaves deletes unlimited", async () => {
+    const calls: string[] = [];
+    const inner: FaceEngine = {
+      async indexPhoto(input) {
+        calls.push(`index:${input.photoId}`);
+        return [];
+      },
+      async search() {
+        calls.push("search");
+        return [];
+      },
+      async searchFaces(input) {
+        calls.push(`searchFaces:${input.externalFaceId}`);
+        return [];
+      },
+      async deleteFaces() {
+        calls.push("delete");
+      },
+      async deleteCollection() {
+        calls.push("deleteCollection");
+      },
+    };
+    const limited = new RateLimitedFaceEngine(inner, { indexTps: 50, searchTps: 50 });
+    const started = Date.now();
+    // Capacity is ceil(tps) = 50: the first 50 calls are a burst, the next 10 wait ~200 ms.
+    const pending: Promise<unknown>[] = [];
+    for (let index = 0; index < 60; index += 1) {
+      pending.push(
+        limited.indexPhoto({
+          eventId: "e",
+          photoId: `p${index}`,
+          imageBytes: new Uint8Array(),
+          contentType: "image/png",
+        }),
+      );
+    }
+    pending.push(limited.deleteFaces("e", ["x"]));
+    await Promise.all(pending);
+    const elapsed = Date.now() - started;
+    assert.ok(elapsed >= 180, `expected at least 180 ms, took ${elapsed}`);
+    const indexCalls = calls.filter((call) => call.startsWith("index:"));
+    assert.deepEqual(
+      indexCalls,
+      Array.from({ length: 60 }, (_, index) => `index:p${index}`),
+    );
+    assert.equal(calls.indexOf("delete") < 55, true);
+
+    const searchStart = Date.now();
+    const searches: Promise<unknown>[] = [];
+    for (let index = 0; index < 55; index += 1) {
+      searches.push(
+        index % 2 === 0
+          ? limited.search({ eventId: "e", imageBytes: new Uint8Array(), contentType: "image/png" })
+          : limited.searchFaces({ eventId: "e", externalFaceId: `f${index}` }),
+      );
+    }
+    await Promise.all(searches);
+    assert.ok(Date.now() - searchStart >= 80, "search and searchFaces share one bucket");
+  });
+
+  it("rejects a non-positive rate and createFaceEngine wraps rekognition only", () => {
+    assert.throws(() => new TokenBucket(0));
+    assert.throws(() => readTps("abc", "X"));
+    assert.equal(readTps("", "X"), 5);
+    assert.equal(readTps("2.5", "X"), 2.5);
+    assert.ok(createFaceEngine({ FACE_ENGINE: "fake" }) instanceof FakeFaceEngine);
+    assert.ok(
+      createFaceEngine({ FACE_ENGINE: "rekognition", REKOGNITION_INDEX_TPS: "1" }) instanceof
+        RateLimitedFaceEngine,
+    );
+    assert.throws(() =>
+      createFaceEngine({ FACE_ENGINE: "rekognition", REKOGNITION_SEARCH_TPS: "-1" }),
+    );
+  });
+});

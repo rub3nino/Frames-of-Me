@@ -1,186 +1,39 @@
 import assert from "node:assert/strict";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import sharp from "sharp";
 import { createApp } from "@rephoto/api";
-import { sha256Hex } from "@rephoto/api/crypto";
-import type { Mailer, MailMessage } from "@rephoto/api/mailer";
-import type { CompletedPart, ObjectStore, StoredObject } from "@rephoto/api/object-store";
 import { createQueue } from "@rephoto/api/queue";
 import {
+  CONSENT_TEXT_VERSION,
   envSchema,
   errorBodySchema,
   galleryResponseSchema,
   objectKeys,
   retentionResponseSchema,
   selfieResponseSchema,
-  SESSION_COOKIE_NAME,
-  type Env,
 } from "@rephoto/contracts";
 import { MemoryDatabase, seedDemo, type Database } from "@rephoto/db";
-import type { FaceEngine, IndexPhotoInput, SearchInput } from "../../../packages/face-engine/src/types.ts";
+import type { FaceEngine } from "../../../packages/face-engine/src/types.ts";
 import {
   FakeFaceEngine,
   MemoryFaceIndexStore,
 } from "../../../packages/face-engine/src/fake.ts";
 import type { WorkerDeps } from "../src/handlers.js";
 import { pollOnce } from "../src/run.js";
-
-const env: Env = envSchema.parse({
-  DATABASE_URL: "postgres://rephoto:rephoto@localhost:5432/rephoto",
-  S3_ENDPOINT: "http://localhost:9000",
-  S3_BUCKET: "rephoto",
-  S3_ACCESS_KEY: "rephoto",
-  S3_SECRET_KEY: "rephoto-secret",
-  S3_REGION: "eu-central-1",
-  S3_FORCE_PATH_STYLE: "true",
-  SESSION_SECRET: "test-session-secret-value",
-  FACE_ENGINE: "fake",
-  AWS_REGION: "eu-central-1",
-  REKOGNITION_COLLECTION_PREFIX: "rephoto-",
-  SMTP_HOST: "localhost",
-  SMTP_PORT: "1025",
-  SMTP_FROM: "noreply@rephoto.local",
-  WEB_ORIGIN: "http://localhost:3000",
-  API_ORIGIN: "http://localhost:8787",
-});
-
-class MemoryObjectStore implements ObjectStore {
-  readonly objects = new Map<string, StoredObject>();
-
-  async put(key: string, body: Uint8Array, contentType: string): Promise<void> {
-    this.objects.set(key, { body, contentType });
-  }
-
-  async get(key: string): Promise<StoredObject | null> {
-    return this.objects.get(key) ?? null;
-  }
-
-  async head(key: string): Promise<{ bytes: number; contentType: string } | null> {
-    const stored = this.objects.get(key);
-    if (!stored) return null;
-    return { bytes: stored.body.byteLength, contentType: stored.contentType };
-  }
-
-  async delete(key: string): Promise<void> {
-    this.objects.delete(key);
-  }
-
-  async presignPut(key: string, contentType: string): Promise<string> {
-    return `http://localhost:9000/${key}?put=1&type=${encodeURIComponent(contentType)}`;
-  }
-
-  async createMultipartUpload(key: string, contentType: string): Promise<string> {
-    void key;
-    void contentType;
-    return `mp-${randomUUID()}`;
-  }
-
-  async presignUploadPart(key: string, uploadId: string, partNumber: number): Promise<string> {
-    return `http://localhost:9000/${key}?upload=${uploadId}&part=${partNumber}`;
-  }
-
-  async completeMultipartUpload(
-    key: string,
-    uploadId: string,
-    parts: CompletedPart[],
-  ): Promise<void> {
-    void key;
-    void uploadId;
-    void parts;
-  }
-
-  async presignGet(key: string): Promise<string> {
-    return `http://localhost:9000/${key}`;
-  }
-}
-
-class RecordingMailer implements Mailer {
-  readonly sent: MailMessage[] = [];
-
-  async send(message: MailMessage): Promise<void> {
-    this.sent.push(message);
-  }
-}
-
-function trackingEngine(inner: FaceEngine): FaceEngine & {
-  indexedPhotoIds: string[];
-  indexedBytes: Uint8Array[];
-  searchBytes: Uint8Array[];
-  deletedFaceIds: string[][];
-  deletedCollections: string[];
-} {
-  const indexedPhotoIds: string[] = [];
-  const indexedBytes: Uint8Array[] = [];
-  const searchBytes: Uint8Array[] = [];
-  const deletedFaceIds: string[][] = [];
-  const deletedCollections: string[] = [];
-  return {
-    indexedPhotoIds,
-    indexedBytes,
-    searchBytes,
-    deletedFaceIds,
-    deletedCollections,
-    indexPhoto(input: IndexPhotoInput) {
-      indexedPhotoIds.push(input.photoId);
-      indexedBytes.push(input.imageBytes);
-      return inner.indexPhoto(input);
-    },
-    search(input: SearchInput) {
-      searchBytes.push(input.imageBytes);
-      return inner.search(input);
-    },
-    deleteFaces(eventId, externalFaceIds) {
-      deletedFaceIds.push([...externalFaceIds]);
-      return inner.deleteFaces(eventId, externalFaceIds);
-    },
-    deleteCollection(eventId) {
-      deletedCollections.push(eventId);
-      return inner.deleteCollection(eventId);
-    },
-  };
-}
-
-function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
-  if (left.byteLength !== right.byteLength) return false;
-  for (let index = 0; index < left.byteLength; index += 1) {
-    if (left[index] !== right[index]) return false;
-  }
-  return true;
-}
-
-async function solidPng(r: number, g: number, b: number): Promise<Buffer> {
-  return sharp({
-    create: { width: 8, height: 8, channels: 3, background: { r, g, b } },
-  })
-    .png()
-    .toBuffer();
-}
-
-function sha256(bytes: Uint8Array): string {
-  return createHash("sha256").update(bytes).digest("hex");
-}
-
-async function drain(deps: WorkerDeps): Promise<void> {
-  for (let step = 0; step < 20; step += 1) {
-    const worked = await pollOnce(deps);
-    if (!worked) return;
-  }
-  throw new Error("jobs did not drain");
-}
-
-async function sessionCookie(
-  db: MemoryDatabase,
-  userId: string,
-): Promise<string> {
-  const token = randomUUID();
-  await db.insertSession({
-    userId,
-    tokenHash: sha256Hex(token),
-    expiresAt: new Date(Date.now() + 60 * 60 * 1000),
-  });
-  return `${SESSION_COOKIE_NAME}=${token}`;
-}
+import {
+  drain,
+  env,
+  MemoryObjectStore,
+  quiet,
+  RecordingMailer,
+  sameBytes,
+  sessionCookie,
+  sha256,
+  solidPng,
+  stubEngine,
+  trackingEngine,
+} from "./helpers.ts";
 
 test("red selfie matches only the red photo and the selfie object is deleted", async () => {
   const db = new MemoryDatabase();
@@ -199,7 +52,7 @@ test("red selfie matches only the red photo and the selfie object is deleted", a
   const mailer = new RecordingMailer();
   const faces = trackingEngine(new FakeFaceEngine(new MemoryFaceIndexStore()));
   const queue = createQueue(db);
-  const deps: WorkerDeps = { env, db, objects, mailer, queue, faces };
+  const deps: WorkerDeps = { env, db, objects, mailer, queue, faces, log: quiet };
   const app = createApp(deps);
 
   const redBytes = new Uint8Array(await solidPng(255, 0, 0));
@@ -238,7 +91,7 @@ test("red selfie matches only the red photo and the selfie object is deleted", a
   const consent = await app.request("/v1/events/demo/consent", {
     method: "POST",
     headers: { cookie, "content-type": "application/json" },
-    body: JSON.stringify({ textVersion: "2026-01", accepted: true }),
+    body: JSON.stringify({ textVersion: CONSENT_TEXT_VERSION, accepted: true }),
   });
   assert.equal(consent.status, 201);
 
@@ -272,6 +125,7 @@ test("red selfie matches only the red photo and the selfie object is deleted", a
   assert.equal(body.items[0]?.score, 0.99);
   assert.equal(mailer.sent.length, 1);
   assert.equal(mailer.sent[0]?.to, participant.email);
+  assert.equal(mailer.sent[0]?.subject, "Le tue foto sono pronte");
   assert.match(mailer.sent[0]?.text ?? "", /http:\/\/localhost:3000\/e\/demo/);
 
   const searched = faces.searchBytes[0];
@@ -301,7 +155,7 @@ test("consent accepted false is rejected", async () => {
   const response = await app.request("/v1/events/demo/consent", {
     method: "POST",
     headers: { cookie, "content-type": "application/json" },
-    body: JSON.stringify({ textVersion: "2026-01", accepted: false }),
+    body: JSON.stringify({ textVersion: CONSENT_TEXT_VERSION, accepted: false }),
   });
   assert.equal(response.status, 400);
   errorBodySchema.parse(await response.json());
@@ -350,6 +204,7 @@ test("index sends the web derivative bytes, not the original", async () => {
     mailer: new RecordingMailer(),
     queue,
     faces,
+    log: quiet,
   };
   const original = new Uint8Array(await solidPng(255, 0, 0));
   const photoId = randomUUID();
@@ -379,7 +234,17 @@ test("index sends the web derivative bytes, not the original", async () => {
   assert.equal(indexed[0], 0xff);
   assert.equal(indexed[1], 0xd8);
   assert.ok(indexed.byteLength < 5 * 1024 * 1024);
-  assert.equal((await db.findPhoto(photoId))?.status, "indexed");
+  const photo = await db.findPhoto(photoId);
+  assert.equal(photo?.status, "indexed");
+  assert.ok(photo?.indexedAt);
+  assert.equal(
+    objects.objects.get(objectKeys.thumb(photoId))?.cacheControl,
+    "public, max-age=86400, immutable",
+  );
+  assert.equal(
+    objects.objects.get(objectKeys.web(photoId))?.cacheControl,
+    "public, max-age=86400, immutable",
+  );
 });
 
 test("reindex deletes previous external ids and a completed index is not repeated", async () => {
@@ -402,6 +267,9 @@ test("reindex deletes previous external ids and a completed index is not repeate
     search(input) {
       return inner.search(input);
     },
+    searchFaces(input) {
+      return inner.searchFaces(input);
+    },
     async deleteFaces(eventId, externalFaceIds) {
       order.push(`delete:${externalFaceIds.join(",")}`);
       return inner.deleteFaces(eventId, externalFaceIds);
@@ -418,6 +286,7 @@ test("reindex deletes previous external ids and a completed index is not repeate
     mailer: new RecordingMailer(),
     queue,
     faces,
+    log: quiet,
   };
   const original = new Uint8Array(await solidPng(0, 0, 255));
   const photoId = randomUUID();
@@ -467,23 +336,14 @@ test("throttle requeues without burning attempts", async () => {
   });
   const objects = new MemoryObjectStore();
   let calls = 0;
-  const faces: FaceEngine = {
+  const faces = stubEngine({
     async indexPhoto() {
       calls += 1;
       const error = new Error("throughput");
       error.name = "RekognitionThrottleError";
       throw error;
     },
-    async search() {
-      return [];
-    },
-    async deleteFaces() {
-      return undefined;
-    },
-    async deleteCollection() {
-      return undefined;
-    },
-  };
+  });
   const queue = createQueue(db);
   const deps: WorkerDeps = {
     env,
@@ -492,6 +352,7 @@ test("throttle requeues without burning attempts", async () => {
     mailer: new RecordingMailer(),
     queue,
     faces,
+    log: quiet,
   };
   const photoId = randomUUID();
   const jpeg = new Uint8Array(
@@ -533,22 +394,13 @@ test("a non-throttle index error still consumes attempts", async () => {
     role: "photographer",
   });
   const objects = new MemoryObjectStore();
-  const faces: FaceEngine = {
+  const faces = stubEngine({
     async indexPhoto() {
       const error = new Error("rejected");
       error.name = "ServiceException";
       throw error;
     },
-    async search() {
-      return [];
-    },
-    async deleteFaces() {
-      return undefined;
-    },
-    async deleteCollection() {
-      return undefined;
-    },
-  };
+  });
   const queue = createQueue(db);
   const deps: WorkerDeps = {
     env,
@@ -557,6 +409,7 @@ test("a non-throttle index error still consumes attempts", async () => {
     mailer: new RecordingMailer(),
     queue,
     faces,
+    log: quiet,
   };
   const photoId = randomUUID();
   const jpeg = new Uint8Array(
@@ -583,7 +436,9 @@ test("a non-throttle index error still consumes attempts", async () => {
   }
   assert.equal(db.jobView(jobId)?.status, "error");
   assert.equal(db.jobView(jobId)?.attempts, 5);
-  assert.equal((await db.findPhoto(photoId))?.status, "error");
+  const photo = await db.findPhoto(photoId);
+  assert.equal(photo?.status, "error");
+  assert.equal(photo?.error, "rejected");
 });
 
 test("a job running longer than ten minutes returns to the queue", async () => {
@@ -612,23 +467,21 @@ test("retention run enqueues a job instead of deleting inline", async () => {
     email: "shooter@example.com",
     role: "photographer",
   });
+  const participant = await db.createUser({
+    email: "guest@example.com",
+    role: "participant",
+  });
   const objects = new MemoryObjectStore();
   const deletedFaces: string[][] = [];
   let collections = 0;
-  const faces: FaceEngine = {
-    async indexPhoto() {
-      return [];
-    },
-    async search() {
-      return [];
-    },
+  const faces = stubEngine({
     async deleteFaces(_eventId, externalFaceIds) {
       deletedFaces.push([...externalFaceIds]);
     },
     async deleteCollection() {
       collections += 1;
     },
-  };
+  });
   const queue = createQueue(db);
   const deps: WorkerDeps = {
     env,
@@ -637,6 +490,7 @@ test("retention run enqueues a job instead of deleting inline", async () => {
     mailer: new RecordingMailer(),
     queue,
     faces,
+    log: quiet,
   };
   const app = createApp(deps);
   const oldId = randomUUID();
@@ -669,6 +523,8 @@ test("retention run enqueues a job instead of deleting inline", async () => {
   const box = { x: 0, y: 0, width: 1, height: 1 };
   await db.replaceFaces(oldId, event.id, [{ externalId: "ext-old", bbox: box, confidence: 1 }]);
   await db.replaceFaces(recentId, event.id, [{ externalId: "ext-new", bbox: box, confidence: 1 }]);
+  // A gallery anchored on both faces: retention must drop only the deleted anchor.
+  await db.replaceGallery(participant.id, event.id, [], ["ext-old", "ext-new"]);
 
   const cookie = await sessionCookie(db, admin.id);
   const response = await app.request("/v1/admin/retention/run", {
@@ -692,6 +548,9 @@ test("retention run enqueues a job instead of deleting inline", async () => {
   assert.equal(objects.objects.has(recentKey), true);
   assert.deepEqual(deletedFaces, [["ext-old"]]);
   assert.equal(collections, 0);
+  assert.deepEqual((await db.findGalleryByUser(participant.id, event.id))?.anchorFaceIds, [
+    "ext-new",
+  ]);
 
   await db.deletePhoto(recentId);
   await objects.delete(recentKey);
@@ -702,12 +561,15 @@ test("retention run enqueues a job instead of deleting inline", async () => {
 
 test("health returns 200 and does not call the face engine", async () => {
   const db = new MemoryDatabase();
-  const faces: FaceEngine = {
+  const faces = stubEngine({
     async indexPhoto() {
       throw new Error("index");
     },
     async search() {
       throw new Error("search");
+    },
+    async searchFaces() {
+      throw new Error("searchFaces");
     },
     async deleteFaces() {
       throw new Error("delete");
@@ -715,7 +577,7 @@ test("health returns 200 and does not call the face engine", async () => {
     async deleteCollection() {
       throw new Error("collection");
     },
-  };
+  });
   const app = createApp({
     env,
     db,
@@ -750,6 +612,8 @@ test("S3 keys are optional without an endpoint and required for MinIO", () => {
   assert.equal(parsed.S3_FORCE_PATH_STYLE, false);
   assert.equal(parsed.MAIL_TRANSPORT, "ses");
   assert.equal(parsed.REKOGNITION_SEARCH_MAX_FACES, 500);
+  assert.equal(parsed.WORKER_CONCURRENCY, 4);
+  assert.equal(parsed.WORKER_PUBLISH_METRICS, false);
 
   assert.throws(() =>
     envSchema.parse({

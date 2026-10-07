@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@aws-sdk/client-cloudwatch": "^3.1147.0",
     "@rephoto/api": "file:../api",
     "@rephoto/contracts": "file:../../packages/contracts",
     "@rephoto/db": "file:../../packages/db",

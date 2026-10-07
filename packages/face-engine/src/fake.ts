@@ -4,6 +4,7 @@ import type {
   ImageContentType,
   IndexedFace,
   IndexPhotoInput,
+  SearchFacesInput,
   SearchHit,
   SearchInput,
 } from "./types.ts";
@@ -22,6 +23,7 @@ export interface FaceIndexRecord {
 
 export interface FaceIndexStore {
   upsert(record: FaceIndexRecord): Promise<void>;
+  findById(externalFaceId: string): Promise<FaceIndexRecord | null>;
   findByColor(
     eventId: string,
     r: number,
@@ -67,6 +69,11 @@ export class MemoryFaceIndexStore implements FaceIndexStore {
       }
     }
     this.rows.set(record.externalFaceId, { ...record });
+  }
+
+  async findById(externalFaceId: string): Promise<FaceIndexRecord | null> {
+    const row = this.rows.get(externalFaceId);
+    return row ? { ...row } : null;
   }
 
   async findByColor(
@@ -137,6 +144,22 @@ export class SqlFaceIndexStore implements FaceIndexStore {
     );
   }
 
+  async findById(externalFaceId: string): Promise<FaceIndexRecord | null> {
+    return this.run(
+      () => this.memory.findById(externalFaceId),
+      async (db) => {
+        const result = await db.query<FaceIndexSql>(
+          `SELECT external_face_id, photo_id, event_id, r, g, b
+           FROM face_index
+           WHERE external_face_id = $1`,
+          [externalFaceId],
+        );
+        const row = result.rows[0];
+        return row ? mapFaceIndexRow(row) : null;
+      },
+    );
+  }
+
   async findByColor(
     eventId: string,
     r: number,
@@ -146,27 +169,13 @@ export class SqlFaceIndexStore implements FaceIndexStore {
     return this.run(
       () => this.memory.findByColor(eventId, r, g, b),
       async (db) => {
-        const result = await db.query<{
-          external_face_id: string;
-          photo_id: string;
-          event_id: string;
-          r: number;
-          g: number;
-          b: number;
-        }>(
+        const result = await db.query<FaceIndexSql>(
           `SELECT external_face_id, photo_id, event_id, r, g, b
            FROM face_index
            WHERE event_id = $1 AND r = $2 AND g = $3 AND b = $4`,
           [eventId, r, g, b],
         );
-        return result.rows.map((row) => ({
-          externalFaceId: String(row.external_face_id),
-          photoId: String(row.photo_id),
-          eventId: String(row.event_id),
-          r: Number(row.r),
-          g: Number(row.g),
-          b: Number(row.b),
-        }));
+        return result.rows.map(mapFaceIndexRow);
       },
     );
   }
@@ -260,6 +269,19 @@ export class FakeFaceEngine implements FaceEngine {
     }));
   }
 
+  async searchFaces(input: SearchFacesInput): Promise<SearchHit[]> {
+    const anchor = await this.store.findById(input.externalFaceId);
+    if (!anchor || anchor.eventId !== input.eventId) return [];
+    const rows = await this.store.findByColor(input.eventId, anchor.r, anchor.g, anchor.b);
+    return rows
+      .filter((row) => row.externalFaceId !== input.externalFaceId)
+      .map((row) => ({
+        externalFaceId: row.externalFaceId,
+        photoId: row.photoId,
+        similarity: 99,
+      }));
+  }
+
   async deleteFaces(eventId: string, externalFaceIds: string[]): Promise<void> {
     if (externalFaceIds.length === 0) return;
     await this.store.deleteIds(eventId, externalFaceIds);
@@ -268,6 +290,26 @@ export class FakeFaceEngine implements FaceEngine {
   async deleteCollection(eventId: string): Promise<void> {
     await this.store.deleteEvent(eventId);
   }
+}
+
+type FaceIndexSql = {
+  external_face_id: string;
+  photo_id: string;
+  event_id: string;
+  r: number;
+  g: number;
+  b: number;
+};
+
+function mapFaceIndexRow(row: FaceIndexSql): FaceIndexRecord {
+  return {
+    externalFaceId: String(row.external_face_id),
+    photoId: String(row.photo_id),
+    eventId: String(row.event_id),
+    r: Number(row.r),
+    g: Number(row.g),
+    b: Number(row.b),
+  };
 }
 
 function createPgQueryable(databaseUrl: string): Queryable {

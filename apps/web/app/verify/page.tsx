@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Shell } from "@/components/shell";
 import { ApiError, api } from "@/lib/api";
@@ -13,50 +13,55 @@ function Verify() {
   const params = useSearchParams();
   const router = useRouter();
   const token = params.get("token") ?? "";
-  const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(token ? null : "Manca il token nel link.");
 
-  useEffect(() => {
-    if (!token) {
-      setError("Manca il token nel link.");
-      return;
-    }
-    let alive = true;
-    let pending = inflight.get(token);
-    if (!pending) {
-      pending = api<{ user: User }>("/v1/auth/verify", {
+  function enter() {
+    if (!token || pending) return;
+    setPending(true);
+    setError(null);
+    let request = inflight.get(token);
+    if (!request) {
+      request = api<{ user: User }>("/v1/auth/verify", {
         method: "POST",
         body: JSON.stringify({ token }),
       }).then((data) => data.user);
-      inflight.set(token, pending);
+      inflight.set(token, request);
     }
-    pending
+    request
       .then((user) => {
         try {
           sessionStorage.setItem("rephoto.user", JSON.stringify(user));
         } catch {
           /* private mode */
         }
-        if (alive) router.replace(pathForRole(user.role));
+        router.replace(pathForRole(user.role));
       })
       .catch((cause: unknown) => {
         inflight.delete(token);
-        if (alive) setError(cause instanceof ApiError ? cause.message : "Link non valido.");
+        setPending(false);
+        setError(cause instanceof ApiError ? cause.message : "Link non valido.");
       });
-    return () => {
-      alive = false;
-    };
-  }, [router, token]);
+  }
 
   return (
     <Shell>
-      <h1>Accesso</h1>
-      {error ? (
-        <p className="alert" role="alert">
-          {error}
-        </p>
-      ) : (
-        <p className="status">Accesso in corso</p>
-      )}
+      <div className="stack">
+        <div>
+          <h1>Accesso</h1>
+          <p className="lede">Tocca il pulsante per entrare.</p>
+        </div>
+        {error ? (
+          <p className="alert" role="alert">
+            {error}
+          </p>
+        ) : null}
+        <div className="actions">
+          <button className="button primary" type="button" onClick={enter} disabled={!token || pending}>
+            {pending ? "Accesso in corso…" : "Entra"}
+          </button>
+        </div>
+      </div>
     </Shell>
   );
 }
@@ -67,7 +72,7 @@ export default function VerifyPage() {
       fallback={
         <Shell>
           <h1>Accesso</h1>
-          <p className="status">Accesso in corso</p>
+          <p className="status">Caricamento</p>
         </Shell>
       }
     >

@@ -32,9 +32,16 @@ export interface SearchHit {
   similarity: number; // 0..100
 }
 
+export interface SearchFacesInput {
+  eventId: string;
+  externalFaceId: string;
+}
+
 export interface FaceEngine {
   indexPhoto(input: IndexPhotoInput): Promise<IndexedFace[]>;
   search(input: SearchInput): Promise<SearchHit[]>;
+  /** Faces in the event collection similar to an already indexed face. The input face itself is excluded. */
+  searchFaces(input: SearchFacesInput): Promise<SearchHit[]>;
   deleteFaces(eventId: string, externalFaceIds: string[]): Promise<void>;
   /** Removes the event collection. A missing collection is success. */
   deleteCollection(eventId: string): Promise<void>;

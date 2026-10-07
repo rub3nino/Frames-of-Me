@@ -1,4 +1,5 @@
 import type { Context } from "hono";
+import { getConnInfo } from "@hono/node-server/conninfo";
 import type { Env, Role } from "@rephoto/contracts";
 import type { UserRow } from "@rephoto/db";
 import type { AppEnv } from "./deps.js";
@@ -13,13 +14,33 @@ export function applySecurityHeaders(headers: Headers, env: Env): void {
   }
 }
 
-export function clientIp(c: Context): string {
+function socketAddress(c: Context): string | null {
+  try {
+    const address = getConnInfo(c).remote.address;
+    return address && address.length > 0 ? address : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The client IP given `hops` trusted proxies appending to `x-forwarded-for`:
+ * with `a, b, c` and hops 1 → `c`, hops 2 → `b`. Without the header → the socket address,
+ * else "unknown".
+ */
+export function clientIp(c: Context, hops: number): string {
   const forwarded = c.req.header("x-forwarded-for");
-  if (forwarded) {
-    const first = forwarded.split(",")[0]?.trim();
+  if (forwarded && hops > 0) {
+    const entries = forwarded
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0);
+    const picked = entries[entries.length - hops];
+    if (picked) return picked;
+    const first = entries[0];
     if (first) return first;
   }
-  return "unknown";
+  return socketAddress(c) ?? "unknown";
 }
 
 export async function readJson(c: Context): Promise<unknown> {
@@ -48,4 +69,20 @@ export function since(seconds: number): Date {
 
 export function webOrigin(env: Env): string {
   return env.WEB_ORIGIN.endsWith("/") ? env.WEB_ORIGIN.slice(0, -1) : env.WEB_ORIGIN;
+}
+
+export function encodeCursor(parts: string[]): string {
+  return Buffer.from(parts.join("|"), "utf8").toString("base64url");
+}
+
+export function decodeCursor(raw: string, count: number): string[] | null {
+  let text: string;
+  try {
+    text = Buffer.from(raw, "base64url").toString("utf8");
+  } catch {
+    return null;
+  }
+  const parts = text.split("|");
+  if (parts.length !== count || parts.some((part) => part.length === 0)) return null;
+  return parts;
 }

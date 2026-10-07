@@ -32,7 +32,7 @@ export default function HomePage() {
       {sent ? (
         <div className="stack">
           <h1>Controlla la posta</h1>
-          <p className="lede">Il link vale trenta minuti.</p>
+          <p className="lede">Il link vale venti minuti.</p>
         </div>
       ) : (
         <form className="stack" onSubmit={(event) => void onSubmit(event)}>

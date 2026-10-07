@@ -1,9 +1,16 @@
 import postgres from "postgres";
 
-export function createSql(databaseUrl: string): postgres.Sql {
+export type CreateSqlOptions = {
+  /** Pool size; `DATABASE_POOL_MAX`. */
+  max?: number;
+};
+
+export function createSql(databaseUrl: string, options: CreateSqlOptions = {}): postgres.Sql {
   return postgres(databaseUrl, {
-    max: 10,
+    max: options.max ?? 10,
     idle_timeout: 20,
+    connect_timeout: 10,
+    prepare: true,
     onnotice: () => undefined,
   });
 }

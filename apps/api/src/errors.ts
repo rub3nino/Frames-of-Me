@@ -3,6 +3,8 @@ export const MESSAGES = {
   linkInvalid: "Link non valido oppure già usato.",
   unauthorized: "Accesso richiesto.",
   forbidden: "Non hai i permessi per questa operazione.",
+  notOnList: "La tua email non è nell'elenco dei partecipanti di questo evento.",
+  sizeMismatch: "La dimensione del file caricato non corrisponde a quella dichiarata.",
   consentRequired: "È necessario il consenso prima di inviare il selfie.",
   notFound: "Risorsa non trovata.",
   conflict: "Operazione in conflitto con lo stato attuale.",

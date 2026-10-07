@@ -1,20 +1,23 @@
 import type { JobType } from "@rephoto/contracts";
-import type { ClaimedJob, Database } from "@rephoto/db";
+import type { ClaimedJob, Database, EnqueueJobOptions } from "@rephoto/db";
 
 /** Postgres `jobs` table today. An SQS runner can replace this without changing payloads. */
 export interface JobQueue {
-  enqueue(type: JobType, payload: unknown): Promise<string>;
+  /** With a `dedupeKey` that already has a queued/running job, returns that job's id. */
+  enqueue(type: JobType, payload: unknown, opts?: EnqueueJobOptions): Promise<string>;
   claim(): Promise<ClaimedJob | null>;
   complete(id: string): Promise<void>;
   fail(id: string, error: string): Promise<"queued" | "error">;
+  /** Immediate terminal failure (non-retryable errors). */
+  failTerminal(id: string, error: string): Promise<void>;
   /** Requeue without incrementing attempts. Used for Rekognition throttle. */
   requeue(id: string, error: string): Promise<void>;
 }
 
 export function createQueue(db: Database): JobQueue {
   return {
-    enqueue(type, payload) {
-      return db.enqueueJob(type, payload);
+    enqueue(type, payload, opts) {
+      return db.enqueueJob(type, payload, opts);
     },
     claim() {
       return db.claimJob();
@@ -24,6 +27,9 @@ export function createQueue(db: Database): JobQueue {
     },
     fail(id, error) {
       return db.failJob(id, error);
+    },
+    failTerminal(id, error) {
+      return db.failJobTerminal(id, error);
     },
     requeue(id, error) {
       return db.requeueJob(id, error);

@@ -38,6 +38,30 @@ export const envSchema = z
     WEB_ORIGIN: z.string().url(),
     API_ORIGIN: z.string().url(),
     SEED_DEMO: z.preprocess(blankToUndefined, z.enum(["true", "false"]).optional()),
+    WORKER_CONCURRENCY: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().int().min(1).max(32).default(4),
+    ),
+    REKOGNITION_INDEX_TPS: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().positive().default(5),
+    ),
+    REKOGNITION_SEARCH_TPS: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().positive().default(5),
+    ),
+    TRUSTED_PROXY_HOPS: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().int().min(0).default(1),
+    ),
+    DATABASE_POOL_MAX: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().int().min(1).default(10),
+    ),
+    WORKER_PUBLISH_METRICS: z.preprocess(
+      blankToUndefined,
+      z.enum(["true", "false"]).default("false"),
+    ),
   })
   .superRefine((env, ctx) => {
     if (env.S3_ENDPOINT) {
@@ -79,6 +103,7 @@ export const envSchema = z
       env.S3_FORCE_PATH_STYLE === undefined
         ? Boolean(env.S3_ENDPOINT)
         : env.S3_FORCE_PATH_STYLE === "true",
+    WORKER_PUBLISH_METRICS: env.WORKER_PUBLISH_METRICS === "true",
   }));
 
 export type Env = z.infer<typeof envSchema>;

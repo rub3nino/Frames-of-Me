@@ -5,12 +5,14 @@ import {
   IndexFacesCommand,
   RekognitionClient,
   SearchFacesByImageCommand,
+  SearchFacesCommand,
 } from "@aws-sdk/client-rekognition";
 import { rekognitionCollectionId } from "@rephoto/contracts";
 import type {
   FaceEngine,
   IndexedFace,
   IndexPhotoInput,
+  SearchFacesInput,
   SearchHit,
   SearchInput,
 } from "./types.ts";
@@ -48,6 +50,17 @@ export interface RekognitionFaceClient {
   searchFacesByImage(input: {
     CollectionId: string;
     Image: { Bytes: Uint8Array };
+    MaxFaces: number;
+    FaceMatchThreshold: number;
+  }): Promise<{
+    FaceMatches?: Array<{
+      Similarity?: number;
+      Face?: { FaceId?: string; ExternalImageId?: string };
+    }>;
+  }>;
+  searchFaces(input: {
+    CollectionId: string;
+    FaceId: string;
     MaxFaces: number;
     FaceMatchThreshold: number;
   }): Promise<{
@@ -131,8 +144,36 @@ export class RekognitionFaceEngine implements FaceEngine {
       if (isErrorNamed(error, "ResourceNotFoundException")) return [];
       throw rethrowRekognition(error, input.imageBytes);
     }
+    return this.mapHits(response.FaceMatches);
+  }
+
+  async searchFaces(input: SearchFacesInput): Promise<SearchHit[]> {
+    const collectionId = rekognitionCollectionId(input.eventId, this.collectionPrefix);
+    const client = this.resolveClient();
+    let response: Awaited<ReturnType<RekognitionFaceClient["searchFaces"]>>;
+    try {
+      response = await client.searchFaces({
+        CollectionId: collectionId,
+        FaceId: input.externalFaceId,
+        MaxFaces: this.searchMaxFaces,
+        FaceMatchThreshold: this.minSimilarity,
+      });
+    } catch (error) {
+      if (isErrorNamed(error, "ResourceNotFoundException")) return [];
+      throw rethrowRekognition(error);
+    }
+    return this.mapHits(response.FaceMatches).filter(
+      (hit) => hit.externalFaceId !== input.externalFaceId,
+    );
+  }
+
+  private mapHits(
+    matches:
+      | Array<{ Similarity?: number; Face?: { FaceId?: string; ExternalImageId?: string } }>
+      | undefined,
+  ): SearchHit[] {
     const hits: SearchHit[] = [];
-    for (const match of response.FaceMatches ?? []) {
+    for (const match of matches ?? []) {
       const photoId = match.Face?.ExternalImageId;
       const externalFaceId = match.Face?.FaceId;
       if (!photoId || !externalFaceId) continue;
@@ -303,6 +344,10 @@ function createAwsRekognitionClient(region: string): RekognitionFaceClient {
     },
     async searchFacesByImage(input) {
       const output = await sdk.send(new SearchFacesByImageCommand(input));
+      return { FaceMatches: output.FaceMatches };
+    },
+    async searchFaces(input) {
+      const output = await sdk.send(new SearchFacesCommand(input));
       return { FaceMatches: output.FaceMatches };
     },
     async deleteFaces(input) {

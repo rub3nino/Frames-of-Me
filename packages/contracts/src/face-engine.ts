@@ -6,6 +6,12 @@
  */
 export const DEFAULT_MATCH_THRESHOLD = 0.8;
 
+/** Input of `FaceEngine.searchFaces`: an already indexed face of the event. */
+export interface SearchFacesInput {
+  eventId: string;
+  externalFaceId: string;
+}
+
 const COLLECTION_ID_PATTERN = /^[a-zA-Z0-9_.\-]+$/;
 
 /** Prefix defaults to env REKOGNITION_COLLECTION_PREFIX or "rephoto-". */

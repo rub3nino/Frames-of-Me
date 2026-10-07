@@ -14,5 +14,8 @@
     "@aws-sdk/client-rekognition": "^3.901.0",
     "@rephoto/contracts": "0.0.0",
     "pg": "^8.16.3"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.23.1"
   }
 }

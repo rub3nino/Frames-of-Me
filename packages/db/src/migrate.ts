@@ -3,28 +3,32 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createSql, type Sql } from "./sql.js";
 
+/** Serializes concurrent migrators (several instances booting at once). */
+const MIGRATION_LOCK_KEY = 727312;
+
 export async function migrate(sql: Sql): Promise<void> {
-  await sql`
-    create table if not exists schema_migrations (
-      id text primary key,
-      applied_at timestamptz not null default now()
-    )
-  `;
   const dir = join(dirname(fileURLToPath(import.meta.url)), "..", "migrations");
   const files = (await readdir(dir))
     .filter((name) => name.endsWith(".sql"))
     .sort();
-  for (const file of files) {
-    const existing = await sql<{ id: string }[]>`
-      select id from schema_migrations where id = ${file}
+  await sql.begin(async (tx) => {
+    await tx`select pg_advisory_xact_lock(${MIGRATION_LOCK_KEY})`;
+    await tx`
+      create table if not exists schema_migrations (
+        id text primary key,
+        applied_at timestamptz not null default now()
+      )
     `;
-    if (existing.length > 0) continue;
-    const text = await readFile(join(dir, file), "utf8");
-    await sql.begin(async (tx) => {
+    for (const file of files) {
+      const existing = await tx<{ id: string }[]>`
+        select id from schema_migrations where id = ${file}
+      `;
+      if (existing.length > 0) continue;
+      const text = await readFile(join(dir, file), "utf8");
       await tx.unsafe(text);
       await tx`insert into schema_migrations (id) values (${file})`;
-    });
-  }
+    }
+  });
 }
 
 const entry = process.argv[1];

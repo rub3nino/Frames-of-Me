@@ -1,4 +1,6 @@
+import { Readable } from "node:stream";
 import {
+  AbortMultipartUploadCommand,
   CompleteMultipartUploadCommand,
   CreateMultipartUploadCommand,
   DeleteObjectCommand,
@@ -9,17 +11,42 @@ import {
   UploadPartCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { SIGNED_URL_TTL_SECONDS, type Env } from "@rephoto/contracts";
+import {
+  SIGNED_URL_TTL_SECONDS,
+  SIGNED_URL_WINDOW_SECONDS,
+  type Env,
+} from "@rephoto/contracts";
 import type { CompletedPart, ObjectStore } from "./object-store.js";
+
+function errorName(error: unknown): string {
+  if (typeof error !== "object" || error === null) return "";
+  return "name" in error ? String(error.name) : "";
+}
 
 function isMissing(error: unknown): boolean {
   if (typeof error !== "object" || error === null) return false;
-  const name = "name" in error ? String(error.name) : "";
+  const name = errorName(error);
   if (name === "NoSuchKey" || name === "NotFound") return true;
   if (!("$metadata" in error)) return false;
   const metadata = error.$metadata;
   if (typeof metadata !== "object" || metadata === null) return false;
   return "httpStatusCode" in metadata && metadata.httpStatusCode === 404;
+}
+
+/** `now` rounded down to the signing window, so identical URLs repeat inside it. */
+export function signingWindowStart(now: Date = new Date()): Date {
+  const windowMs = SIGNED_URL_WINDOW_SECONDS * 1000;
+  return new Date(Math.floor(now.getTime() / windowMs) * windowMs);
+}
+
+function toReadable(body: unknown): Readable | null {
+  if (!body) return null;
+  if (body instanceof Readable) return body;
+  if (typeof body === "object" && "getReader" in body) {
+    return Readable.fromWeb(body as import("node:stream/web").ReadableStream);
+  }
+  if (typeof body === "object" && "pipe" in body) return body as Readable;
+  return null;
 }
 
 export function createS3ObjectStore(env: Env): ObjectStore {
@@ -40,13 +67,14 @@ export function createS3ObjectStore(env: Env): ObjectStore {
   const expiresIn = SIGNED_URL_TTL_SECONDS;
 
   return {
-    async put(key, body, contentType) {
+    async put(key, body, contentType, options) {
       await client.send(
         new PutObjectCommand({
           Bucket: bucket,
           Key: key,
           Body: body,
           ContentType: contentType,
+          ...(options?.cacheControl ? { CacheControl: options.cacheControl } : {}),
         }),
       );
     },
@@ -60,6 +88,23 @@ export function createS3ObjectStore(env: Env): ObjectStore {
         return {
           body: bytes,
           contentType: result.ContentType ?? "application/octet-stream",
+        };
+      } catch (error) {
+        if (isMissing(error)) return null;
+        throw error;
+      }
+    },
+    async stream(key) {
+      try {
+        const result = await client.send(
+          new GetObjectCommand({ Bucket: bucket, Key: key }),
+        );
+        const body = toReadable(result.Body);
+        if (!body) return null;
+        return {
+          body,
+          contentType: result.ContentType ?? "application/octet-stream",
+          ...(typeof result.ContentLength === "number" ? { bytes: result.ContentLength } : {}),
         };
       } catch (error) {
         if (isMissing(error)) return null;
@@ -88,10 +133,15 @@ export function createS3ObjectStore(env: Env): ObjectStore {
         throw error;
       }
     },
-    presignPut(key, contentType) {
+    presignPut(key, contentType, bytes) {
       return getSignedUrl(
         client,
-        new PutObjectCommand({ Bucket: bucket, Key: key, ContentType: contentType }),
+        new PutObjectCommand({
+          Bucket: bucket,
+          Key: key,
+          ContentType: contentType,
+          ...(typeof bytes === "number" ? { ContentLength: bytes } : {}),
+        }),
         { expiresIn },
       );
     },
@@ -135,11 +185,21 @@ export function createS3ObjectStore(env: Env): ObjectStore {
         }),
       );
     },
+    async abortMultipartUpload(key, uploadId) {
+      try {
+        await client.send(
+          new AbortMultipartUploadCommand({ Bucket: bucket, Key: key, UploadId: uploadId }),
+        );
+      } catch (error) {
+        if (errorName(error) === "NoSuchUpload" || isMissing(error)) return;
+        throw error;
+      }
+    },
     presignGet(key) {
       return getSignedUrl(
         client,
         new GetObjectCommand({ Bucket: bucket, Key: key }),
-        { expiresIn },
+        { expiresIn, signingDate: signingWindowStart() },
       );
     },
   };

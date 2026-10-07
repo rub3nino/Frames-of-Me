@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { GalleryItem } from "@/lib/types";
 import { useReducedMotion } from "@/lib/motion";
 
@@ -11,13 +11,30 @@ export function Viewer({
   index,
   onIndex,
   onClose,
+  onDownload,
 }: {
   items: GalleryItem[];
   index: number;
   onIndex: (index: number) => void;
   onClose: () => void;
+  /** Resolves with a fallback URL when the browser blocked the popup, null otherwise. */
+  onDownload?: (item: GalleryItem) => Promise<string | null>;
 }) {
   const reduced = useReducedMotion();
+  const [downloading, setDownloading] = useState(false);
+  const [fallback, setFallback] = useState<{ photoId: string; url: string } | null>(null);
+
+  async function download(item: GalleryItem) {
+    if (!onDownload || downloading) return;
+    setDownloading(true);
+    setFallback(null);
+    try {
+      const url = await onDownload(item);
+      if (url) setFallback({ photoId: item.photoId, url });
+    } finally {
+      setDownloading(false);
+    }
+  }
   const dialogRef = useRef<HTMLDivElement>(null);
   const reelRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -186,6 +203,11 @@ export function Viewer({
         <button ref={closeRef} type="button" className="linkish" onClick={onClose}>
           Chiudi
         </button>
+        {current.originalReady === false ? (
+          <p className="tag-web" title="Scarica usa la versione web finché l'originale non arriva">
+            solo web
+          </p>
+        ) : null}
         <p className="meta">
           {index + 1} di {items.length}
         </p>
@@ -211,6 +233,17 @@ export function Viewer({
         <button type="button" className="linkish" onClick={() => jump(index - 1)} disabled={index === 0}>
           Precedente
         </button>
+        {onDownload ? (
+          fallback && fallback.photoId === current.photoId ? (
+            <a className="linkish" href={fallback.url} target="_blank" rel="noopener noreferrer">
+              Apri il file
+            </a>
+          ) : (
+            <button type="button" className="linkish" onClick={() => void download(current)} disabled={downloading}>
+              {downloading ? "Preparo…" : "Scarica"}
+            </button>
+          )
+        ) : null}
         <button
           type="button"
           className="linkish"

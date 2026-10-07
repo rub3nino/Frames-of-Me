@@ -29,10 +29,12 @@
     "@rephoto/contracts": "file:../../packages/contracts",
     "@rephoto/db": "file:../../packages/db",
     "@rephoto/face-engine": "file:../../packages/face-engine",
+    "archiver": "^8.0.0",
     "hono": "^4.9.8",
     "tsx": "^4.20.5"
   },
   "devDependencies": {
+    "@types/archiver": "^8.0.0",
     "@types/node": "^22.19.0",
     "typescript": "^5.9.3"
   }

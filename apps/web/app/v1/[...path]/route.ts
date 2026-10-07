@@ -3,12 +3,20 @@ import { NextRequest, NextResponse } from "next/server";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+/**
+ * Same-origin proxy to the API so the session cookie stays first-party. Request and
+ * response bodies are streamed (ZIP downloads are never buffered). All request headers
+ * are forwarded as received, `x-forwarded-for` included, so the API sees the proxy chain
+ * unchanged; `content-type` and `content-disposition` pass through on the way back.
+ */
+
 const SKIP = new Set([
   "set-cookie",
   "content-encoding",
   "content-length",
   "transfer-encoding",
   "connection",
+  "keep-alive",
 ]);
 
 function apiOrigin(): string {
@@ -27,24 +35,24 @@ async function proxy(request: NextRequest, context: Context) {
   const headers = new Headers(request.headers);
   headers.delete("host");
   headers.delete("connection");
-  headers.delete("content-length");
+  headers.delete("keep-alive");
+  headers.delete("transfer-encoding");
 
   const method = request.method.toUpperCase();
-  let body: ArrayBuffer | undefined;
-  if (method !== "GET" && method !== "HEAD") {
-    const raw = await request.arrayBuffer();
-    if (raw.byteLength > 0) body = raw;
-  }
+  const hasBody = method !== "GET" && method !== "HEAD" && request.body !== null;
+  if (!hasBody) headers.delete("content-length");
 
   let upstream: Response;
   try {
     upstream = await fetch(target, {
       method,
       headers,
-      body,
+      body: hasBody ? request.body : undefined,
       redirect: "manual",
       cache: "no-store",
-    });
+      // Required by undici when the body is a stream.
+      ...(hasBody ? { duplex: "half" } : {}),
+    } as RequestInit);
   } catch {
     return NextResponse.json(
       { error: "Il servizio non risponde. Riprova." },
@@ -52,7 +60,7 @@ async function proxy(request: NextRequest, context: Context) {
     );
   }
 
-  const response = new NextResponse(upstream.status === 204 ? null : upstream.body, {
+  const response = new NextResponse(upstream.status === 204 || method === "HEAD" ? null : upstream.body, {
     status: upstream.status,
   });
 

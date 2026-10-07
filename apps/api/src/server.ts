@@ -8,7 +8,7 @@ import { createS3ObjectStore } from "./objects.js";
 import { createQueue } from "./queue.js";
 
 const env = loadEnv();
-const sql = createSql(env.DATABASE_URL);
+const sql = createSql(env.DATABASE_URL, { max: env.DATABASE_POOL_MAX });
 await migrate(sql);
 const db = new PostgresDatabase(sql);
 await seedDemo(db);
@@ -21,7 +21,7 @@ const app = createApp({
   faces: loadFaceEngine(env),
 });
 
-const server = serve({ fetch: app.fetch, port: 8787 }, (info) => {
+const server = serve({ fetch: app.fetch, port: Number(process.env.PORT ?? 8787) }, (info) => {
   console.log(`api listening on ${info.port}`);
 });
 
