@@ -83,6 +83,11 @@ x-app-env: &app_env
   RETENTION_SCHEDULER: ${RETENTION_SCHEDULER:-true}
   RETENTION_WINDOW_HOURS: ${RETENTION_WINDOW_HOURS:-24}
   RETENTION_TICK_SECONDS: ${RETENTION_TICK_SECONDS:-300}
+  # The alarm needs a destination: a retention that stops on a Friday keeps personal data past
+  # its period, and nobody reads a red box on a screen at night. One mail per window while the
+  # problem lasts, one when it clears, through the mailer already configured above.
+  RETENTION_ALARM_MAIL: ${RETENTION_ALARM_MAIL:-true}
+  RETENTION_ALARM_EMAIL: ${RETENTION_ALARM_EMAIL:-}
 
 services:
   # ------------------------------------------------------------------ edge

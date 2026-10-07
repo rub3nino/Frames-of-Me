@@ -487,6 +487,54 @@ describe("retention scheduling", () => {
     assert.equal(failed?.lastError, "queue unavailable");
   });
 
+  it("hands one alarm mail per window to one caller, and clears it once", async (t) => {
+    if (skipReason) return t.skip(skipReason);
+    const f = required();
+    const window = new Date("2026-10-09T00:00:00.000Z");
+    assert.equal(
+      await f.db.claimRetentionWindow({ eventId: f.eventId, windowStart: window, windowSeconds: 86400 }),
+      true,
+    );
+    // Five workers see the same alarm in the same window: one mail.
+    const claims = await Promise.all(
+      Array.from({ length: 5 }, () =>
+        f.db.claimRetentionAlarmMail({ eventId: f.eventId, alarm: "failed", window }),
+      ),
+    );
+    assert.equal(claims.filter(Boolean).length, 1, "exactly one mail under concurrency");
+    // Every later tick of the same window with the same reason: nothing.
+    assert.equal(
+      await f.db.claimRetentionAlarmMail({ eventId: f.eventId, alarm: "failed", window }),
+      false,
+    );
+    // A different reason in the same window is new information.
+    assert.equal(
+      await f.db.claimRetentionAlarmMail({ eventId: f.eventId, alarm: "job_error", window }),
+      true,
+    );
+    // The next window: the same reason is worth one more.
+    const next = new Date(window.getTime() + 86400 * 1000);
+    assert.equal(
+      await f.db.claimRetentionAlarmMail({ eventId: f.eventId, alarm: "job_error", window: next }),
+      true,
+    );
+    const [row] = await f.sql<{ notified_alarm: string; notified_window: Date }[]>`
+      select notified_alarm, notified_window from retention_schedule where event_id = ${f.eventId}
+    `;
+    assert.equal(row?.notified_alarm, "job_error");
+    assert.equal(row?.notified_window.toISOString(), next.toISOString());
+
+    // Resolution: the previous alarm comes back once, then there is nothing to clear.
+    assert.equal(await f.db.clearRetentionAlarmMail(f.eventId), "job_error");
+    assert.equal(await f.db.clearRetentionAlarmMail(f.eventId), null);
+    // And after a clear the same alarm can be raised again in the same window.
+    assert.equal(
+      await f.db.claimRetentionAlarmMail({ eventId: f.eventId, alarm: "job_error", window: next }),
+      true,
+    );
+    await f.db.clearRetentionAlarmMail(f.eventId);
+  });
+
   it("drops its row with the event (no orphan schedule)", async (t) => {
     if (skipReason) return t.skip(skipReason);
     const f = required();

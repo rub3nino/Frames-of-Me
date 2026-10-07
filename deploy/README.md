@@ -468,7 +468,7 @@ Con la variante `AX` (server dedicato con NVMe locali da 2 × 1,9 TB) si evita i
 - `docker compose -f deploy/compose.yml --env-file deploy/.env.production.example config` valida.
 - `Caddyfile` validato con `caddy validate` nell'immagine `caddy:2-alpine`.
 - `apps/api`: `npx tsc --noEmit` e `node --import tsx --test apps/api/test/routes.test.ts` verdi, incluso il test che controlla che le URL firmate usino `S3_PUBLIC_ENDPOINT`.
-- v6 G (ritiro del consenso e retention automatica): `pnpm test` verde (240 test, 0 falliti) con `TEST_DATABASE_URL` su un `pgvector/pgvector:pg16` reale, quindi comprese le prove di cancellazione di `packages/db/src/privacy.pg.test.ts`; `docker compose --env-file deploy/.env.production.example -f deploy/compose.yml config` mostra le tre variabili `RETENTION_*` su api e worker; `pnpm --filter @rephoto/web build` compila la pagina `/i-miei-dati`. Non provato su un host di produzione.
+- v6 G (ritiro del consenso, retention automatica, allarme per e-mail): `pnpm test` verde (247 test, 0 falliti) con `TEST_DATABASE_URL` su un `pgvector/pgvector:pg16` reale, quindi comprese le prove di cancellazione di `packages/db/src/privacy.pg.test.ts`; `docker compose --env-file deploy/.env.production.example -f deploy/compose.yml config` mostra le cinque variabili `RETENTION_*` su api e worker; `pnpm --filter @rephoto/web build` compila la pagina `/i-miei-dati`. Non provato su un host di produzione.
 
 ## 11 bis. Retention automatica (v6 G)
 
@@ -487,6 +487,22 @@ Con la variante `AX` (server dedicato con NVMe locali da 2 × 1,9 TB) si evita i
 | `RETENTION_SCHEDULER` | `true` | Accende lo scheduler nel worker |
 | `RETENTION_WINDOW_HOURS` | `24` | Al massimo un job per evento per finestra |
 | `RETENTION_TICK_SECONDS` | `300` | Ogni quanto il worker controlla se c'è una finestra da rivendicare |
+| `RETENTION_ALARM_MAIL` | `true` | Manda l'allarme per e-mail (mailer già configurato, nessun trasporto nuovo) |
+| `RETENTION_ALARM_EMAIL` | *(vuoto)* | Destinatari, separati da virgola. Vuoto ⇒ ripiega su `BOOTSTRAP_ADMINS` |
+
+### L'allarme per e-mail
+
+Un allarme che nessuno riceve non è un allarme: una retention che si ferma il venerdì tiene dati personali oltre il periodo di conservazione, e `skipped` e `never` sono proprio gli stati che si verificano quando il worker è giù, cioè quando nessuno sta guardando nemmeno i suoi log. Quindi:
+
+- **chi lo riceve**: `RETENTION_ALARM_EMAIL` (lista separata da virgola), altrimenti `BOOTSTRAP_ADMINS`. Con entrambe vuote non parte nulla e il worker logga `alarmMail: "no-recipient"` — configurazione da correggere, non silenzio voluto;
+- **quando**: su `failed`, `job_error` e `skipped`. Un `failed` appena accaduto parte subito, gli altri al tick in cui vengono visti (entro `RETENTION_TICK_SECONDS`);
+- **quanto spesso**: **una volta per finestra**, non una per tick. Lo stato «già avvisato» sta in `retention_schedule` accanto alla finestra rivendicata (migrazione 015), quindi la soppressione è condivisa dalle repliche del worker **e sopravvive a un riavvio**. Senza questo, a 300 s di tick, sarebbero 288 messaggi identici al giorno: l'indirizzo finirebbe filtrato e l'allarme sarebbe come non averlo. Un motivo **diverso** nella stessa finestra è informazione nuova e parte;
+- **quando rientra**: un solo messaggio «retention rientrata», così un problema risolto non resta aperto nella testa di qualcuno. Arriva al primo tick **dopo** un'esecuzione riuscita: l'allarme viene giudicato sullo stato *precedente* alla rivendicazione (altrimenti un `skipped` verrebbe cancellato dalla stessa esecuzione che chiude il buco), quindi arrivare al confine di una finestra in stato cattivo costa un messaggio in più, seguito da quello di rientro;
+- **se l'invio fallisce** (SMTP giù) la rivendicazione viene rilasciata e il tick successivo riprova: un singolo singhiozzo del provider non seppellisce l'allarme per una finestra intera;
+- la **riga di log** e il **riquadro rosso** su `/admin` → Stato restano identici: sono la diagnosi, la mail è solo la convocazione. `RETENTION_ALARM_MAIL=false` lascia soltanto quei due;
+- `never` (evento che lo scheduler non ha ancora raggiunto) **non** viene spedito: è uno stato transitorio, perché lo stesso tick che lo vedrebbe rivendica la finestra. Resta visibile sullo schermo.
+
+**Quello che questa mail non può fare.** Non può arrivare da un processo che non sta girando: se il worker è spento, o il container non parte, nessuno manda niente. Quel caso si vede in due modi, entrambi indiretti: lo stato **`skipped`** al primo avvio successivo (con la sua mail, perché la finestra è passata senza esecuzioni) e il **monitoraggio di disponibilità** dell'host e dei container (§7, uptime-kuma), che è un'altra cosa e non è collegata a questo allarme. Nessun servizio nuovo è stato aggiunto per chiudere il buco, ed è una scelta: la decisione su come sorvegliare l'host è di chi gestisce l'infrastruttura finale. Allo stesso modo **non** c'è un ritentativo automatico del job di retention: i cinque tentativi sono quelli della coda, e cosa fare dopo è una decisione di chi opera, non un ciclo.
 
 ### Verificare un'esecuzione
 
@@ -533,5 +549,5 @@ docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c \
 **Avvertenze.**
 
 - la retention cancella **davvero** foto, originali e template: su un evento appena importato con `retention_days` basso la prima esecuzione può svuotare l'archivio. Controllare `events.retention_days` e `albums.retention_days` prima di accendere lo scheduler su un evento di produzione;
-- l'allarme oggi è una riga di log e un riquadro rosso sullo schermo admin: **non è una notifica** e non arriva a nessun telefono. Chi vuole una sveglia aggiunga un monitor su quella riga di log (uptime-kuma non la legge). Dichiarato come punto aperto in `docs/DPIA.md` §10;
+- l'allarme ha un destinatario (sopra) ma **è una e-mail, non una sveglia**: se la posta del provider è in ritardo o il messaggio finisce in spam, nessuno viene svegliato. E non può arrivare se il worker è spento (sopra);
 - lo scheduler **non** è stato provato su un VPS di produzione: quanto sopra è verificato in locale (test contro Postgres reale con pgvector e test del worker) e con `docker compose config`.

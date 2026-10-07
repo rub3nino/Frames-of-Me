@@ -60,6 +60,7 @@ import type {
   // v6 (agent G)
   ConsentState,
   ConsentWithdrawal,
+  RetentionAlarmMail,
   RetentionOutcome,
   RetentionStatusRow,
 } from "./types.js";
@@ -1995,6 +1996,10 @@ export class MemoryDatabase implements Database {
       lastOutcome: "enqueued",
       lastJobId: null,
       lastError: null,
+      // A claim does not clear the notified alarm: the suppression is per window, and the
+      // claim happens in the same window the alarm was reported in.
+      notifiedAlarm: existing?.notifiedAlarm ?? null,
+      notifiedWindow: existing?.notifiedWindow ?? null,
     });
     return true;
   }
@@ -2058,6 +2063,32 @@ export class MemoryDatabase implements Database {
       .filter((photo) => photo.albumId === albumId && photo.createdAt < cutoff)
       .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
     return limit === undefined ? rows : rows.slice(0, limit);
+  }
+
+  async claimRetentionAlarmMail(input: {
+    eventId: string;
+    alarm: RetentionAlarmMail;
+    window: Date;
+  }): Promise<boolean> {
+    const row = this.retentionSchedule.get(input.eventId);
+    if (!row) return false;
+    const fresh =
+      row.notifiedWindow === null ||
+      row.notifiedWindow.getTime() < input.window.getTime() ||
+      row.notifiedAlarm !== input.alarm;
+    if (!fresh) return false;
+    row.notifiedAlarm = input.alarm;
+    row.notifiedWindow = input.window;
+    return true;
+  }
+
+  async clearRetentionAlarmMail(eventId: string): Promise<RetentionAlarmMail | null> {
+    const row = this.retentionSchedule.get(eventId);
+    if (!row || row.notifiedAlarm === null) return null;
+    const previous = row.notifiedAlarm;
+    row.notifiedAlarm = null;
+    row.notifiedWindow = null;
+    return previous;
   }
 
   async countPhotosByUploader(eventId: string, userId: string): Promise<number> {
@@ -2194,4 +2225,7 @@ type RetentionScheduleStored = {
   lastOutcome: RetentionOutcome;
   lastJobId: string | null;
   lastError: string | null;
+  /** The alarm already mailed, and the window it was mailed for (migration 015). */
+  notifiedAlarm: RetentionAlarmMail | null;
+  notifiedWindow: Date | null;
 };

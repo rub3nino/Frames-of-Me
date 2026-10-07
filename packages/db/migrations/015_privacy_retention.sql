@@ -43,8 +43,24 @@ create table if not exists retention_schedule (
     check (last_outcome in ('enqueued', 'failed')),
   last_job_id uuid null,
   last_error text null,
+  -- The alarm already notified by e-mail, and the window it was notified for. They are what
+  -- keeps a persistent failure to one message per window instead of one per tick (a tick is
+  -- 300 s by default: 288 identical mails a day would get the address filtered, which is the
+  -- same as having no alarm at all). They live next to the claimed window on purpose: the
+  -- suppression has to survive a worker restart, so it cannot be process memory.
+  notified_alarm text null
+    check (notified_alarm in ('failed', 'job_error', 'skipped')),
+  notified_window timestamptz null,
   updated_at timestamptz not null default now()
 );
+
+-- The notification columns were added to this file after its first cut. The runner records
+-- applied files by name and never re-runs one, so a database that applied the earlier version
+-- is fixed the way 005 describes: delete the '015_privacy_retention.sql' row from
+-- schema_migrations and migrate again. These two statements, and every `if not exists` above,
+-- are what makes that second run a no-op for everything it already has.
+alter table retention_schedule add column if not exists notified_alarm text null;
+alter table retention_schedule add column if not exists notified_window timestamptz null;
 
 -- The status screen asks for the last `retention` job of one event. `jobs.payload` is
 -- jsonb and the type is in a separate column, so an expression index on the event id,

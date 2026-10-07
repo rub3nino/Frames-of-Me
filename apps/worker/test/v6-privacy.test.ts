@@ -5,6 +5,8 @@
  *   tick inside the same window, even when several workers tick at once;
  * - a failed enqueue is recorded and raises the alarm on the next tick, as does a window
  *   that went by with nothing claimed (`skipped`) and a job that ended in `error`;
+ * - the alarm has a destination: one mail per window while it lasts (not one per tick), one
+ *   more when it clears, suppression that survives a restart, and a switch to turn it off;
  * - the job honours `albums.retention_days` per album, shorter *and* longer than the event's;
  * - a crowd album is covered like any other (its photos and objects go) and needs no engine
  *   call, because it never held a vector;
@@ -35,6 +37,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 type Fixture = {
   db: MemoryDatabase;
+  mailer: RecordingMailer;
   eventId: string;
   photographerId: string;
   participantId: string;
@@ -64,17 +67,19 @@ async function fixture(overrides: Partial<Env> = {}): Promise<Fixture> {
   const objects = new MemoryObjectStore();
   const faces = trackingEngine(new FakeFaceEngine(new MemoryFaceIndexStore()));
   const queue = createQueue(db);
+  const mailer = new RecordingMailer();
   const deps: WorkerDeps = {
     env: { ...env, ...overrides },
     db,
     objects,
-    mailer: new RecordingMailer(),
+    mailer,
     queue,
     faces,
     log: quiet,
   };
   return {
     db,
+    mailer,
     eventId: event.id,
     photographerId: photographer.id,
     participantId: participant.id,
@@ -322,4 +327,177 @@ test("a match job stops when the consent was withdrawn while it waited in the qu
     await f.db.findGalleryByUser(f.participantId, f.eventId),
     "re-consent restores the search",
   );
+});
+
+// ---- the alarm has a destination (v6 G, second pass) ----------------------------------------
+
+/** Breaks the queue so the scheduler records `failed` and raises the alarm. */
+function brokenQueue(f: Fixture): WorkerDeps {
+  return {
+    ...f.deps,
+    queue: {
+      ...f.queue,
+      async enqueue() {
+        throw new Error("coda non disponibile");
+      },
+    },
+  };
+}
+
+test("an alarm is mailed once per window, not once per tick, and the suppression survives a restart", async () => {
+  const f = await fixture({ RETENTION_ALARM_EMAIL: "ops@example.com" });
+  const broken = brokenQueue(f);
+
+  // Window 1: the enqueue fails, the alarm goes out at once.
+  const first = await runRetentionScheduler(broken);
+  assert.equal(first.failed, 1);
+  assert.deepEqual(
+    first.mailed.map((row) => [row.alarm, row.kind]),
+    [["failed", "raised"]],
+  );
+  assert.equal(f.mailer.sent.length, 1);
+  assert.equal(f.mailer.sent[0]?.to, "ops@example.com");
+  assert.match(f.mailer.sent[0]?.subject ?? "", /retention/i);
+  assert.match(f.mailer.sent[0]?.text ?? "", /coda non disponibile/);
+  assert.match(f.mailer.sent[0]?.text ?? "", /demo/, "the event slug is in the body");
+
+  // Four more ticks in the same window (20 minutes at the default cadence): still one mail.
+  for (let tick = 0; tick < 4; tick += 1) {
+    const run = await runRetentionScheduler(broken, new Date(Date.now() + tick * 300_000));
+    assert.deepEqual(run.mailed, [], "same window, same alarm: nothing more is sent");
+  }
+  assert.equal(f.mailer.sent.length, 1);
+
+  // A fresh process: the state is in retention_schedule, not in memory, so the suppression
+  // holds across a restart. Same database, new deps object.
+  const restarted: WorkerDeps = { ...brokenQueue(f) };
+  const afterRestart = await runRetentionScheduler(restarted, new Date(Date.now() + 1_500_000));
+  assert.deepEqual(afterRestart.mailed, [], "a restart does not re-send the same alarm");
+  assert.equal(f.mailer.sent.length, 1);
+
+  // The next window: the same failure is worth one more message.
+  const nextWindow = await runRetentionScheduler(broken, new Date(Date.now() + DAY_MS));
+  assert.deepEqual(
+    nextWindow.mailed.map((row) => [row.alarm, row.kind]),
+    [["failed", "raised"]],
+  );
+  assert.equal(f.mailer.sent.length, 2);
+});
+
+test("a different alarm kind in the same window is new information and is mailed", async () => {
+  const f = await fixture({ RETENTION_ALARM_EMAIL: "ops@example.com" });
+  await runRetentionScheduler(brokenQueue(f));
+  assert.equal(f.mailer.sent.length, 1, "failed");
+
+  // The enqueue works again but the job ends in error: a different reason, same window.
+  await f.db.recordRetentionRun({ eventId: f.eventId, outcome: "enqueued", jobId: null });
+  const jobId = await f.queue.enqueue("retention", { eventId: f.eventId, actorId: null });
+  f.db.setJobStatus(jobId, "error");
+  const run = await runRetentionScheduler(f.deps);
+  assert.deepEqual(
+    run.mailed.map((row) => [row.alarm, row.kind]),
+    [["job_error", "raised"]],
+  );
+  assert.equal(f.mailer.sent.length, 2);
+  assert.match(f.mailer.sent[1]?.subject ?? "", /errore/i);
+});
+
+test("one message closes the alarm when the event is healthy again", async () => {
+  const f = await fixture({ RETENTION_ALARM_EMAIL: "ops@example.com, dpo@example.com" });
+  await runRetentionScheduler(brokenQueue(f));
+  assert.equal(f.mailer.sent.length, 2, "two recipients, one alarm each");
+
+  // The next window: the alarm is judged on the state *before* the claim (it has to be, or a
+  // `skipped` would be erased by the very run that ends the gap), so reaching a window
+  // boundary in a failed state is worth one more message — then the claim succeeds.
+  const recovered = await runRetentionScheduler(f.deps, new Date(Date.now() + DAY_MS));
+  assert.equal(recovered.enqueued, 1);
+  assert.deepEqual(
+    recovered.mailed.map((row) => [row.alarm, row.kind]),
+    [["failed", "raised"]],
+  );
+  assert.equal(f.mailer.sent.length, 4);
+
+  // The first tick after the good run closes it, once, for both recipients.
+  const closed = await runRetentionScheduler(f.deps, new Date(Date.now() + DAY_MS + 300_000));
+  assert.deepEqual(
+    closed.mailed.map((row) => [row.alarm, row.kind]),
+    [["failed", "resolved"]],
+  );
+  assert.equal(f.mailer.sent.length, 6);
+  assert.match(f.mailer.sent[4]?.subject ?? "", /rientrata/i);
+  assert.match(f.mailer.sent[4]?.text ?? "", /rientrato/i);
+
+  // And nothing more on the ticks after that.
+  const silent = await runRetentionScheduler(f.deps, new Date(Date.now() + DAY_MS + 600_000));
+  assert.deepEqual(silent.mailed, []);
+  assert.equal(f.mailer.sent.length, 6);
+});
+
+test("a skipped window is mailed too, with the last run in the body", async () => {
+  const f = await fixture({ RETENTION_ALARM_EMAIL: "ops@example.com" });
+  await runRetentionScheduler(f.deps);
+  assert.equal(f.mailer.sent.length, 0, "a healthy run sends nothing");
+  f.db.setRetentionClaimedAt(f.eventId, new Date(Date.now() - 3 * DAY_MS));
+  const run = await runRetentionScheduler(f.deps, new Date(Date.now() + DAY_MS));
+  assert.deepEqual(
+    run.mailed.map((row) => [row.alarm, row.kind]),
+    [["skipped", "raised"]],
+  );
+  assert.equal(f.mailer.sent.length, 1);
+  assert.match(f.mailer.sent[0]?.text ?? "", /Ultima esecuzione: 20/);
+  assert.match(f.mailer.sent[0]?.text ?? "", /\/admin#stato/);
+});
+
+test("the recipients fall back to BOOTSTRAP_ADMINS, and the switch turns the mail off", async () => {
+  const fallback = await fixture({ BOOTSTRAP_ADMINS: "admin@example.com,admin@example.com" });
+  await runRetentionScheduler(brokenQueue(fallback));
+  assert.deepEqual(
+    fallback.mailer.sent.map((message) => message.to),
+    ["admin@example.com"],
+    "deduplicated",
+  );
+
+  const off = await fixture({ RETENTION_ALARM_MAIL: false, RETENTION_ALARM_EMAIL: "ops@example.com" });
+  const run = await runRetentionScheduler(brokenQueue(off));
+  assert.equal(run.failed, 1, "the alarm still happens");
+  assert.deepEqual(
+    run.alarms.map((alarm) => alarm.alarm),
+    [],
+    "(it is reported on the next tick, as before)",
+  );
+  assert.deepEqual(off.mailer.sent, [], "but nothing is sent");
+
+  const nobody = await fixture({ RETENTION_ALARM_EMAIL: "", BOOTSTRAP_ADMINS: "" });
+  await runRetentionScheduler(brokenQueue(nobody));
+  assert.deepEqual(nobody.mailer.sent, [], "no address configured: nothing is sent");
+  assert.equal(
+    nobody.db.retentionScheduleOf(nobody.eventId)?.notifiedAlarm ?? null,
+    null,
+    "and nothing is marked as notified, so a later configuration still gets the alarm",
+  );
+});
+
+test("a mail that fails to send releases the claim, so the next tick tries again", async () => {
+  const f = await fixture({ RETENTION_ALARM_EMAIL: "ops@example.com" });
+  let fail = true;
+  const deps: WorkerDeps = {
+    ...brokenQueue(f),
+    mailer: {
+      async send(message) {
+        if (fail) throw new Error("smtp down");
+        await f.mailer.send(message);
+      },
+    },
+  };
+  await runRetentionScheduler(deps);
+  assert.deepEqual(f.mailer.sent, []);
+  assert.equal(f.db.retentionScheduleOf(f.eventId)?.notifiedAlarm ?? null, null);
+  fail = false;
+  const run = await runRetentionScheduler(deps, new Date(Date.now() + 300_000));
+  assert.deepEqual(
+    run.mailed.map((row) => [row.alarm, row.kind]),
+    [["failed", "raised"]],
+  );
+  assert.equal(f.mailer.sent.length, 1);
 });

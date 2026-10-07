@@ -560,6 +560,26 @@ export interface Database {
   }): Promise<void>;
   /** One row per event: the scheduler state and the last `retention` job of that event. */
   listRetentionStatus(): Promise<RetentionStatusRow[]>;
+  /**
+   * Takes the right to send the alarm mail of `alarm` for `window`. True exactly once per
+   * (event, window, alarm kind), so a failure that lasts a week is one message per window
+   * and not one per tick, and two workers never both send. A different alarm kind inside the
+   * same window is new information and gets its own message.
+   *
+   * False when the row does not exist yet: the `never` alarm has nothing to claim, and the
+   * same tick that would report it also creates the row by claiming the window.
+   */
+  claimRetentionAlarmMail(input: {
+    eventId: string;
+    alarm: RetentionAlarmMail;
+    window: Date;
+  }): Promise<boolean>;
+  /**
+   * Clears the notified alarm of an event that is healthy again and returns what it was, so
+   * the caller can send one "resolved" message. Null when there was nothing to clear, which
+   * is the normal case on every tick.
+   */
+  clearRetentionAlarmMail(eventId: string): Promise<RetentionAlarmMail | null>;
   /** Oldest first. The album-scoped form of `listPhotosCreatedBefore` (albums.retention_days). */
   listAlbumPhotosCreatedBefore(albumId: string, cutoff: Date, limit?: number): Promise<PhotoRow[]>;
   /**
@@ -869,3 +889,10 @@ export type RetentionStatusRow = {
     finishedAt: Date | null;
   } | null;
 };
+
+/**
+ * The alarm kinds that get an e-mail. `never` is deliberately absent: it is a screen state
+ * for an event the scheduler has not reached yet, and the tick that would report it claims
+ * the window anyway. It is `RetentionAlarm` of `@rephoto/contracts` minus `never`.
+ */
+export type RetentionAlarmMail = "failed" | "job_error" | "skipped";

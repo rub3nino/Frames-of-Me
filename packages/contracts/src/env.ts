@@ -208,6 +208,20 @@ export const envSchema = z
       blankToUndefined,
       z.coerce.number().int().min(10).max(3600).default(300),
     ),
+    /**
+     * Send the retention alarm by e-mail (the existing mailer, no new transport). "false"
+     * leaves only the log line and the red box on /admin → Stato, which nobody watches at
+     * three in the morning.
+     */
+    RETENTION_ALARM_MAIL: z.preprocess(
+      blankToUndefined,
+      z.enum(["true", "false"]).default("true"),
+    ),
+    /**
+     * Who receives it, comma-separated. Empty = fall back to `BOOTSTRAP_ADMINS`; with both
+     * empty nothing is sent and the worker logs `alarmMail: "no-recipient"` once per window.
+     */
+    RETENTION_ALARM_EMAIL: z.preprocess(blankToUndefined, z.string().default("")),
   })
   .superRefine((env, ctx) => {
     if (env.INSIGHTFACE_SURE_COSINE <= env.INSIGHTFACE_MIN_COSINE) {
@@ -279,6 +293,7 @@ export const envSchema = z
     OAUTH_STATE_SECRET: env.OAUTH_STATE_SECRET ?? env.SESSION_SECRET,
     // v6 (agent G)
     RETENTION_SCHEDULER: env.RETENTION_SCHEDULER === "true",
+    RETENTION_ALARM_MAIL: env.RETENTION_ALARM_MAIL === "true",
   }));
 
 export type Env = z.infer<typeof envSchema>;

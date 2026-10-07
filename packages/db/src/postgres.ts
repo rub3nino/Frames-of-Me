@@ -66,6 +66,7 @@ import type {
   // v6 (agent G)
   ConsentState,
   ConsentWithdrawal,
+  RetentionAlarmMail,
   RetentionOutcome,
   RetentionStatusRow,
 } from "./types.js";
@@ -2335,6 +2336,48 @@ export class PostgresDatabase implements Database {
       ${limit === undefined ? this.sql`` : this.sql`limit ${limit}`}
     `;
     return rows.map(mapPhoto);
+  }
+
+  async claimRetentionAlarmMail(input: {
+    eventId: string;
+    alarm: RetentionAlarmMail;
+    window: Date;
+  }): Promise<boolean> {
+    // Same shape as the window claim: the `where` is re-evaluated against the row the other
+    // writer committed, so the second caller gets nothing back and sends nothing.
+    const rows = await this.sql<{ event_id: string }[]>`
+      update retention_schedule
+      set notified_alarm = ${input.alarm},
+          notified_window = ${input.window},
+          updated_at = now()
+      where event_id = ${input.eventId}
+        and (notified_window is null
+             or notified_window < ${input.window}
+             or notified_alarm is distinct from ${input.alarm})
+      returning event_id
+    `;
+    return rows.length > 0;
+  }
+
+  async clearRetentionAlarmMail(eventId: string): Promise<RetentionAlarmMail | null> {
+    // `returning notified_alarm` would hand back the *new* value (null): RETURNING in an
+    // update sees the row after the change. The caller needs what the alarm was, to name it
+    // in the "resolved" message, so the old value is read in a CTE. `for update` makes the
+    // pair atomic: a concurrent clear blocks, then re-checks the row, finds it already
+    // cleared and updates nothing — so only one caller ever sends that one message.
+    const rows = await this.sql<{ notified_alarm: RetentionAlarmMail }[]>`
+      with previous as (
+        select event_id, notified_alarm from retention_schedule
+        where event_id = ${eventId} and notified_alarm is not null
+        for update
+      )
+      update retention_schedule s
+      set notified_alarm = null, notified_window = null, updated_at = now()
+      from previous p
+      where s.event_id = p.event_id
+      returning p.notified_alarm
+    `;
+    return rows[0]?.notified_alarm ?? null;
   }
 
   async countPhotosByUploader(eventId: string, userId: string): Promise<number> {
