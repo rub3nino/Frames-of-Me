@@ -21,7 +21,23 @@
 
 -- The opt-in. `not null default false` is the whole point: a schema default of true, or a
 -- nullable column read as "unknown means yes", would publish 6 000 people at once.
+--
+-- This column IS the consent for tagging, and it is NOT the recognition consent in
+-- `consents`. The two are different legal bases and must not be conflated: decision 2 freezes
+-- that a `crowd` album is never biometric, so a participant whose only involvement is the
+-- crowd album has no reason to ever grant recognition consent — and tagging is the only way
+-- those people can find themselves in a non-biometric album. Requiring a `consents` row here
+-- would make tagging unavailable to exactly the population it is for.
 alter table users add column if not exists taggable boolean not null default false;
+
+-- What the participant was shown when they opted in, and when. The audit_log row carries the
+-- same version, so the trail is auditable on its own; these two columns exist so the current
+-- state can be read without scanning the log — and so a later change to the Italian text can
+-- be detected (a stored version older than the current one means re-consent is due).
+-- Both are set on opt-in and nulled on opt-out: the column pair is the present state, the
+-- audit log is the history.
+alter table users add column if not exists taggable_consent_version text null;
+alter table users add column if not exists taggable_consent_at timestamptz null;
 
 -- What other participants see in the suggestion list. Chosen by the user for this purpose;
 -- never derived from the e-mail, because the local part of an address is personal data the

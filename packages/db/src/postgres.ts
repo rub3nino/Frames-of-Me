@@ -12,6 +12,7 @@ import {
   AlbumRecognitionNotAllowedError,
   DuplicateKeyError,
   // v6 (agent E): tagging
+  nextTagConsent,
   normalizeDisplayName,
   TAG_SEARCH_MIN_PREFIX,
 } from "./types.js";
@@ -2125,14 +2126,19 @@ export class PostgresDatabase implements Database {
 
   async findTagProfile(userId: string): Promise<TagProfileRow | null> {
     const rows = await this.sql<TagProfileSql[]>`
-      select id, taggable, display_name from users where id = ${userId}
+      select id, taggable, display_name, taggable_consent_version, taggable_consent_at
+      from users where id = ${userId}
     `;
     return rows[0] ? mapTagProfile(rows[0]) : null;
   }
 
   async setTagProfile(
     userId: string,
-    input: { taggable: boolean; displayName?: string | null },
+    input: {
+      taggable: boolean;
+      displayName?: string | null;
+      consentTextVersion?: string | null;
+    },
   ): Promise<TagProfileRow | null> {
     const current = await this.findTagProfile(userId);
     if (!current) return null;
@@ -2142,17 +2148,23 @@ export class PostgresDatabase implements Database {
     // with no name could never be found by the autocomplete anyway, and leaving it possible
     // invites a later "fall back to the e-mail" patch.
     if (input.taggable && !name) return null;
+    // The consent pair is the present state: stamped on an opt-in, nulled on an opt-out. The
+    // history lives in `audit_log`.
+    const consent = nextTagConsent(current, input);
+    if (input.taggable && !consent.version) return null;
     const rows = await this.sql<TagProfileSql[]>`
       update users
-      set taggable = ${input.taggable}, display_name = ${name}
+      set taggable = ${input.taggable},
+          display_name = ${name},
+          taggable_consent_version = ${consent.version},
+          taggable_consent_at = ${consent.at}
       where id = ${userId}
-      returning id, taggable, display_name
+      returning id, taggable, display_name, taggable_consent_version, taggable_consent_at
     `;
     return rows[0] ? mapTagProfile(rows[0]) : null;
   }
 
   async searchTaggableUsers(input: {
-    eventId: string;
     prefix: string;
     limit: number;
   }): Promise<TaggableUserRow[]> {
@@ -2160,16 +2172,19 @@ export class PostgresDatabase implements Database {
     // caller that forgets to get nothing rather than the whole roster.
     const prefix = input.prefix.trim().toLowerCase();
     if (prefix.length < TAG_SEARCH_MIN_PREFIX) return [];
+    // `u.taggable` is the only membership test there is, and that is the decision: tagging
+    // must not require a recognition consent (decision 2 — a crowd album is never biometric,
+    // so its participants never grant one, and tagging is the only way they can find
+    // themselves there). There is no non-biometric user<->event link in the schema today:
+    // `consents` and `galleries` are biometric, `event_participants` only exists when
+    // `events.access = 'list'`, and registration records event membership nowhere but an
+    // audit row. Add the scope here the day such a link exists; do NOT reinstate `consents`.
     const rows = await this.sql<{ id: string; display_name: string }[]>`
       select u.id, u.display_name
       from users u
       where u.taggable
         and u.display_name is not null
         and lower(u.display_name) like ${`${escapeLike(prefix)}%`}
-        and exists (
-          select 1 from consents c
-          where c.user_id = u.id and c.event_id = ${input.eventId} and c.withdrawn_at is null
-        )
       order by lower(u.display_name) asc, u.id asc
       limit ${input.limit}
     `;
@@ -2489,7 +2504,13 @@ function mapEventCode(row: EventCodeSql): EventCodeRow {
 
 // ---- tagging v6 (agent E) -----------------------------------------------------------------
 
-type TagProfileSql = { id: string; taggable: boolean; display_name: string | null };
+type TagProfileSql = {
+  id: string;
+  taggable: boolean;
+  display_name: string | null;
+  taggable_consent_version: string | null;
+  taggable_consent_at: Date | null;
+};
 
 type PhotoTagSql = {
   photo_id: string;
@@ -2500,7 +2521,13 @@ type PhotoTagSql = {
 };
 
 function mapTagProfile(row: TagProfileSql): TagProfileRow {
-  return { userId: row.id, taggable: row.taggable, displayName: row.display_name };
+  return {
+    userId: row.id,
+    taggable: row.taggable,
+    displayName: row.display_name,
+    consentTextVersion: row.taggable_consent_version,
+    consentAt: row.taggable_consent_at,
+  };
 }
 
 function mapPhotoTag(row: PhotoTagSql): PhotoTagRow {

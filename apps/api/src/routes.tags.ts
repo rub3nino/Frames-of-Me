@@ -10,7 +10,7 @@ import {
   tagSearchQuerySchema,
   type EmailPayload,
 } from "@rephoto/contracts";
-import type { EventRow, PhotoRow, UserRow } from "@rephoto/db";
+import type { EventRow, PhotoRow, TagProfileRow, UserRow } from "@rephoto/db";
 import type { AppDeps, AppEnv } from "./deps.js";
 import { ApiError, MESSAGES } from "./errors.js";
 import { readJson, requireRole, requireUser } from "./http.js";
@@ -23,7 +23,13 @@ import { readJson, requireRole, requireUser } from "./http.js";
  * default here is the conservative one:
  *
  *   * `users.taggable` is false until the participant says otherwise (migration 013). No route
- *     here flips it except the participant's own `PUT /tags/me`.
+ *     here flips it except the participant's own `PUT /tags/me`, which pins the Italian
+ *     consent text (`TAG_CONSENT_TEXT`) and records the accepted version.
+ *   * `users.taggable` IS the consent for tagging, and it is NOT the recognition consent in
+ *     `consents`. Nothing here requires a `consents` row: decision 2 freezes that a `crowd`
+ *     album is never biometric, so a participant whose only involvement is the crowd album
+ *     never grants recognition consent — and tagging is the only way those people can find
+ *     themselves in a non-biometric album. See `assertEventMember`.
  *   * removal is the existing `not_me` feedback flow: `DELETE /tags/:photoId` writes the same
  *     `gallery_feedback` row the gallery's "Non sono io" button writes, and marks the tag
  *     `removed`. Participants already understand that button; there is no second mechanism.
@@ -38,12 +44,13 @@ import { readJson, requireRole, requireUser } from "./http.js";
  * `apps/api/test/v6-tags.test.ts` has a test per rule because this is the kind of endpoint a
  * later "improvement" relaxes:
  *
- *   1. only `taggable = true` users with a display name are considered;
+ *   1. only `taggable = true` users with a display name are considered — the opt-in is the
+ *      whole control, which is why it is an explicit consent and not a side effect;
  *   2. at least `TAG_SEARCH_MIN_CHARS` (3) characters — "", "a" and "ab" are refused by the
  *      schema, before any query runs, and the database layer refuses them again;
  *   3. only a **prefix** match, so the list cannot be walked with 3-character windows;
  *   4. display names only. The response schema is `.strict()` and has no `email` field;
- *   5. rate limited, and scoped to users with an active consent for this event.
+ *   5. rate limited per session, and open only to participants of the event.
  *
  * The routes live in their own file and `routes.ts` gains exactly one line, because four other
  * agents are editing `routes.ts` in parallel.
@@ -76,13 +83,7 @@ export function registerTagRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
         createdAt: row.createdAt.toISOString(),
       });
     }
-    return c.json({
-      profile: {
-        taggable: profile?.taggable ?? false,
-        displayName: profile?.displayName ?? null,
-      },
-      items,
-    });
+    return c.json({ profile: publicTagProfile(profile), items });
   });
 
   /**
@@ -99,14 +100,19 @@ export function registerTagRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const body = tagProfileBodySchema.safeParse(await readJson(c));
     if (!body.success) throw new ApiError(400, MESSAGES.validation);
     if (body.data.taggable) {
-      // Becoming taggable is the same step as being in the event: the gates the selfie route
-      // applies apply here too.
+      // Only the event-membership gate: who belongs at this event. NOT a recognition
+      // consent — see `assertEventMember`.
       await assertEventMember(deps, user, event);
     }
-    const input: { taggable: boolean; displayName?: string | null } = {
-      taggable: body.data.taggable,
-    };
+    const input: {
+      taggable: boolean;
+      displayName?: string | null;
+      consentTextVersion?: string | null;
+    } = { taggable: body.data.taggable };
     if (body.data.displayName !== undefined) input.displayName = body.data.displayName;
+    // The schema pins `consentTextVersion` to the current text on an opt-in, so reaching
+    // here with `taggable: true` means the participant was shown these words.
+    if (body.data.taggable) input.consentTextVersion = body.data.consentTextVersion;
     const profile = await deps.db.setTagProfile(user.id, input);
     // `setTagProfile` returns null when `taggable` is true with no display name, stored or
     // supplied: a findable row with no name is the shape that invites a "fall back to the
@@ -125,13 +131,19 @@ export function registerTagRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
         });
       }
     }
+    // The consent record: which Italian text the participant accepted, and when. The columns
+    // on `users` hold the present state; this row is the history.
     await deps.db.insertAudit({
       actorId: user.id,
       action: profile.taggable ? "tag.optin" : "tag.optout",
       target: `user:${user.id}`,
-      meta: { eventId: event.id, hasDisplayName: profile.displayName !== null },
+      meta: {
+        eventId: event.id,
+        hasDisplayName: profile.displayName !== null,
+        consentTextVersion: profile.consentTextVersion,
+      },
     });
-    return c.json({ taggable: profile.taggable, displayName: profile.displayName });
+    return c.json(publicTagProfile(profile));
   });
 
   /**
@@ -156,13 +168,8 @@ export function registerTagRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     if (!searchLimiter.allow(sessionKey(user), TAG_SEARCH_RATE_LIMIT.max)) {
       throw new ApiError(429, MESSAGES.rateLimited);
     }
-    // Rules 1, 3 and 5 are in the query itself: `taggable`, a prefix match, and an active
-    // consent for this event.
-    const rows = await deps.db.searchTaggableUsers({
-      eventId: event.id,
-      prefix: term,
-      limit: TAG_SEARCH_LIMIT,
-    });
+    // Rules 1 and 3 are in the query itself: `taggable` with a display name, prefix match.
+    const rows = await deps.db.searchTaggableUsers({ prefix: term, limit: TAG_SEARCH_LIMIT });
     // Rule 4: `userId` and `displayName`, nothing else. Never spread a `UserRow` here.
     return c.json({
       items: rows.map((row) => ({
@@ -188,8 +195,10 @@ export function registerTagRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     // than a conflict. `insertPhotoTag` checks it again inside its single statement, which is
     // what actually holds under a concurrent opt-out.
     const target = await deps.db.findTagProfile(body.data.userId);
-    const consented = await deps.db.hasActiveConsent(body.data.userId, event.id);
-    if (!target || !target.taggable || !target.displayName || !consented) {
+    // `taggable` is the whole test. A recognition consent is NOT required: a crowd-album
+    // participant never grants one (decision 2) and tagging is the only way they can find
+    // themselves in a non-biometric album.
+    if (!target || !target.taggable || !target.displayName) {
       throw new ApiError(403, MESSAGES.tagNotAllowed);
     }
     const tag = await deps.db.insertPhotoTag({
@@ -338,6 +347,21 @@ function sessionKey(user: UserRow): string {
   return `user:${user.id}`;
 }
 
+/** The caller's own opt-in state, in the shape `tagProfileSchema` describes. */
+function publicTagProfile(profile: TagProfileRow | null): {
+  taggable: boolean;
+  displayName: string | null;
+  consentTextVersion: string | null;
+  consentAt: string | null;
+} {
+  return {
+    taggable: profile?.taggable ?? false,
+    displayName: profile?.displayName ?? null,
+    consentTextVersion: profile?.consentTextVersion ?? null,
+    consentAt: profile?.consentAt?.toISOString() ?? null,
+  };
+}
+
 async function loadTagEvent(deps: AppDeps, slug: string): Promise<EventRow> {
   const event = await deps.db.findEventBySlug(slug);
   if (!event) throw new ApiError(404, MESSAGES.notFound);
@@ -345,9 +369,19 @@ async function loadTagEvent(deps: AppDeps, slug: string): Promise<EventRow> {
 }
 
 /**
- * The gates the selfie route applies, applied to the tagging writes: the allowlist when
- * `events.access = 'list'`, and an active consent. Tagging makes the same link recognition
- * makes, so it is gated the same way.
+ * Who belongs at this event: the allowlist when `events.access = 'list'`, and nothing else.
+ *
+ * It deliberately does NOT require an active `consents` row, although the selfie route does.
+ * That row is consent to the BIOMETRIC comparison of a face against the event's photos, and
+ * tagging is not that: decision 2 freezes that a `crowd` album is never biometric, so a
+ * participant whose only involvement is the crowd album never grants recognition consent —
+ * and tagging is the only way those people can find themselves in a non-biometric album.
+ * Requiring it here made tagging unavailable to exactly the population it is for, and
+ * conflated two different legal bases.
+ *
+ * `users.taggable`, with its own Italian text (`TAG_CONSENT_TEXT`) recorded at the opt-in, is
+ * the consent for tagging. Do not add a `hasActiveConsent` check back into this function;
+ * `apps/api/test/v6-tags.test.ts` has a named regression test that will fail if you do.
  */
 async function assertEventMember(deps: AppDeps, user: UserRow, event: EventRow): Promise<void> {
   if (
@@ -355,9 +389,6 @@ async function assertEventMember(deps: AppDeps, user: UserRow, event: EventRow):
     !(await deps.db.isEventParticipant(event.id, user.email.toLowerCase()))
   ) {
     throw new ApiError(403, MESSAGES.notOnList);
-  }
-  if (!(await deps.db.hasActiveConsent(user.id, event.id))) {
-    throw new ApiError(403, MESSAGES.consentRequired);
   }
 }
 

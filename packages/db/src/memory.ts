@@ -11,6 +11,7 @@ import {
   AlbumRecognitionNotAllowedError,
   DuplicateKeyError,
   // v6 (agent E): tagging
+  nextTagConsent,
   normalizeDisplayName,
   TAG_SEARCH_MIN_PREFIX,
 } from "./types.js";
@@ -1909,12 +1910,18 @@ export class MemoryDatabase implements Database {
       userId,
       taggable: stored?.taggable ?? false,
       displayName: stored?.displayName ?? null,
+      consentTextVersion: stored?.consentTextVersion ?? null,
+      consentAt: stored?.consentAt ?? null,
     };
   }
 
   async setTagProfile(
     userId: string,
-    input: { taggable: boolean; displayName?: string | null },
+    input: {
+      taggable: boolean;
+      displayName?: string | null;
+      consentTextVersion?: string | null;
+    },
   ): Promise<TagProfileRow | null> {
     const current = await this.findTagProfile(userId);
     if (!current) return null;
@@ -1923,12 +1930,24 @@ export class MemoryDatabase implements Database {
         ? current.displayName
         : normalizeDisplayName(input.displayName);
     if (input.taggable && !name) return null;
-    this.tagProfiles.set(userId, { taggable: input.taggable, displayName: name });
-    return { userId, taggable: input.taggable, displayName: name };
+    const consent = nextTagConsent(current, input);
+    if (input.taggable && !consent.version) return null;
+    this.tagProfiles.set(userId, {
+      taggable: input.taggable,
+      displayName: name,
+      consentTextVersion: consent.version,
+      consentAt: consent.at,
+    });
+    return {
+      userId,
+      taggable: input.taggable,
+      displayName: name,
+      consentTextVersion: consent.version,
+      consentAt: consent.at,
+    };
   }
 
   async searchTaggableUsers(input: {
-    eventId: string;
     prefix: string;
     limit: number;
   }): Promise<TaggableUserRow[]> {
@@ -1936,13 +1955,11 @@ export class MemoryDatabase implements Database {
     // Same second line of defence as Postgres: a short prefix returns nothing here too.
     if (prefix.length < TAG_SEARCH_MIN_PREFIX) return [];
     const rows: TaggableUserRow[] = [];
+    // `taggable` is the only membership test. See the comment on the Postgres version: a
+    // recognition consent must NOT be required, and there is no non-biometric event link.
     for (const [userId, profile] of this.tagProfiles) {
       if (!profile.taggable || !profile.displayName) continue;
       if (!profile.displayName.toLowerCase().startsWith(prefix)) continue;
-      const consented = this.consents.some(
-        (row) => row.userId === userId && row.eventId === input.eventId && !row.withdrawnAt,
-      );
-      if (!consented) continue;
       rows.push({ userId, displayName: profile.displayName });
     }
     return rows
@@ -2137,7 +2154,12 @@ function eventCodeKey(eventId: string, code: string): string {
 
 // ---- tagging v6 (agent E) -----------------------------------------------------------------
 
-type TagProfileStored = { taggable: boolean; displayName: string | null };
+type TagProfileStored = {
+  taggable: boolean;
+  displayName: string | null;
+  consentTextVersion: string | null;
+  consentAt: Date | null;
+};
 
 type PhotoTagStored = {
   photoId: string;

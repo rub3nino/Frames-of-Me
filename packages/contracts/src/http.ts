@@ -987,30 +987,66 @@ export const TAG_WRITE_RATE_LIMIT = { windowSeconds: 60 * 60, max: 60 } as const
 export const DISPLAY_NAME_MIN_CHARS = 2;
 export const DISPLAY_NAME_MAX_CHARS = 60;
 
+/**
+ * The consent for tagging, and its own legal basis.
+ *
+ * It is deliberately NOT `CONSENT_TEXT` / `CONSENT_TEXT_VERSION`, which cover the biometric
+ * comparison of a face against the event's photos. Those are two different things:
+ * consenting to be named in a photo is not consenting to be recognised in one. Decision 2
+ * freezes that a `crowd` album is never biometric, so a participant whose only involvement
+ * is the crowd album never grants recognition consent — and tagging is the only way they can
+ * find themselves there. Tagging therefore must never require a `consents` row.
+ *
+ * Bump the version whenever the text changes: a stored version older than this one means the
+ * participant consented to different words and has to be asked again.
+ */
+export const TAG_CONSENT_TEXT_VERSION = "2026-10-08";
+export const TAG_CONSENT_TEXT =
+  "Acconsento che gli altri partecipanti associno il nome che ho scelto alle foto dell'evento in cui compaio. Posso rimuovere ogni tag e disattivare i tag in qualsiasi momento: disattivandoli, i tag che ho già vengono rimossi. Questo consenso è separato dal riconoscimento del volto e non lo richiede.";
+
 /** The participant's own opt-in state. Their own e-mail is theirs, so it is not here either. */
 export const tagProfileSchema = z
   .object({
     taggable: z.boolean(),
     displayName: z.string().nullable(),
+    /** The tagging consent text the participant accepted; null when they are not taggable. */
+    consentTextVersion: z.string().nullable(),
+    consentAt: z.string().datetime().nullable(),
   })
   .strict();
 
+const displayNameField = z
+  .string()
+  .trim()
+  .min(DISPLAY_NAME_MIN_CHARS)
+  .max(DISPLAY_NAME_MAX_CHARS)
+  .nullable()
+  .optional();
+
 /**
- * The opt-in. `taggable` is required and never defaulted: a body that forgets it is a
- * validation error, not an implicit "yes".
+ * The opt-in and the opt-out.
+ *
+ * `taggable` is required and never defaulted: a body that forgets it is a validation error,
+ * not an implicit "yes". Opting IN additionally requires `consentTextVersion`, pinned to the
+ * current text, so a client cannot turn the flag on without having been shown what it means.
+ * As with the selfie's liveness flag, the server cannot prove the text was read — this is a
+ * deterrent plus a record, and the record is what the audit trail needs.
  */
-export const tagProfileBodySchema = z
-  .object({
-    taggable: z.boolean(),
-    displayName: z
-      .string()
-      .trim()
-      .min(DISPLAY_NAME_MIN_CHARS)
-      .max(DISPLAY_NAME_MAX_CHARS)
-      .nullable()
-      .optional(),
-  })
-  .strict();
+export const tagProfileBodySchema = z.union([
+  z
+    .object({
+      taggable: z.literal(true),
+      displayName: displayNameField,
+      consentTextVersion: z.literal(TAG_CONSENT_TEXT_VERSION),
+    })
+    .strict(),
+  z
+    .object({
+      taggable: z.literal(false),
+      displayName: displayNameField,
+    })
+    .strict(),
+]);
 
 /**
  * `q` is `.min(TAG_SEARCH_MIN_CHARS)` after trimming, so "", "a" and "ab" are rejected by the

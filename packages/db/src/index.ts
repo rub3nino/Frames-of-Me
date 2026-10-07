@@ -73,6 +73,7 @@ export { AlbumRecognitionLockedError, AlbumRecognitionNotAllowedError } from "./
 // v6 (agent E): tagging
 export {
   DISPLAY_NAME_MAX_LENGTH,
+  nextTagConsent,
   normalizeDisplayName,
   TAG_SEARCH_MIN_PREFIX,
 } from "./types.js";

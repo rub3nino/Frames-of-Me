@@ -1132,3 +1132,14 @@ select {
 }
 
 .tag-remove:active { transform: scale(0.97); }
+
+/* The tagging consent text, shown before the control that acts on it. */
+.consent-text {
+  margin: 12px 0 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}

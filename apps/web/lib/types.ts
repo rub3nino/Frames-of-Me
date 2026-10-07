@@ -278,6 +278,12 @@ export type AdminMetricsV5 = AdminMetrics & {
 export type TagProfile = {
   taggable: boolean;
   displayName: string | null;
+  /**
+   * The tagging consent text accepted at opt-in, and when. Null while not taggable. This is
+   * NOT the recognition consent on the selfie page: tagging does not require that one.
+   */
+  consentTextVersion: string | null;
+  consentAt: string | null;
 };
 
 /**

@@ -34,6 +34,17 @@ import type {
 
 /** Mirrors `TAG_SEARCH_MIN_CHARS` in `@rephoto/contracts`: below this, nothing is requested. */
 const SEARCH_MIN_CHARS = 3;
+/**
+ * The tagging consent, mirrored from `TAG_CONSENT_TEXT` / `TAG_CONSENT_TEXT_VERSION` in
+ * `@rephoto/contracts` the way `app/selfie/page.tsx` mirrors the recognition one. It is a
+ * separate consent from the recognition text on the selfie page, and asking for it here does
+ * not require that one: a participant who only ever uses the crowd album never grants
+ * recognition consent, and tagging is the only way they can find themselves in those photos.
+ * Keep both copies in step; the API rejects any other version.
+ */
+const TAG_CONSENT_TEXT_VERSION = "2026-10-08";
+const TAG_CONSENT_TEXT =
+  "Acconsento che gli altri partecipanti associno il nome che ho scelto alle foto dell'evento in cui compaio. Posso rimuovere ogni tag e disattivare i tag in qualsiasi momento: disattivandoli, i tag che ho già vengono rimossi. Questo consenso è separato dal riconoscimento del volto e non lo richiede.";
 /** Typing pause before a suggestion request, so one name is one or two calls, not ten. */
 const SEARCH_DEBOUNCE_MS = 250;
 const NAME_MIN_CHARS = 2;
@@ -93,7 +104,13 @@ function TaggerBody({ slug, photoId }: { slug: string; photoId?: string }) {
       try {
         const next = await api<TagProfile>(`/v1/events/${slug}/tags/me`, {
           method: "PUT",
-          body: JSON.stringify({ taggable, displayName: trimmed.length > 0 ? trimmed : null }),
+          // `consentTextVersion` is sent only when opting in: it records which words the
+          // participant was shown, and the API pins it to the current text.
+          body: JSON.stringify({
+            taggable,
+            displayName: trimmed.length > 0 ? trimmed : null,
+            ...(taggable ? { consentTextVersion: TAG_CONSENT_TEXT_VERSION } : {}),
+          }),
         });
         setProfile(next);
         setName(next.displayName ?? "");
@@ -144,6 +161,9 @@ function TaggerBody({ slug, photoId }: { slug: string; photoId?: string }) {
           ricevi un avviso. Puoi rimuovere ogni tag e disattivarlo quando vuoi: disattivandolo,
           i tag che hai già addosso vengono rimossi.
         </p>
+        {/* The consent itself: shown before the control that acts on it. Separate from the
+            recognition consent on the selfie page, and it does not require it. */}
+        <p className="consent-text">{TAG_CONSENT_TEXT}</p>
         {profile === null ? (
           <p className="status">Caricamento</p>
         ) : (
@@ -188,12 +208,14 @@ function TaggerBody({ slug, photoId }: { slug: string; photoId?: string }) {
                   disabled={saving}
                   onClick={() => void save(true)}
                 >
-                  Attiva i tag
+                  Accetto e attivo i tag
                 </button>
               )}
             </div>
             <p className="meta" role="status">
-              {profile.taggable ? "Tag attivi" : "Tag disattivati"}
+              {profile.taggable
+                ? `Tag attivi${profile.consentAt ? ` · consenso del ${new Date(profile.consentAt).toLocaleDateString("it-IT")}` : ""}`
+                : "Tag disattivati"}
             </p>
           </>
         )}

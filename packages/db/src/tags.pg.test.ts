@@ -41,11 +41,11 @@ type Fixture = {
   db: PostgresDatabase;
   eventId: string;
   otherEventId: string;
-  /** Opted in, consent for `eventId`. */
+  /** Opts in during the tests; has a recognition consent for `eventId`. */
   aliceId: string;
-  /** Opted in, consent for `otherEventId` only. */
+  /** A recognition consent for `otherEventId` only; never opts in. */
   outsiderId: string;
-  /** Consent for `eventId`, never opted in. */
+  /** A recognition consent for `eventId`; never opts in. */
   bobId: string;
   photographerId: string;
   photoId: string;
@@ -312,7 +312,7 @@ describe("v6 E tagging: migration 013 on a wave-1 database", () => {
   it("keeps a removed tag removed", async (t) => {
     if (skipReason) return t.skip(skipReason);
     const f = requireFixture();
-    assert.ok(await f.db.setTagProfile(f.aliceId, { taggable: true, displayName: "Alice Rossi" }));
+    assert.ok(await f.db.setTagProfile(f.aliceId, { taggable: true, displayName: "Alice Rossi", consentTextVersion: "2026-10-08" }));
     const created = await f.db.insertPhotoTag({
       photoId: f.photoId,
       userId: f.aliceId,
@@ -354,7 +354,7 @@ describe("v6 E tagging: migration 013 on a wave-1 database", () => {
       insert into users (email, role) values ('ephemeral@example.com', 'participant') returning id
     `;
     assert.ok(tagger);
-    assert.ok(await f.db.setTagProfile(f.aliceId, { taggable: true, displayName: "Alice Rossi" }));
+    assert.ok(await f.db.setTagProfile(f.aliceId, { taggable: true, displayName: "Alice Rossi", consentTextVersion: "2026-10-08" }));
     const tag = await f.db.insertPhotoTag({
       photoId: f.secondPhotoId,
       userId: f.aliceId,
@@ -371,27 +371,26 @@ describe("v6 E tagging: migration 013 on a wave-1 database", () => {
     return undefined;
   });
 
-  it("searches a prefix of opted-in display names, scoped to the event, with no e-mail", async (t) => {
+  it("searches a prefix of opted-in display names, with no e-mail", async (t) => {
     if (skipReason) return t.skip(skipReason);
     const f = requireFixture();
-    assert.ok(await f.db.setTagProfile(f.aliceId, { taggable: true, displayName: "Alice Rossi" }));
-    // The outsider opted in, but has a consent for the OTHER event only.
-    assert.ok(
-      await f.db.setTagProfile(f.outsiderId, { taggable: true, displayName: "Alida Bianchi" }),
-    );
+    assert.ok(await f.db.setTagProfile(f.aliceId, { taggable: true, displayName: "Alice Rossi", consentTextVersion: "2026-10-08" }));
+    // `bob` is a participant of the event who never opted in: he must not appear, whatever
+    // his name, which is the one membership rule the search has.
+    assert.ok(await f.db.setTagProfile(f.bobId, { taggable: false, displayName: "Alibaba" }));
 
-    const found = await f.db.searchTaggableUsers({ eventId: f.eventId, prefix: "ali", limit: 8 });
+    const found = await f.db.searchTaggableUsers({ prefix: "ali", limit: 8 });
     assert.deepEqual(found, [{ userId: f.aliceId, displayName: "Alice Rossi" }]);
     assert.deepEqual(Object.keys(found[0] ?? {}).sort(), ["displayName", "userId"]);
 
     // Case-insensitive, prefix only, never a substring.
     assert.equal(
-      (await f.db.searchTaggableUsers({ eventId: f.eventId, prefix: "ALI", limit: 8 })).length,
+      (await f.db.searchTaggableUsers({ prefix: "ALI", limit: 8 })).length,
       1,
     );
     for (const prefix of ["ice", "oss", "ssi"]) {
       assert.deepEqual(
-        await f.db.searchTaggableUsers({ eventId: f.eventId, prefix, limit: 8 }),
+        await f.db.searchTaggableUsers({ prefix, limit: 8 }),
         [],
         `substring ${prefix} must not match`,
       );
@@ -399,7 +398,7 @@ describe("v6 E tagging: migration 013 on a wave-1 database", () => {
     // A LIKE wildcard is escaped, not interpreted.
     for (const prefix of ["%%%", "___", "%al"]) {
       assert.deepEqual(
-        await f.db.searchTaggableUsers({ eventId: f.eventId, prefix, limit: 8 }),
+        await f.db.searchTaggableUsers({ prefix, limit: 8 }),
         [],
         `wildcard ${prefix} must not match`,
       );
@@ -407,7 +406,7 @@ describe("v6 E tagging: migration 013 on a wave-1 database", () => {
     // The database layer refuses a short prefix on its own, without the API's help.
     for (const prefix of ["", "a", "al", "  a  "]) {
       assert.deepEqual(
-        await f.db.searchTaggableUsers({ eventId: f.eventId, prefix, limit: 8 }),
+        await f.db.searchTaggableUsers({ prefix, limit: 8 }),
         [],
         `prefix ${JSON.stringify(prefix)} must return nothing`,
       );
@@ -415,10 +414,10 @@ describe("v6 E tagging: migration 013 on a wave-1 database", () => {
     // An opt-out leaves the index and the result set.
     assert.ok(await f.db.setTagProfile(f.aliceId, { taggable: false }));
     assert.deepEqual(
-      await f.db.searchTaggableUsers({ eventId: f.eventId, prefix: "ali", limit: 8 }),
+      await f.db.searchTaggableUsers({ prefix: "ali", limit: 8 }),
       [],
     );
-    assert.ok(await f.db.setTagProfile(f.aliceId, { taggable: true, displayName: "Alice Rossi" }));
+    assert.ok(await f.db.setTagProfile(f.aliceId, { taggable: true, displayName: "Alice Rossi", consentTextVersion: "2026-10-08" }));
     return undefined;
   });
 
@@ -460,6 +459,82 @@ describe("v6 E tagging: migration 013 on a wave-1 database", () => {
       plan.includes("users_taggable_display_name_idx"),
       `the autocomplete must not sequential-scan 6 000 users:\n${plan}`,
     );
+    return undefined;
+  });
+
+  /**
+   * THE OTHER HALF of the frozen-decision guard (the first is in
+   * `apps/api/test/v6-tags.test.ts`). Withdrawing the recognition consent is a real state
+   * change here — `consents.withdrawn_at` is exactly what `hasActiveConsent` reads — so this
+   * is the only place the independence can be asserted against the mechanism itself rather
+   * than against its absence.
+   *
+   * Agent G is building consent withdrawal on `v6/privacy`. What G needs to know: withdrawing
+   * the recognition consent must NOT touch `users.taggable`, `users.taggable_consent_*` or
+   * `photo_tags`. They are a separate legal basis with their own Italian text, and the
+   * participant's own opt-out (`PUT /tags/me` with `taggable: false`) is the withdrawal for
+   * tagging — it already cascades to every active tag, audited.
+   */
+  it("withdrawing the recognition consent leaves taggability and tags alone", async (t) => {
+    if (skipReason) return t.skip(skipReason);
+    const f = requireFixture();
+    assert.ok(
+      await f.db.setTagProfile(f.aliceId, {
+        taggable: true,
+        displayName: "Alice Rossi",
+        consentTextVersion: "2026-10-08",
+      }),
+    );
+    // A fresh photo, so this test does not depend on the state the earlier ones left.
+    const [album] = await f.sql<{ id: string }[]>`
+      select id from albums where event_id = ${f.eventId} order by created_at, id limit 1
+    `;
+    assert.ok(album);
+    const [photo] = await f.sql<{ id: string }[]>`
+      insert into photos (event_id, album_id, photographer_id, sha256, status, original_key, content_type, bytes)
+      values (
+        ${f.eventId}, ${album.id}, ${f.photographerId}, ${"9".repeat(64)}, 'indexed',
+        ${`originals/${f.eventId}/withdraw`}, 'image/jpeg', 1000
+      )
+      returning id
+    `;
+    assert.ok(photo);
+    const tag = await f.db.insertPhotoTag({
+      photoId: photo.id,
+      userId: f.aliceId,
+      taggedBy: f.photographerId,
+    });
+    assert.equal(tag?.state, "active");
+    assert.equal(await f.db.hasActiveConsent(f.aliceId, f.eventId), true);
+
+    // The withdrawal, on the real column the recognition gate reads.
+    await f.sql`
+      update consents set withdrawn_at = now()
+      where user_id = ${f.aliceId} and event_id = ${f.eventId}
+    `;
+    assert.equal(
+      await f.db.hasActiveConsent(f.aliceId, f.eventId),
+      false,
+      "the withdrawal really took effect",
+    );
+
+    // Taggability, its consent record and the tag are all untouched.
+    const profile = await f.db.findTagProfile(f.aliceId);
+    assert.equal(profile?.taggable, true);
+    assert.equal(profile?.consentTextVersion, "2026-10-08");
+    assert.ok(profile?.consentAt instanceof Date);
+    assert.equal((await f.db.findPhotoTag(photo.id, f.aliceId))?.state, "active");
+    // And she is still findable: the autocomplete has no recognition-consent clause.
+    assert.deepEqual(await f.db.searchTaggableUsers({ prefix: "ali", limit: 8 }), [
+      { userId: f.aliceId, displayName: "Alice Rossi" },
+    ]);
+
+    // Restore the fixture state for the tests that follow.
+    await f.sql`
+      update consents set withdrawn_at = null
+      where user_id = ${f.aliceId} and event_id = ${f.eventId}
+    `;
+    await f.db.removePhotoTag(photo.id, f.aliceId);
     return undefined;
   });
 

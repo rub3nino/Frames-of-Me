@@ -523,21 +523,30 @@ export interface Database {
    * The opt-in. `taggable = true` without a display name is refused here, not only in the
    * API: a taggable row with no name could never be found by the autocomplete anyway, and
    * leaving it possible invites a later "fall back to the e-mail" patch.
+   *
+   * `consentTextVersion` is the tagging consent text the participant accepted; it is stamped
+   * with the time on an opt-in and nulled on an opt-out.
    */
   setTagProfile(
     userId: string,
-    input: { taggable: boolean; displayName?: string | null },
+    input: {
+      taggable: boolean;
+      displayName?: string | null;
+      consentTextVersion?: string | null;
+    },
   ): Promise<TagProfileRow | null>;
   /**
    * The username autocomplete. Deliberately narrow, and it must stay that way:
    * only `taggable = true` users with a display name, only a **prefix** match on
-   * `lower(display_name)`, only users with an active consent for `eventId`, and the rows
-   * carry no e-mail address at all. `prefix` is never allowed to be shorter than
-   * `TAG_SEARCH_MIN_CHARS`; the API refuses first, and this method returns `[]` as a
-   * second line of defence rather than trusting the caller.
+   * `lower(display_name)`, and the rows carry no e-mail address at all. `prefix` is never
+   * allowed to be shorter than `TAG_SEARCH_MIN_CHARS`; the API refuses first, and this
+   * method returns `[]` as a second line of defence rather than trusting the caller.
+   *
+   * It does NOT require a recognition consent for the event. `users.taggable` is the consent
+   * for tagging; a crowd-album participant never grants recognition consent (decision 2) and
+   * tagging is the only way they can find themselves in a non-biometric album.
    */
   searchTaggableUsers(input: {
-    eventId: string;
     prefix: string;
     limit: number;
   }): Promise<TaggableUserRow[]>;
@@ -811,6 +820,14 @@ export type TagProfileRow = {
   userId: string;
   taggable: boolean;
   displayName: string | null;
+  /**
+   * The tagging consent text accepted at opt-in (`users.taggable_consent_version`), and when.
+   * Null while the user is not taggable. This is the tagging consent, NOT the recognition
+   * consent in `consents` — tagging never requires a `consents` row (decision 2: a crowd
+   * album is never biometric, so its participants never grant recognition consent).
+   */
+  consentTextVersion: string | null;
+  consentAt: Date | null;
 };
 
 /**
@@ -869,4 +886,22 @@ export function normalizeDisplayName(value: string | null): string | null {
   if (value === null) return null;
   const trimmed = value.trim().replace(/\s+/g, " ");
   return trimmed.length === 0 ? null : trimmed;
+}
+
+/**
+ * `users.taggable_consent_version` / `taggable_consent_at` after an opt-in or an opt-out, in
+ * BOTH implementations. An opt-out clears the pair; an opt-in keeps the existing timestamp
+ * while the accepted version is unchanged, and re-stamps it when the version moves (a new
+ * Italian text is a new consent, with its own date).
+ */
+export function nextTagConsent(
+  current: { consentTextVersion: string | null; consentAt: Date | null },
+  input: { taggable: boolean; consentTextVersion?: string | null },
+  now: Date = new Date(),
+): { version: string | null; at: Date | null } {
+  if (!input.taggable) return { version: null, at: null };
+  const version = input.consentTextVersion ?? current.consentTextVersion;
+  if (!version) return { version: null, at: null };
+  const unchanged = version === current.consentTextVersion && current.consentAt !== null;
+  return { version, at: unchanged ? current.consentAt : now };
 }
