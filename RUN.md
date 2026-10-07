@@ -25,7 +25,7 @@ npm run dev:web
 
 Seeded data: event slug `demo` (`access = open`), admin `admin@rephoto.local`, photographer `photographer@rephoto.local` with the invite already accepted and the `event_photographers` row in place. `FACE_ENGINE=fake` is the default in `.env.example`. No real secrets are in the repo.
 
-Flow to try: open http://localhost:3000, ask a link as `photographer@rephoto.local` (role is chosen by the page: `/` is the participant form; photographers and admins use the same magic link with their role, see `CONTRACTS.md`), read it in Mailpit, click **Entra** on `/verify`, upload on `/upload`; then as any participant e-mail ask a link, give consent and send a selfie on `/selfie`, open `/e/demo`. With the fake engine two images with the same average colour are the same person; with the InsightFace engine (below) it is real face matching.
+Flow to try: open http://localhost:3000/staff, ask a link as `photographer@rephoto.local` with role «Fotografo» (`/` is the participant form; photographers and admins use `/staff` since v5, same magic link with their role, see `CONTRACTS.md`), read it in Mailpit, click **Entra** on `/verify`, upload on `/upload`; then as any participant e-mail ask a link on `/`, give consent and send a selfie on `/selfie`, open `/e/demo`. With the fake engine two images with the same average colour are the same person; with the InsightFace engine (below) it is real face matching. The admin console (`admin@rephoto.local` on `/staff` with role «Amministratore», then `/admin`) is described further down.
 
 ## Face engine: `fake` or `insightface`
 
@@ -33,13 +33,38 @@ Flow to try: open http://localhost:3000, ask a link as `photographer@rephoto.loc
 
 1. `docker compose up -d` (face-service healthy: `curl -s localhost:8090/health`). The compose Postgres is the pgvector image, so migration `005_face_vectors.sql` creates `face_vectors`; on a volume created with the old `postgres:16` image the migration only prints a `NOTICE` and the engine creates the extension and the table itself on first use (the volume keeps working because the major version is the same).
 2. In `.env`: `FACE_ENGINE=insightface` (`FACE_SERVICE_URL=http://localhost:8090` is already there). Restart `dev:api` and `dev:worker`.
-3. Upload a few photos with faces, send a selfie: the worker log shows `index` then `attach`, and `select count(*) from face_vectors` grows by the number of faces kept (`quality >= INSIGHTFACE_MIN_FACE_QUALITY`, default 0.3).
+3. Upload a few photos with faces, send a selfie: the worker log shows `index` then `attach`, and `select count(*) from face_vectors` grows by the number of faces kept (`quality >= INSIGHTFACE_MIN_FACE_QUALITY`, default 0.2 since v5).
 
-Thresholds (`INSIGHTFACE_MIN_COSINE=0.45`, `INSIGHTFACE_SURE_COSINE=0.65`) map cosine to the 0–100 scale the gallery expects: a match at cosine 0.45 is score 0.8 («Forse sei tu»), at 0.55 score 0.9 («Le tue foto»), at 0.65 and above score 1.0. Timings on a laptop: ~150–180 ms per 1600 px photo (Apple silicon, 4 threads), ~325 ms in the arm64 container; the service runs at most two inferences at once.
+Since v5 the compose face-service detects on a **2560 px** long edge with a **1024 px** detector input (`FACE_DET_LONG_EDGE` / `FACE_DET_SIZE` in `docker-compose.yml`; 1600 / 640 were the v4 values and still work, with fewer small faces found), and the worker sends it a detection JPEG rendered from the **original** at 2560 px (`FACE_INDEX_SOURCE=original`, the default with `insightface`) instead of the 1600 px web derivative. Count on ~1.6–1.9× the v4 time per photo: 145–176 ms p50 / ~178 ms p95 on a 20 MP photo (Apple silicon, 4 threads, one worker), ~325 ms was the v4 arm64 container figure at 1600 / 640. The service runs `MODEL_CONCURRENCY` (2) inferences at once per process and `curl localhost:8090/metrics` prints its counters and p50 / p95.
 
-**`LIVENESS_CHECK=true`** (default `false`) makes the worker's `match` job call `POST /v1/liveness` on the selfie before searching; a selfie judged not live gets an empty gallery (the page shows «Nessuna corrispondenza»), the selfie is deleted and the worker log line carries `liveness: "rejected"`. The check only exists with `FACE_ENGINE=insightface`; the compose image includes the anti-spoofing weights (`method: "silent-face"`), a build with `--build-arg WITH_LIVENESS=0` answers `method: "none"` and never rejects.
+Thresholds (`INSIGHTFACE_MIN_COSINE=0.50`, `INSIGHTFACE_SURE_COSINE=0.70`, v5 defaults; 0.45 / 0.65 until v4) map cosine to the 0–100 scale the gallery expects: a match at cosine 0.50 is score 0.8 («Forse sei tu»), at 0.60 score 0.9 («Le tue foto»), at 0.70 and above score 1.0. Two more v5 behaviours to expect while trying it: the `match` job **gates the selfie** before searching (no face, face under `SELFIE_MIN_FACE_PX` = 120 px, quality under `SELFIE_MIN_QUALITY` = 0.6, two people) and the gallery page then shows the reason («Nel selfie non si vede un volto», «Avvicinati alla camera», …) instead of a bare «Nessuna corrispondenza»; and the selfie's **vector is stored on the gallery** (`galleries.query_embedding`), so a selfie sent before any photo answers «Non ci sono ancora foto: ti avviseremo» and the photos uploaded afterwards attach by themselves (`select user_id, query_embedding is not null, last_match_reason from galleries`). On the first real run (39 photos of 3 people, 52 faces indexed) one person's selfie matched 13 / 13 of their photos at cosine ≈ 0.92 with no false positive.
+
+**`LIVENESS_CHECK=true`** (default `false`) makes the worker's `match` job call `POST /v1/liveness` on the selfie before searching; a selfie judged not live gets an empty gallery with reason `liveness` («Il selfie non è stato accettato»), the selfie is deleted and the worker log line carries `liveness: "rejected"`. The check only exists with `FACE_ENGINE=insightface`; the compose image includes the anti-spoofing weights (`method: "silent-face"`), a build with `--build-arg WITH_LIVENESS=0` answers `method: "none"` and never rejects.
+
+**Test-campaign switches** (all `false` by default, `.env.example` lists them): `MATCH_LOG=true` writes every `match` run and all its hits, down to cosine 0.25, into `match_runs` / `match_hits` (then `/admin#esporta` → «match-hits.csv», or `select cosine, kept from match_hits order by cosine desc`); `KEEP_SELFIES=true` keeps the selfie object and records its key in `galleries.selfie_key`, which enables «Rifai il confronto» on an admin gallery; `LOG_IDS=true` adds `photoId` / `userId` / `eventId` to the worker log lines. Restart `dev:worker` after changing them. With the face-service stopped (`docker compose stop face-service`) the worker now **requeues** `index` / `attach` / `match` without burning attempts and, after five in a row, prints one `{ breaker: "open", pauseMs: 30000 }` line and stops claiming those types for 30 s; `docker compose start face-service` and the queue resumes with nothing in `error`.
 
 Running the Python service outside Docker (venv, `MODEL_ROOT`, `uvicorn`) is described in `apps/face-service/README.md`.
+
+## Admin console, staff login and test tooling (v5)
+
+Admins and photographers ask their magic link on **http://localhost:3000/staff** (e-mail + role; the home page form is for participants only; the page is not linked from anywhere, type the URL). A fresh database can also get an admin from `BOOTSTRAP_ADMINS=you@example.com` in `.env` (upserted when `dev:api` boots). Then http://localhost:3000/admin, sections by hash:
+
+| Section | What it does | API |
+| --- | --- | --- |
+| **Stato** (`#stato`) | photos by status, queue by job type with the oldest age, last 20 job errors, face-service probe; refreshes every 10 s | `GET /v1/admin/metrics` |
+| **Eventi** | list with counts, create an event (slug, name, retention, access); the selected event drives every other section (default: the runtime slug from `/api/config`) | `GET` / `POST /v1/admin/events` |
+| **Link di accesso** | mint a magic link for any e-mail and role, shown as a QR and as text, never mailed; a photographer is created and attached to the selected event | `POST /v1/admin/magic-links` |
+| **Gallerie** | a participant's gallery by e-mail (score and source on every cell, reason, anchors; «Elimina la galleria», «Rifai il confronto» with `KEEP_SELFIES`), the paged list of galleries | `GET /v1/admin/galleries`, `DELETE` / `rematch` |
+| **Foto** | search by filename prefix, sha256, status, tag → `/admin/foto/<id>`: the web rendition with the stored face boxes, each face's «Vicini» (nearest faces of the event with the raw cosine), the galleries the photo is in | `GET /v1/admin/photos`, `/photos/:id`, `/faces/:externalId/neighbours` |
+| **Esporta** | the three CSV downloads (galleries, match hits, feedback) and the match-run log with `kept` / `maxCosine` per run | `GET /v1/admin/export/*.csv`, `/match-runs` |
+| **Gestione** | the v4 panels bound to the selected event: access `open` / `list`, invite a photographer, import participants, delete a photo or a participant | unchanged routes |
+| **Reset** | «Azzera adesso» after typing the slug: a `reset` job deletes photos, faces, vectors, galleries and match log of the event; users stay | `POST /v1/admin/events/:id/reset` |
+
+Participants get, in the gallery, a reason banner when the selfie produced nothing, «Non sono io» in the viewer and on the selection bar (hidden photos move to a collapsed «Nascoste» group, «Sono io» brings them back), and `?debug=1` (remembered in `localStorage rephoto.debug`; `?debug=0` clears it) to see `score · source` on every cell.
+
+**Seed and ingest** (both read `.env`): `npm run seed:test -- --event demo --photographers 2 --participants 20 --out ./seed` creates the event when missing, an admin (`admin@test.rephoto.local` by default), photographers in `event_photographers`, participants with a consent row, and writes pre-minted session cookies (`seed/cookies-*.txt` for k6, `users-demo.csv` mode 0600, `subjects.csv` for `scripts/eval`); `--purge-users` removes them. `npm run ingest -- --dir photo/ --event demo --photographer photographer@rephoto.local --manifest manifest.csv` writes the photos straight into MinIO and `photos` (same rows and `derive` job as `uploads/complete`, `--parallel 8`, `--rate`, `--synth N` copies with real faces and a `synth` tag, `--state` to resume, `--web-first`, `--convert` for HEIC / PNG / TIFF, `--dry-run`): details in `scripts/ingest/README.md`. The evaluation scripts (`scripts/eval/README.md`: `offline-search.py`, `evaluate.py`, `synth.py`, the null-selfie protocol) need a Python venv with `requirements-eval.txt`. Photos ingested with `--tags` are searchable by tag in **Foto**.
+
+To put photos back after a long face-service outage: `curl -X POST localhost:8787/v1/admin/photos/requeue -H 'content-type: application/json' -b "rephoto_session=<admin cookie>" -d '{"eventId":"<uuid>"}'` (photos in `error` go back to `uploaded` / `processing` and get a `derive` or `index` job).
 
 ## Selfie with the camera
 
@@ -77,18 +102,27 @@ All variables are listed in `.env.example` and described in `CONTRACTS.md` (sect
 | --- | --- | --- |
 | `FACE_ENGINE` | `fake` | `fake` \| `insightface` \| `rekognition`. See above |
 | `FACE_SERVICE_URL` | `http://localhost:8090` | The compose face-service; `http://face-service:8090` inside the `app` profile |
-| `INSIGHTFACE_MIN_COSINE`, `INSIGHTFACE_SURE_COSINE` | `0.45`, `0.65` | Cosine ↔ score 0.8 / 1.0. `SURE` must be greater than `MIN` |
-| `INSIGHTFACE_MAX_FACES`, `INSIGHTFACE_MIN_FACE_QUALITY` | `500`, `0.3` | Search limit; minimum face quality to index |
+| `INSIGHTFACE_MIN_COSINE`, `INSIGHTFACE_SURE_COSINE` | `0.50`, `0.70` | Cosine ↔ score 0.8 / 1.0. `SURE` must be greater than `MIN` (0.45 / 0.65 until v4) |
+| `INSIGHTFACE_ATTACH_MIN_COSINE`, `INSIGHTFACE_ANCHOR_MIN_COSINE` | `0.55`, = `SURE` | v5. `attach` anchor threshold; minimum cosine for a match to become an anchor |
+| `INSIGHTFACE_MAX_FACES`, `INSIGHTFACE_INDEX_MAX_FACES`, `INSIGHTFACE_MIN_FACE_QUALITY` | `200`, `100`, `0.2` | Search limit; faces asked per indexed photo (max 150); minimum face quality to index |
+| `SELFIE_MIN_FACE_PX`, `SELFIE_MIN_QUALITY` | `120`, `0.6` | v5. Selfie gate in `match` (reasons `face_too_small` / `low_quality`) |
+| `FACE_INDEX_SOURCE`, `FACE_DETECT_LONG_EDGE` | `original` (insightface) \| `web`, `2560` | v5. What `index` sends: a 2560 px JPEG from the original, or the 1600 px web derivative |
+| `MATCH_LOG`, `KEEP_SELFIES`, `LOG_IDS` | `false` | v5 test switches: match log with raw cosines; keep selfie objects (+ `galleries.selfie_key`); ids in worker log lines |
 | `FACE_INDEX_TPS`, `FACE_SEARCH_TPS` | `20` | Token buckets per process for the InsightFace engine (also honoured by Rekognition when the `REKOGNITION_*_TPS` names are blank) |
 | `LIVENESS_CHECK` | `false` | Server-side anti-spoofing in the `match` job (InsightFace only) |
-| `WORKER_CONCURRENCY` | `4` | Jobs in flight per worker process (1–32). The face-service runs two inferences at once; more jobs only queue inside it |
+| `MAGIC_LINK_PER_EMAIL`, `MAGIC_LINK_PER_IP`, `SELFIE_MAX_PER_HOUR` | `3`, `20`, `5` | v5. Rate limits per hour; `0` = off |
+| `RATE_LIMIT_EXEMPT_IPS` | empty | v5. Comma-separated IPs / CIDRs that skip the limits |
+| `BOOTSTRAP_ADMINS` | empty | v5. Comma-separated e-mails upserted as admin when the API boots |
+| `FACE_DET_LONG_EDGE`, `FACE_DET_SIZE`, `FACE_SERVICE_WORKERS`, `FACE_MODEL_CONCURRENCY` | `2560`, `1024`, `1`, `2` | v5, compose only: face-service detection resolution, uvicorn processes (≈ 1–1.5 GB RSS each), inferences per process |
+| `WORKER_CONCURRENCY` | `4` | Jobs in flight per worker process (1–32). The face-service runs two inferences at once per process; more jobs only queue inside it |
 | `REKOGNITION_INDEX_TPS`, `REKOGNITION_SEARCH_TPS` | `5` | Token buckets for Rekognition. Ignored with `fake` and `insightface` |
 | `DATABASE_POOL_MAX` | `10` | Pool size of the API process (the InsightFace engine opens its own pool of 4) |
 | `TRUSTED_PROXY_HOPS` | `1` | How many proxies append to `x-forwarded-for` before the API (the Next.js proxy counts as one) |
 | `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_SECURE`, `SMTP_STARTTLS` | unset / unset / port-based / `auto` | Leave unset for Mailpit (no AUTH, no TLS). A provider on 587 wants both credentials and `SMTP_STARTTLS=true`; on 465 `SMTP_SECURE` defaults to `true` |
 | `S3_PUBLIC_ENDPOINT` | unset | Only for MinIO behind a proxy (`deploy/`): host used in presigned URLs. Locally the browser reaches MinIO on `localhost:9000` directly |
 | `WORKER_PUBLISH_METRICS` | `false` | CloudWatch export; keep `false` |
-| `NEXT_PUBLIC_EVENT_SLUG` | `demo` | Event the `/selfie` and `/gallery` pages use |
+| `NEXT_PUBLIC_EVENT_SLUG` | `demo` | Build-time event slug, used until `/api/config` answers |
+| `EVENT_SLUG` | unset | v5. Runtime slug served by the web route `GET /api/config` (`{ eventSlug }`); falls back to `NEXT_PUBLIC_EVENT_SLUG`. Lets you point the pages at a new event without rebuilding the web |
 | `NEXT_PUBLIC_MEDIA_ORIGINS` | `http://localhost:9000` | Origins allowed by the CSP for presigned URLs |
 | `API_PROXY_TARGET` | `http://localhost:8787` | Where the web `/v1/*` proxy forwards |
 
@@ -116,7 +150,7 @@ With that line the browser reaches the same MinIO on port 9000 and the signature
 npm test
 ```
 
-`node --test` over twelve files, no Docker needed: `packages/contracts/src/collection-id.test.ts`, `packages/contracts/src/jobs.test.ts`, `packages/face-engine/src/face-engine.test.ts`, `packages/face-engine/src/insightface.test.ts` (cosine mapping, quality filter, chunked deletes, error names, with a stubbed service and a stubbed `sql`), `packages/db/src/memory.test.ts`, `apps/worker/test/mvp.test.ts`, `apps/worker/test/v2.test.ts`, `apps/worker/test/v3.test.ts` (two-stage derive and `verify`), `apps/worker/test/v4.test.ts` (liveness gate in `match`), `apps/web/lib/resize.worker.test.ts` (1600 px render geometry), `apps/api/test/routes.test.ts` (including presigned host = `S3_PUBLIC_ENDPOINT` and the selfie `liveness` audit row), `apps/api/test/mailer.test.ts` (nodemailer options from the SMTP env). They use `MemoryDatabase`, the fake engine with an in-memory store, and in-memory object store / mailer / queue.
+`node --test` over thirteen files, no Docker needed: `packages/contracts/src/collection-id.test.ts`, `packages/contracts/src/jobs.test.ts` (priorities, `reset` dedupe), `packages/face-engine/src/face-engine.test.ts`, `packages/face-engine/src/insightface.test.ts` (cosine mapping, quality filter, chunked deletes, error names, `searchByVector`, delete-before-insert, the embed timeout, with a stubbed service and a stubbed `sql`), `packages/db/src/memory.test.ts`, `apps/worker/test/mvp.test.ts`, `apps/worker/test/v2.test.ts`, `apps/worker/test/v3.test.ts` (two-stage derive and `verify`), `apps/worker/test/v4.test.ts` (liveness gate in `match`), `apps/worker/test/v5.test.ts` (selfie gate reasons, anchors at `ANCHOR_MIN`, selfie-vector attach, anchor quorum, `MATCH_LOG`, `KEEP_SELFIES`, re-index anchors, `FACE_INDEX_SOURCE`, requeue + breaker, heartbeat and `finished_at`, `index` before `derive`, `LOG_IDS`, `reset`), `apps/web/lib/resize.worker.test.ts` (1600 px render geometry), `apps/api/test/routes.test.ts` (including presigned host = `S3_PUBLIC_ENDPOINT`, the selfie `liveness` audit row, and the v5 admin routes, feedback, CSV exports, env rate limits with exempt IPs), `apps/api/test/mailer.test.ts` (nodemailer options from the SMTP env). They use `MemoryDatabase`, the fake engine with an in-memory store (which also implements `embedSelfie` / `searchByVector` / `faceEmbedding` on a synthetic vector), and in-memory object store / mailer / queue. `scripts/eval/evaluate.py` has a fixture run described in `scripts/eval/README.md`.
 
 **Integration test of the InsightFace engine** (real Postgres + real service), skipped by `npm test` unless both are reachable:
 
@@ -136,11 +170,11 @@ python scripts/download_models.py --root ~/.rephoto-models    # once, ~280 MB
 MODEL_ROOT=~/.rephoto-models pytest
 ```
 
-The stubbed tests (`test_engine.py`, `test_images.py`, `test_liveness.py`, `test_api_stub.py`: bbox normalisation, quality, size caps, error codes) always run; `test_api_real.py` loads the real model and is skipped with a reason when the pack is not available.
+The stubbed tests (`test_engine.py`, `test_images.py`, `test_liveness.py`, `test_api_stub.py`: bbox normalisation, quality, `yaw` sign, `norm`, size and `max_faces` caps, semaphores, `/metrics`, error codes) always run; `test_api_real.py` loads the real model (small faces at 1600 / 640 vs 2560 / 1024, mirrored `yaw`, latencies, also on the 20 MP photos in `photo/` when present) and is skipped with a reason when the pack is not available.
 
 ## Load test
 
-k6 scripts for the two hot paths (photographer upload, participant selfie with polling until `ready`) are in `scripts/loadtest/` with their own README: how to obtain session cookies, how to run against local or against a deployed stack, thresholds.
+k6 scripts for the two hot paths (photographer upload, participant selfie with polling until `ready`) are in `scripts/loadtest/` with their own README: how to obtain session cookies (`npm run seed:test` writes them ready to use), how to run against local or against a deployed stack, thresholds. The test-campaign stack on a VPS (`deploy/compose.test.yml`, `status.sh`, `reset-event.sh`, the protocol) is in `deploy/README.md` §9 bis.
 
 ## Useful endpoints while developing
 
@@ -148,9 +182,10 @@ k6 scripts for the two hot paths (photographer upload, participant selfie with p
 - `GET http://localhost:8090/health`: face-service model loaded; `curl -F image=@foto.jpg "localhost:8090/v1/embed?max_faces=10"` to see faces, scores and 512-d embeddings; `curl -F image=@selfie.jpg localhost:8090/v1/liveness`.
 - `GET /v1/uploads/summary?eventId=…` as a photographer: counts of sessions and photos by status plus `originalsPending`, the same the `/upload` page polls every 10 s.
 - `GET /v1/uploads/lookup?eventId=…&sha256=…` as a photographer: `photoId`, `originalStatus` and `status` of an own photo, `404` otherwise.
-- `GET /v1/admin/metrics` as admin: queue depth (`jobsQueued`, `jobsRunning`, `jobsError`), `photosByStatus` and `originalsPending`.
-- Worker stdout: one JSON line per job (`{ ts, job, type, ms, outcome, liveness? }`).
-- `psql`: `select event_id, count(*) from face_vectors group by 1` and `select action, meta from audit_log order by created_at desc limit 10` (`selfie.submitted` rows carry `meta.liveness`).
+- `GET /v1/admin/metrics` as admin: queue depth (`jobsQueued`, `jobsRunning`, `jobsError`), `photosByStatus`, `originalsPending`, and since v5 `jobsByType` (with the oldest queued age), `lastErrors`, `faceService: { ok, ms }`; `photos` / `faces` / `users` are approximate on Postgres (`n_live_tup`).
+- `GET http://localhost:8090/metrics`: face-service counters and embed p50 / p95 over the last 500 calls.
+- Worker stdout: one JSON line per job (`{ ts, job, type, ms, outcome, liveness?, match?, reason?, hits? }`, plus the ids with `LOG_IDS=true`).
+- `psql`: `select event_id, count(*) from face_vectors group by 1`; `select user_id, last_match_reason, query_embedding is not null as has_vector, cardinality(anchor_face_ids) from galleries`; `select type, status, count(*), round(avg(duration_ms)) from jobs group by 1, 2`; `select action, meta from audit_log order by created_at desc limit 10` (`selfie.submitted` rows carry `meta.liveness`; v5 adds `magic_link.issued`, `gallery.feedback`, `event.reset`, …).
 
 ## Production
 

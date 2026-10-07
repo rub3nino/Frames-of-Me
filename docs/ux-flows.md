@@ -21,6 +21,13 @@
 > Aggiornamento v4 (stesso giorno): lo step selfie del partecipante apre la camera e guida una breve challenge
 > prima dello scatto (`docs/v4-selfhost-spec.md` §4, `apps/web/lib/liveness.ts`). Vedi la nota in §3.3; il punto 8 di §9
 > («selfie-liveness fuori scope») è superato nei termini descritti lì.
+>
+> Aggiornamento v5 (2026-10-08, `docs/v5-test-readiness-spec.md`): la galleria spiega perché un selfie non ha prodotto
+> foto (banner con il motivo) e ha «Non sono io» con un gruppo «Nascoste» (nota in §3.4 e §3.6); lo staff entra da una
+> pagina propria `/staff` (§4.1, §5.1); `/admin` è diventata una console a sezioni con creazione eventi, link di accesso
+> con QR, gallerie per e-mail, pagina di debug delle foto, esportazioni e reset (§5.2–5.3). I gap 1, 2 e 3 di §9 sono
+> chiusi; il 4 (self-service GDPR) resta aperto. Il punto 3 di §7 («nessun embedding salvato») non è più vero: il vettore
+> del selfie resta nella galleria (`docs/DPIA.md` §3).
 
 ---
 
@@ -166,6 +173,16 @@ Stati da `GET /v1/events/:slug/gallery` → `status`: `empty` | `queued` | `read
   - Singola foto dal viewer → `POST .../gallery/download` → apre l'URL firmato.
 - **"Nuove foto"**: badge sugli item con `source = attach` più recenti dell'ultima visita (`localStorage` per slug). Quando arrivano nuove foto mentre la pagina è aperta → toast "Nuove foto".
 
+> **Nota v5 — motivo e «Non sono io».** `GET .../gallery` porta ora `reason` e ogni item `feedback`. Con `ready` e
+> 0 item la pagina mostra, sotto «Nessuna corrispondenza», il motivo in parole: `no_face` «Nel selfie non si vede un
+> volto», `face_too_small` «Avvicinati alla camera», `low_quality` «Il selfie è sfocato o troppo scuro»,
+> `multiple_faces` «Nel selfie ci sono più persone», `liveness` «Il selfie non è stato accettato» (tutti con «prova un
+> altro selfie»), e `no_photos_yet` «Non ci sono ancora foto: ti avviseremo» (senza invito a rifare: il vettore del
+> selfie è salvato e le foto arriveranno da sole). Nel viewer e nella barra di selezione c'è **«Non sono io»**: la foto
+> va in un terzo gruppo **«Nascoste»**, chiuso di default, dove «Sono io» la riporta su; il verdetto resta anche dopo un
+> nuovo selfie. `?debug=1` (ricordato in `localStorage`) mostra `score · source` su ogni cella: serve ai volontari del
+> test e all'operatore, non al partecipante normale.
+
 ### 3.5 Ritorno del partecipante (sessioni successive)
 
 Il partecipante torna **senza rifare selfie**:
@@ -180,7 +197,9 @@ Il partecipante torna **senza rifare selfie**:
 | Troppi tentativi link | `request-link` `429` | "Hai richiesto troppi link, riprova tra un'ora" |
 | Troppi selfie | selfie `429` (5/ora) | "Hai già cercato più volte, riprova più tardi" |
 | Link scaduto/già usato | verify `400` | "Link scaduto, richiedine uno nuovo" → torna allo step email |
-| Nessun match | `ready` con 0 item | "Non abbiamo trovato foto con te. Riprova con un selfie più chiaro / torna più tardi" + bottone "Riprova selfie" |
+| Nessun match | `ready` con 0 item | "Non abbiamo trovato foto con te. Riprova con un selfie più chiaro / torna più tardi" + bottone "Riprova selfie". **v5**: il messaggio è specifico (`reason`, nota in §3.4); con `no_photos_yet` non si chiede di rifare nulla |
+| Selfie rifiutato (nessun volto, troppo piccolo, sfocato, due persone) | **v5**: `ready` con 0 item e `reason` ≠ `no_photos_yet`; nessuna e-mail «pronte» | Banner con il motivo e «prova un altro selfie»; conta nel limite di 5/ora |
+| Foto di un'altra persona in galleria | **v5**: errore del motore | «Non sono io» nel viewer o in blocco dalla selezione: la foto va in «Nascoste» e non torna con un nuovo selfie |
 | Revoca consenso / cancellazione | `consents.withdrawn_at`, delete partecipante | Pagina "Gestisci i miei dati": revoca consenso + richiesta cancellazione (vedi §7) |
 | Foto ancora in elaborazione dai fotografi | galleria `ready` ma incompleta | "Le foto vengono aggiunte man mano: ti avvisiamo via email" |
 
@@ -207,6 +226,12 @@ Admin invita  →  email con /invito?token=…
 ```
 
 Accessi successivi: **magic link** `role: photographer` — la mail parte **solo se l'utente esiste già** (è stato creato dall'invito). Verify per photographer su utente inesistente → `400` generico.
+
+> **Nota v5 — `/staff`.** La richiesta del link per fotografi e admin ha una pagina propria, `/staff` (e-mail + ruolo
+> «Fotografo» / «Amministratore»): la home `/` resta il solo modulo dei partecipanti. La pagina non è linkata da
+> nessuna parte (si digita l'URL o la si riceve dallo staff). In alternativa all'invito, l'admin può emettere dalla
+> console un link di accesso con ruolo fotografo (QR o testo): crea l'utente e lo iscrive all'evento selezionato, senza
+> e-mail.
 
 ### 4.2 Schermata di upload (`/upload`) — desktop
 
@@ -264,42 +289,54 @@ Obiettivo: *"configurare l'evento, far entrare i fotografi, (se serve) limitare 
 
 ### 5.1 Ingresso admin
 
-Magic link `role: admin`. **L'utente admin deve già esistere** (oggi solo via seed). La mail parte solo se esiste. → **Gap critico §9: non c'è modo via UI/route di creare i 3 admin aggiuntivi.**
+Magic link `role: admin`, richiesto da `/staff` (v5). **L'utente admin deve già esistere**: da seed, da SQL, dalla v5 anche dalla variabile `BOOTSTRAP_ADMINS` all'avvio dell'API o da un link di accesso con ruolo admin emesso da un altro admin dalla console. La mail parte solo se esiste. → Il gap «non c'è modo via UI/route di creare i 3 admin aggiuntivi» (§9) è chiuso.
 
 ### 5.2 Pannello admin (`/admin`) — sezioni
 
-Mappa delle sezioni che l'admin deve avere, con a fianco **cosa l'API supporta oggi**:
+Mappa delle sezioni che l'admin deve avere, con a fianco **cosa l'API supporta oggi** (aggiornata alla v5):
 
 | Sezione | Azione | Endpoint | Esiste? |
 | --- | --- | --- | --- |
-| **Dashboard** | metriche live | `GET /v1/admin/metrics` (v2: + jobsRunning, jobsError, photosByStatus, galleries) | ✅ |
-| **Eventi** | vedere elenco eventi | — | ❌ **manca list** |
-| **Eventi** | creare evento | — | ❌ **manca create** (oggi solo seed/migration) |
-| **Eventi** | cambiare accesso open/list, retentionDays | `PATCH /v1/admin/events/:id` | ✅ |
-| **Fotografi** | invitare fotografo | `POST /v1/admin/photographers/invite` (v2: manda la mail `/invito?token=`) | ✅ |
-| **Fotografi** | elenco fotografi / revoca | — | ❌ **manca** |
-| **Partecipanti** | import lista (accesso ristretto) | `POST /v1/admin/participants/import { eventId, emails[1..5000] }` | ✅ |
-| **Partecipanti** | elenco / rimozione singola | `DELETE /v1/admin/participants/:id` (cancellazione utente) | parziale (no list) |
-| **Foto** | eliminare una foto | `DELETE /v1/admin/photos/:id` (+ audit) | ✅ |
-| **Foto** | moderare/cercare foto | — | ❌ **manca browse foto admin** |
-| **Retention** | forzare pulizia evento | `POST /v1/admin/retention/run { eventId }` | ✅ |
+| **Stato** (dashboard) | metriche live: foto per stato, coda per tipo con l'età del job più vecchio, ultimi errori, sonda del face-service; aggiornamento ogni 10 s | `GET /v1/admin/metrics` (v5: + `jobsByType`, `oldestQueuedSeconds`, `lastErrors`, `faceService`) | ✅ |
+| **Eventi** | vedere elenco eventi con conteggi; selezionare l'evento su cui lavorano le altre sezioni | `GET /v1/admin/events` | ✅ v5 |
+| **Eventi** | creare evento (slug, nome, retention, accesso) | `POST /v1/admin/events` | ✅ v5 |
+| **Gestione** | cambiare accesso open/list, retentionDays | `PATCH /v1/admin/events/:id` | ✅ |
+| **Gestione** | invitare fotografo | `POST /v1/admin/photographers/invite` (v2: manda la mail `/invito?token=`) | ✅ |
+| **Link di accesso** | emettere un magic link per qualsiasi e-mail e ruolo, mostrato come QR e testo, mai spedito; per i fotografi crea l'utente e lo iscrive all'evento | `POST /v1/admin/magic-links` | ✅ v5 |
+| **Fotografi** | elenco fotografi / revoca | — | ❌ **manca** (solo il conteggio per evento) |
+| **Gestione** | import lista partecipanti (accesso ristretto) | `POST /v1/admin/participants/import { eventId, emails[1..5000] }` | ✅ |
+| **Gestione** | rimozione di un partecipante | `DELETE /v1/admin/participants/:id` (cancellazione utente) | ✅ (elenco: solo gallerie, sotto) |
+| **Gallerie** | galleria di un partecipante per e-mail (punteggio e sorgente su ogni cella, motivo, anchor), elenco gallerie dell'evento, cancellazione della galleria, re-match da selfie conservato (solo test, `KEEP_SELFIES`) | `GET /v1/admin/galleries?eventId&email` / `?cursor`, `DELETE /v1/admin/galleries/:userId/:eventId`, `POST …/rematch` | ✅ v5 |
+| **Foto** | cercare foto per nome file, sha256, stato, tag → pagina `/admin/foto/[id]` con i riquadri dei volti, i «vicini» di ogni volto con il coseno e le gallerie in cui sta | `GET /v1/admin/photos`, `GET /v1/admin/photos/:id`, `GET /v1/admin/faces/:externalId/neighbours` | ✅ v5 |
+| **Gestione** | eliminare una foto | `DELETE /v1/admin/photos/:id` (+ audit) | ✅ |
+| **Esporta** | CSV di gallerie, hit del registro match, feedback; registro dei match per e-mail | `GET /v1/admin/export/{galleries,match-hits,feedback}.csv`, `GET /v1/admin/match-runs` | ✅ v5 |
+| **Retention** | forzare pulizia evento | `POST /v1/admin/retention/run { eventId }` | ✅ (rotta; nella console v5 non c'è un bottone: si chiama via API) |
+| **Reset** | azzerare l'evento (foto, volti, gallerie, registro) con doppia conferma (slug + dialog) | `POST /v1/admin/events/:id/reset { confirm }` | ✅ v5 |
+| **Foto in errore** | rimettere in coda le foto in `error` | `POST /v1/admin/photos/requeue` | ✅ v5 (rotta, nessun bottone) |
 | **Audit** | vedere chi ha fatto cosa | `audit_log` tabella | ❌ **manca read** |
 
 ### 5.3 Flussi admin principali (happy path)
 
 **A. Preparare un evento (prima della conferenza)**
 ```
-/admin → Eventi → (crea evento)*  → imposta accesso open|list, retention
-      → Fotografi → invita i 12 fotografi (email) 
-      → se access=list: Partecipanti → incolla lista email (textarea, 1 per riga) → import
+/admin → Eventi → crea evento (slug, nome, retention, accesso) → selezionalo
+      → Gestione → invita i 12 fotografi (email)   oppure   Link di accesso → ruolo fotografo → QR/testo
+      → se access=list: Gestione → incolla lista email (textarea, 1 per riga) → import
 ```
-`*` passaggio che **oggi non ha endpoint** → va aggiunto o l'evento si crea a mano via seed/SQL (non accettabile per un prodotto a 4 admin).
+Dalla v5 la creazione dell'evento ha la sua rotta e la sua sezione; non serve più seed/SQL. Lo slug dell'evento pubblico è letto a runtime (`/api/config`, `EVENT_SLUG`), quindi un nuovo evento non richiede un rebuild del web.
 
 **B. Durante la conferenza (monitoraggio)**
 ```
-/admin → Dashboard → guarda photosByStatus (uploaded/processing/indexed/error),
-                      jobsRunning, jobsError, galleries, coda
-      → se jobsError sale → capire quale foto è in error (serve browse foto → gap)
+/admin → Stato → foto per stato, coda per tipo (età del più vecchio), ultimi errori, face-service ok/no
+      → se gli errori salgono → Foto → filtro stato=error → /admin/foto/<id> (errore, volti, gallerie)
+      → un partecipante al banco → Gallerie → cerca per e-mail → motivo, punteggi, «Elimina la galleria»
+      → una foto sbagliata in una galleria → /admin/foto/<id> → «Vicini» con il coseno
+```
+
+**B bis. Campagna di test (v5)**
+```
+Link di accesso → QR per i volontari in sala     Esporta → gallerie.csv / match-hits.csv / feedback.csv
+Reset → azzera l'evento tra un round e l'altro   (scripts/eval/evaluate.py sui CSV, docs/test-readiness.md §7)
 ```
 
 **C. Dopo / GDPR**
@@ -322,8 +359,10 @@ Pari poteri, nessun lock applicativo. Rischi bassi ma da gestire in UI:
 | --- | --- |
 | Retention su evento con job attivo | deduplicato, nessun doppione |
 | Delete partecipante | NON cancella le foto di gruppo (scelta di contratto) — va spiegato in UI |
-| Delete foto | irreversibile (S3 + Rekognition) → doppia conferma obbligatoria |
+| Delete foto | irreversibile (S3 + motore) → doppia conferma obbligatoria |
 | Import 5000 email | limite hard a 5000/chiamata → UI avvisa se incolli di più |
+| Reset evento (v5) | irreversibile: slug da ridigitare + dialog di conferma; un secondo clic mentre il job è in corso restituisce lo stesso job (dedupe `reset:{eventId}`) |
+| Link di accesso per un partecipante esistente (v5) | l'admin entra nella sua galleria: è voluto per l'assistenza in sala, ma va detto nell'informativa e resta in `audit_log` (`magic_link.issued`) |
 
 ---
 
@@ -352,7 +391,7 @@ Il GDPR non è una pagina, è una **serie di checkpoint** dentro i flussi. Dal `
 
 1. **Consenso-contatto** (step email partecipante): base per inviare il magic link.
 2. **Consenso biometrico esplicito** (step selfie): categoria particolare Art. 9. Checkbox non pre-spuntata, con link all'informativa, `text_version` registrata insieme a `ip`/`user_agent` lato server (`POST .../consent`). Il selfie è bloccato (`403`) senza questa riga.
-3. **Minimizzazione**: nessun embedding salvato (solo `anchor_face_ids` = FaceId Rekognition delle proprie foto). Il selfie viene **cancellato** dopo il match. Da dire chiaramente all'utente ("il selfie non viene conservato").
+3. **Minimizzazione**: ~~nessun embedding salvato~~ — superato: dalla v4 i volti delle foto sono template in `face_vectors`, dalla v5 **il vettore del selfie resta nella galleria** (`galleries.query_embedding`) per agganciare le foto successive; gli `anchor_face_ids` restano. Il **file** del selfie viene cancellato dopo il match. Il testo di consenso («il selfie viene cancellato subito dopo la ricerca») va aggiornato prima della produzione (`docs/DPIA.md` §10).
 4. **Revoca**: pagina "I miei dati" per il partecipante → revoca consenso (`withdrawn_at`) e richiesta cancellazione. (Endpoint di self-service revoca: **gap §9** — oggi la cancellazione è `DELETE admin/participants/:id`, cioè passa dall'admin.)
 5. **Accesso ristretto** (`access=list`): solo email in `event_participants` possono fare selfie → tutela chi non vuole essere cercato da estranei.
 6. **Retention**: cancellazione automatica oltre `retention_days`; `deleteCollection` quando l'evento è vuoto.
@@ -394,9 +433,10 @@ accessi successivi: / → "accedi fotografo" → [email magic link] → /verify 
 
 **Admin**
 ```
-/ → "staff" → [email magic link] → /verify → **/admin** (sezioni a tab, non pagine separate)
+/staff → [email magic link] → /verify → **/admin** (sezioni per hash: #stato #eventi #link #gallerie #foto #esporta #gestione #reset)
+                                            └→ /admin/foto/[id] (debug di una foto, torna a #foto)
 ```
-- Tutte le funzioni admin come **tab/pannelli dentro `/admin`**, non pagine che si rincorrono.
+- Tutte le funzioni admin come **sezioni dentro `/admin`** (v5), più una sola pagina figlia per il debug di una foto. La home non ha ancora il link «staff» previsto in §2: `/staff` si raggiunge per URL.
 
 Regola generale: **un cambio di mondo = logout esplicito**, mai un rimbalzo in landing. Chi è loggato come fotografo non vede ingressi partecipante/admin e viceversa (`require-role`).
 
@@ -407,9 +447,9 @@ Regola generale: **un cambio di mondo = logout esplicito**, mai un rimbalzo in l
 Ordinati per impatto sul flusso. Questi sono i punti dove il flusso "ideale" tocca i **limiti dell'API attuale** o dipende da una tua scelta.
 
 ### Gap API da colmare (altrimenti certi flussi non esistono)
-1. **Creazione evento**: nessuna rotta `POST /v1/admin/events`. Oggi gli eventi nascono solo da seed/migration. Senza questa, l'admin non può preparare una conferenza da UI. → **Serve nuovo endpoint** (additivo).
-2. **Elenchi admin**: niente `GET` per elenco eventi, fotografi, partecipanti, foto in `error`, audit. La dashboard admin oltre ai contatori ha bisogno di *liste*. → **Servono endpoint di lettura**.
-3. **Bootstrap admin**: non c'è modo di creare i 3 admin aggiuntivi via UI (solo seed). → Decidere: seed esteso, oppure un "invita admin" simile a `photographers/invite`.
+1. ~~**Creazione evento**~~ — chiuso in v5: `POST /v1/admin/events` e la sezione Eventi.
+2. **Elenchi admin**: in v5 ci sono `GET /v1/admin/events` (con conteggi), `GET /v1/admin/galleries` (per e-mail e paginato), `GET /v1/admin/photos` (filtri per nome, sha256, stato, tag) e `/photos/:id`, `GET /v1/admin/match-runs`. Mancano ancora l'elenco dei fotografi e dei partecipanti (solo conteggi) e la lettura dell'audit.
+3. ~~**Bootstrap admin**~~ — chiuso in v5: `BOOTSTRAP_ADMINS` all'avvio dell'API e «Link di accesso» con ruolo admin dalla console.
 4. **Self-service GDPR partecipante**: revoca consenso e richiesta cancellazione oggi passano dall'admin. → Decidere se serve un endpoint di self-service (consigliato per 6.000 utenti).
 5. **Accesso ristretto scoperto tardi**: con `access=list`, l'utente scopre di non essere in lista solo al selfie (`403`), dopo aver già fatto email+link+consenso. `request-link` resta `202` per non enumerare. → Decidere il messaggio e se accettare questo attrito (alternativa: avviso generico in pagina iscrizione per eventi ristretti).
 
