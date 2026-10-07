@@ -14,6 +14,10 @@ import {
   AlbumRecognitionLockedError,
   AlbumRecognitionNotAllowedError,
   DuplicateKeyError,
+  // v6 (agent E): tagging
+  nextTagConsent,
+  normalizeDisplayName,
+  TAG_SEARCH_MIN_PREFIX,
 } from "./types.js";
 import type {
   AnchoredGallery,
@@ -83,6 +87,16 @@ import type {
   RetentionAlarmMail,
   RetentionOutcome,
   RetentionStatusRow,
+  // v6 (agent E): event membership + tagging
+  AuditEntryRow,
+  EventMemberRow,
+  EventMemberSource,
+  PhotoTagRow,
+  PhotoTagState,
+  PhotoTagWithNameRow,
+  TagProfileRow,
+  TaggableUserRow,
+  TaggedPhotoRow,
 } from "./types.js";
 
 const EVENT_ID = "00000000-0000-4000-8000-000000000001";
@@ -2385,6 +2399,37 @@ export class PostgresDatabase implements Database {
     return rows.length > 0;
   }
 
+  // ---- event membership + tagging v6 (agent E) -------------------------------------------
+
+  async addEventMember(input: {
+    userId: string;
+    eventId: string;
+    source: EventMemberSource;
+  }): Promise<EventMemberRow> {
+    // Idempotent and non-destructive: a second call keeps the first row, `source` included,
+    // so the provenance recorded is how the person FIRST came to belong to the event. The
+    // `do update set user_id = excluded.user_id` is a no-op that makes the insert always
+    // return a row, which an `on conflict do nothing` would not.
+    const rows = await this.sql<EventMemberSql[]>`
+      insert into event_members (user_id, event_id, source)
+      values (${input.userId}, ${input.eventId}, ${input.source})
+      on conflict (user_id, event_id) do update set user_id = excluded.user_id
+      returning user_id, event_id, source, taggable,
+                taggable_consent_version, taggable_consent_at, created_at
+    `;
+    const row = rows[0];
+    if (!row) throw new Error("event_members insert returned no row");
+    return mapEventMember(row);
+  }
+
+  async isEventMember(userId: string, eventId: string): Promise<boolean> {
+    const rows = await this.sql<{ ok: number }[]>`
+      select 1 as ok from event_members
+      where user_id = ${userId} and event_id = ${eventId}
+    `;
+    return rows.length > 0;
+  }
+
   async listAlbumPhotographers(albumId: string): Promise<AlbumPhotographerRow[]> {
     const rows = await this.sql<
       { album_id: string; user_id: string; email: string; created_at: Date }[]
@@ -2398,6 +2443,179 @@ export class PostgresDatabase implements Database {
       albumId: row.album_id,
       userId: row.user_id,
       email: row.email,
+      createdAt: row.created_at,
+    }));
+  }
+
+  async findEventMember(userId: string, eventId: string): Promise<EventMemberRow | null> {
+    const rows = await this.sql<EventMemberSql[]>`
+      select user_id, event_id, source, taggable,
+             taggable_consent_version, taggable_consent_at, created_at
+      from event_members where user_id = ${userId} and event_id = ${eventId}
+    `;
+    return rows[0] ? mapEventMember(rows[0]) : null;
+  }
+
+  async findTagProfile(userId: string, eventId: string): Promise<TagProfileRow | null> {
+    // The join is an inner one on purpose: no membership row means no tagging profile, and
+    // no way to opt in. That is the honest answer now that membership is recorded.
+    const rows = await this.sql<TagProfileSql[]>`
+      select m.user_id, m.event_id, m.taggable, u.display_name,
+             m.taggable_consent_version, m.taggable_consent_at
+      from event_members m
+      join users u on u.id = m.user_id
+      where m.user_id = ${userId} and m.event_id = ${eventId}
+    `;
+    return rows[0] ? mapTagProfile(rows[0]) : null;
+  }
+
+  async setTagProfile(
+    userId: string,
+    eventId: string,
+    input: {
+      taggable: boolean;
+      displayName?: string | null;
+      consentTextVersion?: string | null;
+    },
+  ): Promise<TagProfileRow | null> {
+    const current = await this.findTagProfile(userId, eventId);
+    if (!current) return null;
+    const name =
+      input.displayName === undefined ? current.displayName : normalizeDisplayName(input.displayName);
+    // `taggable = true` needs a display name, supplied now or already stored. A taggable row
+    // with no name could never be found by the autocomplete anyway, and leaving it possible
+    // invites a later "fall back to the e-mail" patch.
+    if (input.taggable && !name) return null;
+    // The consent pair is the present state: stamped on an opt-in, nulled on an opt-out. The
+    // history lives in `audit_log`.
+    const consent = nextTagConsent(current, input);
+    if (input.taggable && !consent.version) return null;
+    // Two writes: the flag and its consent on the membership row, the name on the user. The
+    // name is global, so it is only written when the caller actually supplied one.
+    if (name !== current.displayName) {
+      await this.sql`update users set display_name = ${name} where id = ${userId}`;
+    }
+    const updated = await this.sql`
+      update event_members
+      set taggable = ${input.taggable},
+          taggable_consent_version = ${consent.version},
+          taggable_consent_at = ${consent.at}
+      where user_id = ${userId} and event_id = ${eventId}
+      returning user_id
+    `;
+    if (updated.length === 0) return null;
+    // Re-read rather than compose a RETURNING across the two tables: one extra round trip on
+    // a route a participant hits by hand, in exchange for one definition of the row.
+    return this.findTagProfile(userId, eventId);
+  }
+
+  async searchTaggableUsers(input: {
+    eventId: string;
+    prefix: string;
+    limit: number;
+  }): Promise<TaggableUserRow[]> {
+    // Second line of defence: the API already refuses a short query, and this makes a future
+    // caller that forgets to get nothing rather than the whole roster.
+    const prefix = input.prefix.trim().toLowerCase();
+    if (prefix.length < TAG_SEARCH_MIN_PREFIX) return [];
+    // Two membership tests, both non-biometric:
+    //   * `event_members` for THIS event — so a person who opted in at event A is not
+    //     suggested at event B (that is `event_members_taggable_idx`);
+    //   * `m.taggable`, the per-event opt-in, which is the consent for tagging.
+    // A recognition consent is NOT required and must never be added back: decision 2 freezes
+    // that a crowd album is never biometric, so its participants never grant one, and tagging
+    // is the only way they can find themselves there.
+    const rows = await this.sql<{ id: string; display_name: string }[]>`
+      select u.id, u.display_name
+      from users u
+      join event_members m on m.user_id = u.id
+      where m.event_id = ${input.eventId}
+        and m.taggable
+        and u.display_name is not null
+        and lower(u.display_name) like ${`${escapeLike(prefix)}%`}
+      order by lower(u.display_name) asc, u.id asc
+      limit ${input.limit}
+    `;
+    return rows.map((row) => ({ userId: row.id, displayName: row.display_name }));
+  }
+
+  async insertPhotoTag(input: {
+    photoId: string;
+    userId: string;
+    taggedBy: string;
+  }): Promise<PhotoTagRow | null> {
+    // One statement, and the opt-in is a `where` on the source rows, so a concurrent opt-out
+    // cannot be raced. The event is taken from the photo itself, so the per-event opt-in is
+    // checked against the event the photo actually belongs to and not against one the caller
+    // named. `on conflict do nothing` keeps a 'removed' row untouched.
+    const rows = await this.sql<PhotoTagSql[]>`
+      insert into photo_tags (photo_id, user_id, tagged_by)
+      select p.id, m.user_id, ${input.taggedBy}::uuid
+      from photos p
+      join event_members m
+        on m.event_id = p.event_id and m.user_id = ${input.userId} and m.taggable
+      join users u on u.id = m.user_id and u.display_name is not null
+      where p.id = ${input.photoId}
+      on conflict (photo_id, user_id) do nothing
+      returning photo_id, user_id, tagged_by, state, created_at
+    `;
+    return rows[0] ? mapPhotoTag(rows[0]) : null;
+  }
+
+  async findPhotoTag(photoId: string, userId: string): Promise<PhotoTagRow | null> {
+    const rows = await this.sql<PhotoTagSql[]>`
+      select photo_id, user_id, tagged_by, state, created_at from photo_tags
+      where photo_id = ${photoId} and user_id = ${userId}
+    `;
+    return rows[0] ? mapPhotoTag(rows[0]) : null;
+  }
+
+  async removePhotoTag(photoId: string, userId: string): Promise<PhotoTagRow | null> {
+    const rows = await this.sql<PhotoTagSql[]>`
+      update photo_tags set state = 'removed'
+      where photo_id = ${photoId} and user_id = ${userId} and state = 'active'
+      returning photo_id, user_id, tagged_by, state, created_at
+    `;
+    return rows[0] ? mapPhotoTag(rows[0]) : null;
+  }
+
+  async listActivePhotoTagsForUser(userId: string, eventId: string): Promise<PhotoTagRow[]> {
+    // Scoped to the event, because the opt-in is: opting out of event A must not remove the
+    // tags the same person accepted at event B.
+    const rows = await this.sql<PhotoTagSql[]>`
+      select pt.photo_id, pt.user_id, pt.tagged_by, pt.state, pt.created_at
+      from photo_tags pt
+      join photos p on p.id = pt.photo_id
+      where pt.user_id = ${userId} and pt.state = 'active' and p.event_id = ${eventId}
+      order by pt.created_at desc, pt.photo_id asc
+    `;
+    return rows.map(mapPhotoTag);
+  }
+
+  async listTaggedPhotosForUser(userId: string, eventId: string): Promise<TaggedPhotoRow[]> {
+    const rows = await this.sql<{
+      photo_id: string;
+      event_id: string;
+      thumb_key: string;
+      web_key: string;
+      tagged_by: string | null;
+      created_at: Date;
+    }[]>`
+      select pt.photo_id, p.event_id, t.s3_key as thumb_key, w.s3_key as web_key,
+             pt.tagged_by, pt.created_at
+      from photo_tags pt
+      join photos p on p.id = pt.photo_id
+      join derivatives t on t.photo_id = pt.photo_id and t.kind = 'thumb'
+      join derivatives w on w.photo_id = pt.photo_id and w.kind = 'web'
+      where pt.user_id = ${userId} and pt.state = 'active' and p.event_id = ${eventId}
+      order by pt.created_at desc, pt.photo_id asc
+    `;
+    return rows.map((row) => ({
+      photoId: row.photo_id,
+      eventId: row.event_id,
+      thumbKey: row.thumb_key,
+      webKey: row.web_key,
+      taggedBy: row.tagged_by,
       createdAt: row.created_at,
     }));
   }
@@ -2887,6 +3105,43 @@ export class PostgresDatabase implements Database {
   }
 
   private faceVectorsChecked: Promise<boolean> | undefined;
+
+  async listPhotoTags(photoId: string): Promise<PhotoTagWithNameRow[]> {
+    const rows = await this.sql<(PhotoTagSql & { display_name: string | null })[]>`
+      select pt.photo_id, pt.user_id, pt.tagged_by, pt.state, pt.created_at, u.display_name
+      from photo_tags pt
+      join users u on u.id = pt.user_id
+      where pt.photo_id = ${photoId} and pt.state = 'active'
+      order by pt.created_at asc, pt.user_id asc
+    `;
+    return rows.map((row) => ({ ...mapPhotoTag(row), displayName: row.display_name }));
+  }
+
+  async listAuditForTarget(target: string): Promise<AuditEntryRow[]> {
+    const rows = await this.sql<{
+      id: string;
+      actor_id: string | null;
+      action: string;
+      target: string;
+      meta: unknown;
+      created_at: Date;
+    }[]>`
+      select id, actor_id, action, target, meta, created_at from audit_log
+      where target = ${target}
+      order by created_at asc, id asc
+    `;
+    return rows.map((row) => ({
+      id: row.id,
+      actorId: row.actor_id,
+      action: row.action,
+      target: row.target,
+      // `audit_log.meta` is jsonb, and this driver hands it back as text, so it is parsed
+      // here. An unreadable value becomes `{}` rather than throwing: a malformed audit row
+      // must not break reading the rest of the trail.
+      meta: parseAuditMeta(row.meta),
+      createdAt: row.created_at,
+    }));
+  }
 }
 
 /** Maps the album constraints of migration 009 to their typed errors. */
@@ -3143,6 +3398,68 @@ function mapReport(row: ReportSql): ReportRow {
   };
 }
 
+// ---- tagging v6 (agent E) -----------------------------------------------------------------
+
+type EventMemberSql = {
+  user_id: string;
+  event_id: string;
+  source: EventMemberSource;
+  taggable: boolean;
+  taggable_consent_version: string | null;
+  taggable_consent_at: Date | null;
+  created_at: Date;
+};
+
+type TagProfileSql = {
+  user_id: string;
+  event_id: string;
+  taggable: boolean;
+  display_name: string | null;
+  taggable_consent_version: string | null;
+  taggable_consent_at: Date | null;
+};
+
+function mapEventMember(row: EventMemberSql): EventMemberRow {
+  return {
+    userId: row.user_id,
+    eventId: row.event_id,
+    source: row.source,
+    taggable: row.taggable,
+    taggableConsentVersion: row.taggable_consent_version,
+    taggableConsentAt: row.taggable_consent_at,
+    createdAt: row.created_at,
+  };
+}
+
+type PhotoTagSql = {
+  photo_id: string;
+  user_id: string;
+  tagged_by: string | null;
+  state: PhotoTagState;
+  created_at: Date;
+};
+
+function mapTagProfile(row: TagProfileSql): TagProfileRow {
+  return {
+    userId: row.user_id,
+    eventId: row.event_id,
+    taggable: row.taggable,
+    displayName: row.display_name,
+    consentTextVersion: row.taggable_consent_version,
+    consentAt: row.taggable_consent_at,
+  };
+}
+
+function mapPhotoTag(row: PhotoTagSql): PhotoTagRow {
+  return {
+    photoId: row.photo_id,
+    userId: row.user_id,
+    taggedBy: row.tagged_by,
+    state: row.state,
+    createdAt: row.created_at,
+  };
+}
+
 function mapModerationItem(row: ModerationSql): ModerationItem {
   return {
     photoId: row.id,
@@ -3214,4 +3531,19 @@ function mapRetentionStatus(row: RetentionStatusSql): RetentionStatusRow {
           }
         : null,
   };
+}
+
+/** `audit_log.meta` comes back as text from this driver; a non-object is reported as `{}`. */
+function parseAuditMeta(value: unknown): Record<string, unknown> {
+  const parsed = (() => {
+    if (typeof value !== "string") return value;
+    try {
+      return JSON.parse(value) as unknown;
+    } catch {
+      return null;
+    }
+  })();
+  return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+    ? (parsed as Record<string, unknown>)
+    : {};
 }

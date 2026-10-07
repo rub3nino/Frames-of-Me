@@ -1229,3 +1229,30 @@ kbd {
 @media (max-width: 860px) {
   .moderation-stage { grid-template-columns: 1fr; }
 }
+
+/* tagging v6 (agent E): the "Non sono io" button on a tagged photo. */
+.tag-remove {
+  position: absolute;
+  inset: auto 6px 6px 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.tag-remove:active { transform: scale(0.97); }
+
+/* The tagging consent text, shown before the control that acts on it. */
+.consent-text {
+  margin: 12px 0 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}

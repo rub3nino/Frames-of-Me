@@ -731,6 +731,92 @@ export interface Database {
    * bootstrap) retires the outstanding links.
    */
   invalidatePasswordResetTokens(userId: string): Promise<number>;
+
+  // ---- event membership + tagging v6 (agent E) -------------------------------------------
+  /**
+   * `event_members`: the NON-BIOMETRIC record of who belongs to an event. Before it, "is this
+   * person a participant of this event?" had no honest answer for someone who never consented
+   * to face recognition and is not on an allowlist — `consents` and `galleries` are both
+   * biometric and `event_participants` only exists when `events.access = 'list'`.
+   *
+   * Idempotent: a second call for the same pair keeps the first row, `source` included, so
+   * the provenance recorded is how the person FIRST came to belong to the event.
+   */
+  addEventMember(input: {
+    userId: string;
+    eventId: string;
+    source: EventMemberSource;
+  }): Promise<EventMemberRow>;
+  /** Membership alone, without the tagging columns. The cheap gate for every event-scoped route. */
+  isEventMember(userId: string, eventId: string): Promise<boolean>;
+  findEventMember(userId: string, eventId: string): Promise<EventMemberRow | null>;
+  /**
+   * The caller's own tagging profile for one event (`event_members.taggable` + the consent
+   * pair, plus the global `users.display_name`). Null when there is no membership row: a
+   * non-member has no tagging profile to read, and cannot opt in.
+   */
+  findTagProfile(userId: string, eventId: string): Promise<TagProfileRow | null>;
+  /**
+   * The opt-in, per event. Null when the user is not a member of the event, or when
+   * `taggable = true` is asked for without a display name — a taggable row with no name
+   * could never be found by the autocomplete anyway, and leaving it possible invites a later
+   * "fall back to the e-mail" patch.
+   *
+   * `consentTextVersion` is the tagging consent text the participant accepted; it is stamped
+   * with the time on an opt-in and nulled on an opt-out.
+   */
+  setTagProfile(
+    userId: string,
+    eventId: string,
+    input: {
+      taggable: boolean;
+      displayName?: string | null;
+      consentTextVersion?: string | null;
+    },
+  ): Promise<TagProfileRow | null>;
+  /**
+   * The username autocomplete. Deliberately narrow, and it must stay that way:
+   * only members of `eventId` who set `taggable` **for that event** and have a display name,
+   * only a **prefix** match on `lower(display_name)`, and the rows carry no e-mail address at
+   * all. `prefix` is never allowed to be shorter than `TAG_SEARCH_MIN_CHARS`; the API refuses
+   * first, and this method returns `[]` as a second line of defence rather than trusting the
+   * caller.
+   *
+   * It does NOT require a recognition consent. `event_members.taggable` is the consent for
+   * tagging; a crowd-album participant never grants recognition consent (decision 2) and
+   * tagging is the only way they can find themselves in a non-biometric album.
+   */
+  searchTaggableUsers(input: {
+    eventId: string;
+    prefix: string;
+    limit: number;
+  }): Promise<TaggableUserRow[]>;
+  /**
+   * Creates an active tag in ONE statement whose `where` carries the opt-in, so a user who
+   * is not taggable can never be tagged even under a concurrent opt-out. Returns null when
+   * the target is not taggable, or when a row for (photoId, userId) already exists —
+   * including one in state 'removed', which is how a refused tag stays refused.
+   */
+  insertPhotoTag(input: {
+    photoId: string;
+    userId: string;
+    taggedBy: string;
+  }): Promise<PhotoTagRow | null>;
+  findPhotoTag(photoId: string, userId: string): Promise<PhotoTagRow | null>;
+  /** Moves an active tag to 'removed'. Null when there was no active tag to remove. */
+  removePhotoTag(photoId: string, userId: string): Promise<PhotoTagRow | null>;
+  /**
+   * Every still-active tag of a user on photos of ONE event, for the audited cascade behind
+   * an opt-out. Scoped to the event because the opt-in is: opting out of event A must not
+   * remove the tags someone accepted at event B.
+   */
+  listActivePhotoTagsForUser(userId: string, eventId: string): Promise<PhotoTagRow[]>;
+  /** "The photos I am tagged in", for one event, newest first. Active tags only. */
+  listTaggedPhotosForUser(userId: string, eventId: string): Promise<TaggedPhotoRow[]>;
+  /** Active tags on one photo, display names only. */
+  listPhotoTags(photoId: string): Promise<PhotoTagWithNameRow[]>;
+  /** Reads `audit_log` back by target. Used by the tagging tests and by support. */
+  listAuditForTarget(target: string): Promise<AuditEntryRow[]>;
 }
 
 // ---- albums and vector isolation v6 (agent A) ---------------------------------------------
@@ -1127,3 +1213,128 @@ export type RetentionStatusRow = {
  * the window anyway. It is `RetentionAlarm` of `@rephoto/contracts` minus `never`.
  */
 export type RetentionAlarmMail = "failed" | "job_error" | "skipped";
+
+// ---- tagging v6 (agent E) -----------------------------------------------------------------
+
+/** `photo_tags.state` (migration 013). 'removed' is terminal. */
+export type PhotoTagState = "active" | "removed";
+
+/**
+ * `event_members.source` (migration 013): how a person came to belong to an event. Provenance,
+ * not permission — nothing reads it to decide anything. `event_code` is the self-registration
+ * path; `consent` / `gallery` / `allowlist` / `staff` are what the backfill could see;
+ * `invite`, `upload` and `admin` are reserved for the entry paths other agents own.
+ */
+export type EventMemberSource =
+  | "event_code"
+  | "consent"
+  | "gallery"
+  | "allowlist"
+  | "staff"
+  | "invite"
+  | "upload"
+  | "admin";
+
+/** One row of `event_members`: membership plus the per-event tagging opt-in. */
+export type EventMemberRow = {
+  userId: string;
+  eventId: string;
+  source: EventMemberSource;
+  taggable: boolean;
+  taggableConsentVersion: string | null;
+  taggableConsentAt: Date | null;
+  createdAt: Date;
+};
+
+/** The caller's own opt-in state for one event. Carries no other user's data. */
+export type TagProfileRow = {
+  userId: string;
+  eventId: string;
+  taggable: boolean;
+  /** Global (`users.display_name`): the name a person wants to be called by is theirs. */
+  displayName: string | null;
+  /**
+   * The tagging consent text accepted at opt-in (`event_members.taggable_consent_version`),
+   * and when. Null while the user is not taggable for this event. This is the tagging
+   * consent, NOT the recognition consent in `consents` — tagging never requires a `consents`
+   * row (decision 2: a crowd album is never biometric, so its participants never grant one).
+   */
+  consentTextVersion: string | null;
+  consentAt: Date | null;
+};
+
+/**
+ * One autocomplete suggestion. There is no `email` field and there must never be one: the
+ * whole point of `display_name` is that this row can be handed to another participant.
+ */
+export type TaggableUserRow = {
+  userId: string;
+  displayName: string;
+};
+
+export type PhotoTagRow = {
+  photoId: string;
+  userId: string;
+  taggedBy: string | null;
+  state: PhotoTagState;
+  createdAt: Date;
+};
+
+/** A tag on a photo as the other participants may see it: a display name, never an e-mail. */
+export type PhotoTagWithNameRow = PhotoTagRow & { displayName: string | null };
+
+/** A photo the caller is tagged in, with the keys the API presigns. */
+export type TaggedPhotoRow = {
+  photoId: string;
+  eventId: string;
+  thumbKey: string;
+  webKey: string;
+  taggedBy: string | null;
+  createdAt: Date;
+};
+
+export type AuditEntryRow = {
+  id: string;
+  actorId: string | null;
+  action: string;
+  target: string;
+  meta: Record<string, unknown>;
+  createdAt: Date;
+};
+
+/**
+ * The shortest prefix `searchTaggableUsers` will act on, in BOTH implementations. It mirrors
+ * `TAG_SEARCH_MIN_CHARS` in `@rephoto/contracts`, and the duplication is deliberate: the
+ * database layer refuses a short query on its own, so the guarantee does not rest on an
+ * API-layer check that a later refactor could move or drop. With 6 000 participants a
+ * one- or two-character query is a roster dump, not a search.
+ */
+export const TAG_SEARCH_MIN_PREFIX = 3;
+
+/** Longest display name accepted; the API validates the same bound before it gets here. */
+export const DISPLAY_NAME_MAX_LENGTH = 60;
+
+/** Collapses whitespace and turns an empty name into null, so `''` can never be stored. */
+export function normalizeDisplayName(value: string | null): string | null {
+  if (value === null) return null;
+  const trimmed = value.trim().replace(/\s+/g, " ");
+  return trimmed.length === 0 ? null : trimmed;
+}
+
+/**
+ * `users.taggable_consent_version` / `taggable_consent_at` after an opt-in or an opt-out, in
+ * BOTH implementations. An opt-out clears the pair; an opt-in keeps the existing timestamp
+ * while the accepted version is unchanged, and re-stamps it when the version moves (a new
+ * Italian text is a new consent, with its own date).
+ */
+export function nextTagConsent(
+  current: { consentTextVersion: string | null; consentAt: Date | null },
+  input: { taggable: boolean; consentTextVersion?: string | null },
+  now: Date = new Date(),
+): { version: string | null; at: Date | null } {
+  if (!input.taggable) return { version: null, at: null };
+  const version = input.consentTextVersion ?? current.consentTextVersion;
+  if (!version) return { version: null, at: null };
+  const unchanged = version === current.consentTextVersion && current.consentAt !== null;
+  return { version, at: unchanged ? current.consentAt : now };
+}

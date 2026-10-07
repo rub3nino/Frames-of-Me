@@ -1413,3 +1413,164 @@ export const adminRetentionScheduleResponseSchema = z
 export const PASSWORD_RESET_TTL_SECONDS = 15 * 60;
 /** Reset links per account / per IP, counted over this window (`PASSWORD_RESET_PER_*`). */
 export const PASSWORD_RESET_RATE_LIMIT = { windowSeconds: 60 * 60 } as const;
+
+// ---- tagging v6 (agent E) -----------------------------------------------------------------
+//
+// Tagging makes the same person<->photo link that face recognition makes, minus the
+// biometrics, so the contract is written tight on purpose. Three rules live here and must
+// not be relaxed without re-reading section E of docs/v6-spec.md:
+//
+//   1. `tagSearchQuerySchema` has `.min(TAG_SEARCH_MIN_CHARS)`. With 6 000 participants a
+//      loose autocomplete is a searchable roster of everyone at the event. An empty or
+//      1-2 character query is not a short search, it is a directory dump.
+//   2. `taggableUserSchema` is `.strict()` and has no `email`. Adding one would hand every
+//      participant's address to anyone who can type three letters.
+//   3. The search is rate limited per session (`TAG_SEARCH_RATE_LIMIT`), because 3 characters
+//      times a loop is still an enumeration.
+
+/** Minimum length of an autocomplete query. See rule 1 above. */
+export const TAG_SEARCH_MIN_CHARS = 3;
+/** Longest autocomplete query accepted (a display name is at most 60 characters). */
+export const TAG_SEARCH_MAX_CHARS = 60;
+/** Suggestions returned at most. Short enough that the list is a pick, not a browse. */
+export const TAG_SEARCH_LIMIT = 8;
+/** Autocomplete calls allowed per session per window. See rule 3 above. */
+export const TAG_SEARCH_RATE_LIMIT = { windowSeconds: 60, max: 20 } as const;
+/** Tags a session may create per window: tagging is also an abuse vector, not just a read. */
+export const TAG_WRITE_RATE_LIMIT = { windowSeconds: 60 * 60, max: 60 } as const;
+/** Bounds of `users.display_name`. */
+export const DISPLAY_NAME_MIN_CHARS = 2;
+export const DISPLAY_NAME_MAX_CHARS = 60;
+
+/**
+ * The consent for tagging, and its own legal basis.
+ *
+ * It is deliberately NOT `CONSENT_TEXT` / `CONSENT_TEXT_VERSION`, which cover the biometric
+ * comparison of a face against the event's photos. Those are two different things:
+ * consenting to be named in a photo is not consenting to be recognised in one. Decision 2
+ * freezes that a `crowd` album is never biometric, so a participant whose only involvement
+ * is the crowd album never grants recognition consent — and tagging is the only way they can
+ * find themselves there. Tagging therefore must never require a `consents` row.
+ *
+ * It is also PER EVENT, and the text says so. The opt-in lives on `event_members.taggable`,
+ * not on `users`: a global flag would mean consenting once, at one event, to being nameable
+ * at every event the deployment ever runs, which would make the words below a false
+ * statement the day a second event exists.
+ *
+ * Bump the version whenever the text changes: a stored version older than this one means the
+ * participant consented to different words and has to be asked again.
+ */
+export const TAG_CONSENT_TEXT_VERSION = "2026-10-09";
+export const TAG_CONSENT_TEXT =
+  "Acconsento che gli altri partecipanti di questo evento associno il nome che ho scelto alle foto in cui compaio. Vale solo per questo evento. Posso rimuovere ogni tag e disattivare i tag in qualsiasi momento: disattivandoli, i tag che ho già in questo evento vengono rimossi. Questo consenso è separato dal riconoscimento del volto e non lo richiede.";
+
+/** The participant's own opt-in state. Their own e-mail is theirs, so it is not here either. */
+export const tagProfileSchema = z
+  .object({
+    taggable: z.boolean(),
+    displayName: z.string().nullable(),
+    /** The tagging consent text the participant accepted; null when they are not taggable. */
+    consentTextVersion: z.string().nullable(),
+    consentAt: z.string().datetime().nullable(),
+  })
+  .strict();
+
+const displayNameField = z
+  .string()
+  .trim()
+  .min(DISPLAY_NAME_MIN_CHARS)
+  .max(DISPLAY_NAME_MAX_CHARS)
+  .nullable()
+  .optional();
+
+/**
+ * The opt-in and the opt-out.
+ *
+ * `taggable` is required and never defaulted: a body that forgets it is a validation error,
+ * not an implicit "yes". Opting IN additionally requires `consentTextVersion`, pinned to the
+ * current text, so a client cannot turn the flag on without having been shown what it means.
+ * As with the selfie's liveness flag, the server cannot prove the text was read — this is a
+ * deterrent plus a record, and the record is what the audit trail needs.
+ */
+export const tagProfileBodySchema = z.union([
+  z
+    .object({
+      taggable: z.literal(true),
+      displayName: displayNameField,
+      consentTextVersion: z.literal(TAG_CONSENT_TEXT_VERSION),
+    })
+    .strict(),
+  z
+    .object({
+      taggable: z.literal(false),
+      displayName: displayNameField,
+    })
+    .strict(),
+]);
+
+/**
+ * `q` is `.min(TAG_SEARCH_MIN_CHARS)` after trimming, so "", "a" and "ab" are rejected by the
+ * schema itself — before any query runs. Do not add `.optional()` and do not lower the bound.
+ */
+export const tagSearchQuerySchema = z
+  .object({
+    q: z.string().trim().min(TAG_SEARCH_MIN_CHARS).max(TAG_SEARCH_MAX_CHARS),
+  })
+  .strict();
+
+/** One suggestion: an opaque id and a display name. No e-mail, ever. See rule 2 above. */
+export const taggableUserSchema = z
+  .object({
+    userId: z.string().uuid(),
+    displayName: z.string().min(1),
+  })
+  .strict();
+
+export const tagSearchResponseSchema = z
+  .object({ items: z.array(taggableUserSchema) })
+  .strict();
+
+export const tagCreateBodySchema = z
+  .object({
+    photoId: z.string().uuid(),
+    userId: z.string().uuid(),
+  })
+  .strict();
+
+export const tagSchema = z
+  .object({
+    photoId: z.string().uuid(),
+    userId: z.string().uuid(),
+    displayName: z.string().nullable(),
+    createdAt: z.string().datetime(),
+  })
+  .strict();
+
+/** A photo the caller is tagged in. Separate from the personal match gallery, which is untouched. */
+export const taggedPhotoSchema = z
+  .object({
+    photoId: z.string().uuid(),
+    thumbUrl: z.string().url(),
+    webUrl: z.string().url(),
+    createdAt: z.string().datetime(),
+  })
+  .strict();
+
+export const tagsMeResponseSchema = z
+  .object({
+    profile: tagProfileSchema,
+    items: z.array(taggedPhotoSchema),
+  })
+  .strict();
+
+export const photoTagsResponseSchema = z
+  .object({ items: z.array(tagSchema) })
+  .strict();
+
+export type TagProfile = z.infer<typeof tagProfileSchema>;
+export type TaggableUser = z.infer<typeof taggableUserSchema>;
+export type TagSearchResponse = z.infer<typeof tagSearchResponseSchema>;
+export type Tag = z.infer<typeof tagSchema>;
+export type TaggedPhoto = z.infer<typeof taggedPhotoSchema>;
+export type TagsMeResponse = z.infer<typeof tagsMeResponseSchema>;
+export type PhotoTagsResponse = z.infer<typeof photoTagsResponseSchema>;

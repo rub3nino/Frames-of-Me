@@ -525,3 +525,53 @@ export type AdminRetentionSchedule = {
     alarm: "failed" | "job_error" | "skipped" | "never" | null;
   }>;
 };
+
+// ---- tagging v6 (agent E) -----------------------------------------------------------------
+
+/** `users.taggable` / `users.display_name`. `taggable` is false until the participant opts in. */
+export type TagProfile = {
+  taggable: boolean;
+  displayName: string | null;
+  /**
+   * The tagging consent text accepted at opt-in, and when. Null while not taggable. This is
+   * NOT the recognition consent on the selfie page: tagging does not require that one.
+   */
+  consentTextVersion: string | null;
+  consentAt: string | null;
+};
+
+/**
+ * One autocomplete suggestion. There is no `email` field and there must never be one: the
+ * suggestion list is shown to other participants.
+ */
+export type TaggableUser = {
+  userId: string;
+  displayName: string;
+};
+
+export type TagSearchResponse = {
+  items: TaggableUser[];
+};
+
+export type TaggedPhoto = {
+  photoId: string;
+  thumbUrl: string;
+  webUrl: string;
+  createdAt: string;
+};
+
+export type TagsMeResponse = {
+  profile: TagProfile;
+  items: TaggedPhoto[];
+};
+
+export type PhotoTag = {
+  photoId: string;
+  userId: string;
+  displayName: string | null;
+  createdAt: string;
+};
+
+export type PhotoTagsResponse = {
+  items: PhotoTag[];
+};

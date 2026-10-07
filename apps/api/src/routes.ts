@@ -93,6 +93,7 @@ import { registerCrowdRoutes } from "./routes.crowd.js";
 // v6 G (agent G): the privacy routes live in their own file; this is the only line they add here.
 import { registerPrivacyRoutes } from "./routes.privacy.js";
 import { registerResetRoutes } from "./routes.reset.js";
+import { registerTagRoutes } from "./routes.tags.js";
 
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -105,6 +106,7 @@ const HEALTH_TIMEOUT_MS = 2_000;
 const RATE_LIMIT_KEYS_MAX = 20_000;
 
 export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
+  registerTagRoutes(app, deps); // v6 E (agent E): every tagging route lives in routes.tags.ts
   const health = async (c: Context<AppEnv>) => {
     if (await databaseHealthy(deps)) return c.json({ ok: true });
     return c.json({ ok: false }, 503);
@@ -1332,6 +1334,12 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     if (!claimed) throw new ApiError(403, MESSAGES.eventCodeInvalid);
     const user = await deps.db.insertUser(email, "participant");
     await deps.db.setUserPassword(user.id, hashPassword(body.data.password));
+    // v6 E (agent E): the non-biometric membership record. The claimed code already resolved
+    // the event; before this row existed that fact was thrown away into the audit line below,
+    // and "is this person a participant of this event?" had no answer for anyone who never
+    // consented to face recognition and is not on an allowlist. `claimEventCode` keeps its
+    // semantics; this only persists what it already knew.
+    await deps.db.addEventMember({ userId: user.id, eventId: claimed.eventId, source: "event_code" });
     // Lazy verification (v6): no e-mail is sent here and `email_verified_at` stays null.
     // The address is proven later, by a password-reset link or a Google token.
     await deps.db.insertAudit({

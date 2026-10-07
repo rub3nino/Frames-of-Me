@@ -45,7 +45,8 @@ export const matchPayloadSchema = z
     selfieKey: z.string().min(1),
   })
   .strict();
-export const emailKindSchema = z.enum(["ready", "new"]);
+/** `tagged` is v6 E (agent E): someone tagged the recipient in a photo. */
+export const emailKindSchema = z.enum(["ready", "new", "tagged"]);
 export type EmailKind = z.infer<typeof emailKindSchema>;
 export const emailPayloadSchema = z
   .object({

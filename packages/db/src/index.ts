@@ -77,5 +77,22 @@ export type {
   RetentionAlarmMail,
   RetentionOutcome,
   RetentionStatusRow,
+  // v6 (agent E): event membership + tagging
+  AuditEntryRow,
+  EventMemberRow,
+  EventMemberSource,
+  PhotoTagRow,
+  PhotoTagState,
+  PhotoTagWithNameRow,
+  TagProfileRow,
+  TaggableUserRow,
+  TaggedPhotoRow,
 } from "./types.js";
 export { AlbumRecognitionLockedError, AlbumRecognitionNotAllowedError } from "./types.js";
+// v6 (agent E): tagging
+export {
+  DISPLAY_NAME_MAX_LENGTH,
+  nextTagConsent,
+  normalizeDisplayName,
+  TAG_SEARCH_MIN_PREFIX,
+} from "./types.js";

@@ -13,6 +13,10 @@ import {
   AlbumRecognitionLockedError,
   AlbumRecognitionNotAllowedError,
   DuplicateKeyError,
+  // v6 (agent E): tagging
+  nextTagConsent,
+  normalizeDisplayName,
+  TAG_SEARCH_MIN_PREFIX,
 } from "./types.js";
 import type {
   AnchoredGallery,
@@ -78,6 +82,15 @@ import type {
   RetentionAlarmMail,
   RetentionOutcome,
   RetentionStatusRow,
+  // v6 (agent E): event membership + tagging
+  AuditEntryRow,
+  EventMemberRow,
+  EventMemberSource,
+  PhotoTagRow,
+  PhotoTagWithNameRow,
+  TagProfileRow,
+  TaggableUserRow,
+  TaggedPhotoRow,
 } from "./types.js";
 
 /** Same cap as PostgresDatabase.findGalleriesByQueryVector. */
@@ -956,8 +969,24 @@ export class MemoryDatabase implements Database {
     return this.eventParticipants.has(`${eventId}:${email}`);
   }
 
-  async insertAudit(): Promise<void> {
-    return undefined;
+  // v6 (agent E): the rows are kept now (they used to be dropped), so `listAuditForTarget`
+  // answers here exactly as it does in Postgres and the tagging tests can assert the audit
+  // trail without a database. Nothing else reads them.
+  async insertAudit(input: {
+    actorId: string | null;
+    action: string;
+    target: string;
+    meta: Record<string, unknown>;
+  }): Promise<void> {
+    this.auditRows.push({
+      id: randomUUID(),
+      actorId: input.actorId,
+      action: input.action,
+      target: input.target,
+      // Copied, so a caller that reuses its meta object cannot rewrite history.
+      meta: { ...input.meta },
+      createdAt: new Date(),
+    });
   }
 
   async metrics(): Promise<Metrics> {
@@ -1942,6 +1971,184 @@ export class MemoryDatabase implements Database {
       .map((row) => ({ ...row }));
   }
 
+  // ---- event membership + tagging v6 (agent E) -------------------------------------------
+
+  /** `event_members` (migration 013), keyed by `user_id\0event_id` (its primary key). */
+  private readonly eventMembers = new Map<string, EventMemberStored>();
+  /** `users.display_name` (migration 013). Global, keyed by user id. */
+  private readonly displayNames = new Map<string, string>();
+  /** `photo_tags`, keyed by `photo_id\0user_id` (the primary key of migration 013). */
+  private readonly photoTags = new Map<string, PhotoTagStored>();
+  /** `audit_log`, so `listAuditForTarget` works without Postgres. */
+  private readonly auditRows: AuditEntryRow[] = [];
+
+  async addEventMember(input: {
+    userId: string;
+    eventId: string;
+    source: EventMemberSource;
+  }): Promise<EventMemberRow> {
+    const key = eventMemberKey(input.userId, input.eventId);
+    const existing = this.eventMembers.get(key);
+    // Idempotent and non-destructive, like the Postgres `on conflict ... do update` no-op:
+    // the recorded `source` is how the person FIRST came to belong to the event.
+    if (existing) return { ...existing };
+    const row: EventMemberStored = {
+      userId: input.userId,
+      eventId: input.eventId,
+      source: input.source,
+      taggable: false,
+      taggableConsentVersion: null,
+      taggableConsentAt: null,
+      createdAt: new Date(),
+    };
+    this.eventMembers.set(key, row);
+    return { ...row };
+  }
+
+  async isEventMember(userId: string, eventId: string): Promise<boolean> {
+    return this.eventMembers.has(eventMemberKey(userId, eventId));
+  }
+
+  async findEventMember(userId: string, eventId: string): Promise<EventMemberRow | null> {
+    const row = this.eventMembers.get(eventMemberKey(userId, eventId));
+    return row ? { ...row } : null;
+  }
+
+  async findTagProfile(userId: string, eventId: string): Promise<TagProfileRow | null> {
+    if (!this.users.has(userId)) return null;
+    // No membership row means no tagging profile, and no way to opt in — the inner join in
+    // the Postgres version.
+    const member = this.eventMembers.get(eventMemberKey(userId, eventId));
+    if (!member) return null;
+    // The column defaults: `taggable false`, `display_name null`. Never "unknown means yes".
+    return {
+      userId,
+      eventId,
+      taggable: member.taggable,
+      displayName: this.displayNames.get(userId) ?? null,
+      consentTextVersion: member.taggableConsentVersion,
+      consentAt: member.taggableConsentAt,
+    };
+  }
+
+  async setTagProfile(
+    userId: string,
+    eventId: string,
+    input: {
+      taggable: boolean;
+      displayName?: string | null;
+      consentTextVersion?: string | null;
+    },
+  ): Promise<TagProfileRow | null> {
+    const current = await this.findTagProfile(userId, eventId);
+    if (!current) return null;
+    const member = this.eventMembers.get(eventMemberKey(userId, eventId));
+    if (!member) return null;
+    const name =
+      input.displayName === undefined
+        ? current.displayName
+        : normalizeDisplayName(input.displayName);
+    if (input.taggable && !name) return null;
+    const consent = nextTagConsent(current, input);
+    if (input.taggable && !consent.version) return null;
+    if (name === null) this.displayNames.delete(userId);
+    else this.displayNames.set(userId, name);
+    member.taggable = input.taggable;
+    member.taggableConsentVersion = consent.version;
+    member.taggableConsentAt = consent.at;
+    return {
+      userId,
+      eventId,
+      taggable: input.taggable,
+      displayName: name,
+      consentTextVersion: consent.version,
+      consentAt: consent.at,
+    };
+  }
+
+  async searchTaggableUsers(input: {
+    eventId: string;
+    prefix: string;
+    limit: number;
+  }): Promise<TaggableUserRow[]> {
+    const prefix = input.prefix.trim().toLowerCase();
+    // Same second line of defence as Postgres: a short prefix returns nothing here too.
+    if (prefix.length < TAG_SEARCH_MIN_PREFIX) return [];
+    const rows: TaggableUserRow[] = [];
+    // Two membership tests, both non-biometric: a member row for THIS event, and the
+    // per-event opt-in. See the comment on the Postgres version — a recognition consent must
+    // NOT be required, and a person who opted in at event A is not suggested at event B.
+    for (const member of this.eventMembers.values()) {
+      if (member.eventId !== input.eventId || !member.taggable) continue;
+      const displayName = this.displayNames.get(member.userId);
+      if (!displayName) continue;
+      if (!displayName.toLowerCase().startsWith(prefix)) continue;
+      rows.push({ userId: member.userId, displayName });
+    }
+    return rows
+      .sort(
+        (a, b) =>
+          compareText(a.displayName.toLowerCase(), b.displayName.toLowerCase()) ||
+          compareText(a.userId, b.userId),
+      )
+      .slice(0, input.limit);
+  }
+
+  async insertPhotoTag(input: {
+    photoId: string;
+    userId: string;
+    taggedBy: string;
+  }): Promise<PhotoTagRow | null> {
+    // The event comes from the photo, so the per-event opt-in is checked against the event
+    // the photo actually belongs to and not against one the caller named.
+    const photo = this.photos.get(input.photoId);
+    if (!photo) return null;
+    const profile = await this.findTagProfile(input.userId, photo.eventId);
+    if (!profile || !profile.taggable || !profile.displayName) return null;
+    const key = photoTagKey(input.photoId, input.userId);
+    // Mirrors `on conflict (photo_id, user_id) do nothing`: an existing row, 'removed'
+    // included, is left exactly as it is, so a refused tag stays refused.
+    if (this.photoTags.has(key)) return null;
+    const row: PhotoTagStored = {
+      photoId: input.photoId,
+      userId: input.userId,
+      taggedBy: input.taggedBy,
+      state: "active",
+      createdAt: new Date(),
+    };
+    this.photoTags.set(key, row);
+    return { ...row };
+  }
+
+  async findPhotoTag(photoId: string, userId: string): Promise<PhotoTagRow | null> {
+    const row = this.photoTags.get(photoTagKey(photoId, userId));
+    return row ? { ...row } : null;
+  }
+
+  async removePhotoTag(photoId: string, userId: string): Promise<PhotoTagRow | null> {
+    const row = this.photoTags.get(photoTagKey(photoId, userId));
+    if (!row || row.state !== "active") return null;
+    row.state = "removed";
+    return { ...row };
+  }
+
+  async listActivePhotoTagsForUser(userId: string, eventId: string): Promise<PhotoTagRow[]> {
+    // Scoped to the event, because the opt-in is: opting out of event A must not remove the
+    // tags the same person accepted at event B.
+    return [...this.photoTags.values()]
+      .filter(
+        (row) =>
+          row.userId === userId &&
+          row.state === "active" &&
+          this.photos.get(row.photoId)?.eventId === eventId,
+      )
+      .sort(
+        (a, b) =>
+          b.createdAt.getTime() - a.createdAt.getTime() || compareText(a.photoId, b.photoId),
+      )
+      .map((row) => ({ ...row }));
+  }
+
   async updateEventCode(
     eventId: string,
     code: string,
@@ -2530,6 +2737,52 @@ export class MemoryDatabase implements Database {
     }
     return burnt;
   }
+
+  async listTaggedPhotosForUser(userId: string, eventId: string): Promise<TaggedPhotoRow[]> {
+    const rows: TaggedPhotoRow[] = [];
+    for (const tag of this.photoTags.values()) {
+      if (tag.userId !== userId || tag.state !== "active") continue;
+      const photo = this.photos.get(tag.photoId);
+      if (!photo || photo.eventId !== eventId) continue;
+      const thumb = this.derivatives.find((d) => d.photoId === photo.id && d.kind === "thumb");
+      const web = this.derivatives.find((d) => d.photoId === photo.id && d.kind === "web");
+      // The Postgres query inner-joins both derivatives: a photo still being processed is
+      // not listed, exactly as in the personal gallery.
+      if (!thumb || !web) continue;
+      rows.push({
+        photoId: photo.id,
+        eventId: photo.eventId,
+        thumbKey: thumb.s3Key,
+        webKey: web.s3Key,
+        taggedBy: tag.taggedBy,
+        createdAt: tag.createdAt,
+      });
+    }
+    return rows.sort(
+      (a, b) => b.createdAt.getTime() - a.createdAt.getTime() || compareText(a.photoId, b.photoId),
+    );
+  }
+
+  async listPhotoTags(photoId: string): Promise<PhotoTagWithNameRow[]> {
+    const rows = [...this.photoTags.values()].filter(
+      (row) => row.photoId === photoId && row.state === "active",
+    );
+    return rows
+      .sort(
+        (a, b) =>
+          a.createdAt.getTime() - b.createdAt.getTime() || compareText(a.userId, b.userId),
+      )
+      .map((row) => ({
+        ...row,
+        displayName: this.displayNames.get(row.userId) ?? null,
+      }));
+  }
+
+  async listAuditForTarget(target: string): Promise<AuditEntryRow[]> {
+    return this.auditRows
+      .filter((row) => row.target === target)
+      .map((row) => ({ ...row }));
+  }
 }
 
 type FeedbackRow = {
@@ -2649,3 +2902,33 @@ type PasswordResetTokenStored = {
   ip: string | null;
   createdAt: Date;
 };
+
+// ---- event membership + tagging v6 (agent E) ----------------------------------------------
+
+type EventMemberStored = {
+  userId: string;
+  eventId: string;
+  source: EventMemberSource;
+  taggable: boolean;
+  taggableConsentVersion: string | null;
+  taggableConsentAt: Date | null;
+  createdAt: Date;
+};
+
+/** The `event_members` primary key (user_id, event_id) as one map key. */
+function eventMemberKey(userId: string, eventId: string): string {
+  return `${userId}\u0000${eventId}`;
+}
+
+type PhotoTagStored = {
+  photoId: string;
+  userId: string;
+  taggedBy: string | null;
+  state: "active" | "removed";
+  createdAt: Date;
+};
+
+/** The `photo_tags` primary key (photo_id, user_id) as one map key. */
+function photoTagKey(photoId: string, userId: string): string {
+  return `${photoId}\u0000${userId}`;
+}
