@@ -17,6 +17,10 @@
 >
 > Aggiornamento v3 (stesso giorno): il flusso fotografo ha in più la cartella sorvegliata e l'invio a due stadi
 > (`docs/v3-uploader-spec.md`, `CONTRACTS.md` → *Two-stage upload* e *Web uploader*). Vedi la nota in §4.2.
+>
+> Aggiornamento v4 (stesso giorno): lo step selfie del partecipante apre la camera e guida una breve challenge
+> prima dello scatto (`docs/v4-selfhost-spec.md` §4, `apps/web/lib/liveness.ts`). Vedi la nota in §3.3; il punto 8 di §9
+> («selfie-liveness fuori scope») è superato nei termini descritti lì.
 
 ---
 
@@ -131,6 +135,21 @@ Dall'API (`CONTRACTS.md`): **il selfie richiede un utente autenticato** *e* **un
 - Selfie fino a 8 MB (il restringimento sotto 5 MB lo fa il worker). JPEG/PNG.
 - Il consenso biometrico è **sulla stessa schermata del selfie**, come checkbox che sblocca il bottone "Trova le mie foto". Non è una pagina separata (evita un passaggio in più) ma è **esplicito** e non pre-spuntato.
 - Dopo l'invio: la pagina **non cambia URL**, passa a stato "Confronto in corso…". Niente navigazione nuova = niente passaggio ripetuto.
+
+> **Nota v4 — challenge in camera.** Nella pagina `/selfie` implementata, dopo il consenso la camera frontale si apre
+> inline e la persona segue cinque indicazioni, una alla volta, con una barra di avanzamento: «Guarda la camera» →
+> «Gira la testa a sinistra» → «Gira la testa a destra» → «Sbatti le palpebre» → «Guarda la camera» (scatto automatico
+> quando il viso è frontale, centrato nell'ovale e con gli occhi aperti). Ogni passo ha 15 secondi; allo scadere compare
+> «Tempo scaduto. Riprova» e si ripete sulla stessa camera. Il riconoscimento dei punti del volto gira nel browser
+> (MediaPipe, file serviti dal nostro dominio): **nessun fotogramma esce dal telefono** prima dello scatto finale, e la
+> pagina lo dice («Nessuna immagine esce dal telefono prima dello scatto»). Dopo lo scatto: anteprima, «Invia il selfie»,
+> «Rifai lo scatto». Fallback sempre disponibile con «Usa un file invece» (e automatico se la camera è negata, assente,
+> o la pagina non è in `https`/`localhost`): il flusso a file di prima, con «Scatta o scegli» e «Scegli un'altra»; da lì
+> «Usa la camera» torna alla challenge. L'API riceve con il selfie il campo `liveness = challenge | file` e lo registra
+> in `audit_log`: è un'asserzione del client, utile alla DPIA, non un controllo. Il controllo server-side opzionale
+> (`LIVENESS_CHECK`) non cambia la UI: un selfie rifiutato arriva a galleria `ready` vuota («Nessuna corrispondenza»),
+> stesso stato dell'edge case «Nessun match» in §3.6; il partecipante può rifare il selfie entro il limite di 5/ora.
+> Attrito aggiunto: ~10–20 secondi e il permesso camera del browser; da misurare in sala quanti scelgono il file.
 
 ### 3.4 Galleria (`/e/{slug}`) — stati e azioni
 

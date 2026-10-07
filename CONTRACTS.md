@@ -1,8 +1,8 @@
 # RePhoto contracts
 
-Frozen v3 contract. Clarify wording only by editing this file in a follow-up; do not rename fields, routes, env vars, table columns, or job payload keys. This file describes the code as it is; `docs/v2-spec.md` and `docs/v3-uploader-spec.md` are the design notes that led to it and are not authoritative where they differ from this file (known deviation: original-stage `init` for a photo whose original is already present is `409`, not `400`).
+Frozen v4 contract. Clarify wording only by editing this file in a follow-up; do not rename fields, routes, env vars, table columns, or job payload keys. This file describes the code as it is; `docs/v2-spec.md`, `docs/v3-uploader-spec.md` and `docs/v4-selfhost-spec.md` are the design notes that led to it and are not authoritative where they differ from this file (known deviations: original-stage `init` for a photo whose original is already present is `409`, not `400`; the InsightFace engine checks its table on first use, not at boot).
 
-Region assumption: `eu-central-1`. No Qdrant. No GPU. No SQS: the queue is the Postgres `jobs` table on every path, local and AWS.
+Primary deployment: one self-hosted VPS (`deploy/`), no AWS: InsightFace on CPU behind an HTTP service, vectors in Postgres + pgvector, objects in MinIO, mail through a provider's SMTP. `S3_REGION` / `AWS_REGION` stay the literal `eu-central-1` (SigV4 needs a region string; the AWS adapters refuse anything else). No Qdrant. No GPU. No SQS: the queue is the Postgres `jobs` table on every path, local, VPS and AWS.
 
 ## Monorepo
 
@@ -15,9 +15,10 @@ npm workspaces (`apps/*`, `packages/*`):
 | `apps/web` | `@rephoto/web` | Next.js, port **3000**, Italian UI, `output: "standalone"`. Proxies `/v1/*` to the API. |
 | `packages/contracts` | `@rephoto/contracts` | Zod schemas (HTTP, jobs, env), `FaceEngine` input **types**, `objectKeys`, `rekognitionCollectionId`, `DEFAULT_MATCH_THRESHOLD`. No AWS SDK. |
 | `packages/db` | `@rephoto/db` | SQL migrations, `migrate`, `seedDemo`, `PostgresDatabase`, `MemoryDatabase` (tests). |
-| `packages/face-engine` | `@rephoto/face-engine` | `FaceEngine` implementations (`fake`, `rekognition`) and the per-process rate limiter. The only package that imports the Rekognition SDK. |
+| `packages/face-engine` | `@rephoto/face-engine` | `FaceEngine` implementations (`fake`, `rekognition`, `insightface`) and the per-process rate limiter. The only package that imports the Rekognition SDK; the only one that talks to `face_vectors`. |
+| `apps/face-service` | (Python, not an npm workspace) | FastAPI + onnxruntime + insightface on CPU, port **8090**. Embeddings and the optional silent-face liveness check. No persistence. See *`FACE_ENGINE=insightface`*. |
 
-Outside the workspaces: `infra/cdk` (reference AWS stack, own `package.json`), `scripts/loadtest` (k6).
+Outside the workspaces: `deploy/` (production Compose stack, Caddyfile, scripts), `infra/cdk` (AWS stack, kept as an alternative, own `package.json`), `scripts/loadtest` (k6).
 
 Callers depend on `FaceEngine` from `@rephoto/face-engine` (`packages/face-engine/src/types.ts`). Swapping another engine in later means a new class in that package plus a `FACE_ENGINE` value. `@rephoto/contracts` does not declare a second engine interface.
 
@@ -40,6 +41,9 @@ export interface SearchHit {
 
 export interface SearchFacesInput { eventId: string; externalFaceId: string }
 
+export interface LivenessInput { imageBytes: Uint8Array; contentType: "image/jpeg" | "image/png" }
+export interface LivenessResult { live: boolean; score: number /* 0..1 */; method: string /* "silent-face" | "none" */ }
+
 export interface FaceEngine {
   indexPhoto(input: { eventId: string; photoId: string; imageBytes: Uint8Array; contentType: "image/jpeg" | "image/png" }): Promise<IndexedFace[]>;
   search(input: { eventId: string; imageBytes: Uint8Array; contentType: "image/jpeg" | "image/png" }): Promise<SearchHit[]>;
@@ -47,27 +51,142 @@ export interface FaceEngine {
   searchFaces(input: SearchFacesInput): Promise<SearchHit[]>;
   deleteFaces(eventId: string, externalFaceIds: string[]): Promise<void>;
   deleteCollection(eventId: string): Promise<void>;
+  /** Presentation-attack check on a selfie. Optional: only the InsightFace engine implements it. */
+  checkLiveness?(input: LivenessInput): Promise<LivenessResult>;
 }
 ```
 
-- The engine speaks Rekognition's **0–100** scale. `REKOGNITION_MIN_SIMILARITY` defaults to **90** (0–100) and is applied inside the Rekognition adapter as `FaceMatchThreshold` for both `SearchFacesByImage` and `SearchFaces`; hits below it are dropped again client-side. The fake adapter returns similarity **99** for a hit.
-- The worker divides engine confidence and similarity by 100 before writing Postgres. `faces.confidence` and `gallery_items.score` are **0–1**. A gallery row is kept only when its score is `>= DEFAULT_MATCH_THRESHOLD` (**0.8**).
-- Rekognition `BoundingBox` (`Left`, `Top`, `Width`, `Height`, already 0..1) maps to `{ left, top, width, height }`. Postgres stores the same box as `{ x, y, width, height }`.
-- `externalFaceId` is the vendor face id (Rekognition `FaceId`, or `fake-{photoId}`). It is **not** the photo id.
+`FACE_ENGINE` is exactly one of `fake` | `rekognition` | `insightface`. Rules common to every engine:
+
+- The engine speaks a **0–100** similarity scale. The worker divides engine confidence and similarity by 100 before writing Postgres. `faces.confidence` and `gallery_items.score` are **0–1**. A gallery row is kept only when its score is `>= DEFAULT_MATCH_THRESHOLD` (**0.8**); the gallery UI splits at **0.9** («Le tue foto» / «Forse sei tu»).
+- Boxes are `{ left, top, width, height }` normalized 0..1. Postgres stores the same box as `{ x, y, width, height }`.
+- `externalFaceId` is the engine's face id (Rekognition `FaceId`, `face_vectors.external_face_id`, or `fake-{photoId}`). It is **not** the photo id. `SearchHit.photoId` is the photo the face was indexed from.
+- A selfie is never passed to `indexPhoto`; the worker refuses to index an object under `selfies/`.
+- `index` sends `web/{photoId}.jpg` (long edge 1600, JPEG quality 80), re-encoded smaller when that derivative exceeds 5 MB. `match` builds an EXIF-oriented JPEG under 5 MB from the selfie (long edge 2048 down to 480, quality 85 down to 55). Selfie uploads may be up to 8 MiB; the shrink is in the worker. The same ≤ 5 MB JPEG goes to Rekognition and to the face service.
+- `deleteFaces` with an empty list is a no-op. `deleteCollection(eventId)` removes everything the engine holds for that event.
+- **Embeddings.** Raw embeddings are persisted in exactly one place, the `face_vectors` table, and only when `FACE_ENGINE=insightface`. Never in `faces`, never in logs, never in object storage, never in the HTTP API. A `face_vectors` row lives as long as its photo: `deleteFaces` (admin delete, re-index, retention) and `deleteCollection` (retention on an empty event) remove it. With Rekognition the vectors live only in the AWS collection; with `fake` there are none.
+
+### `FACE_ENGINE=rekognition`
+
+- `REKOGNITION_MIN_SIMILARITY` defaults to **90** (0–100) and is applied inside the adapter as `FaceMatchThreshold` for both `SearchFacesByImage` and `SearchFaces`; hits below it are dropped again client-side.
+- Rekognition `BoundingBox` (`Left`, `Top`, `Width`, `Height`, already 0..1) maps to `{ left, top, width, height }`.
 - Rekognition `ExternalImageId` is the **photoId** unchanged. `SearchHit.photoId` is that value.
 - `search` = `SearchFacesByImage` on selfie bytes; `searchFaces` = `SearchFacesCommand({ CollectionId, FaceId, MaxFaces, FaceMatchThreshold })` on a face already in the collection. Both use `MaxFaces = REKOGNITION_SEARCH_MAX_FACES` (default **500**, 1–4096). `IndexFaces` uses `MaxFaces = 50`, `QualityFilter = AUTO`. A missing collection or face (`ResourceNotFoundException`) makes `search`, `searchFaces`, `deleteFaces` and `deleteCollection` succeed with no hits.
 - `deleteFaces` deletes by `externalFaceId` inside the event collection, chunked at 4096 ids. An empty list is a no-op.
-- `deleteCollection(eventId)` deletes that event's Rekognition collection. The fake adapter deletes that event's `face_index` rows.
-- A selfie is never passed to `indexPhoto`; the worker refuses to index an object under `selfies/`.
-- `IndexFaces`, `SearchFacesByImage` are called with image **bytes**, which Rekognition caps at **5 MB**. `index` sends `web/{photoId}.jpg` (long edge 1600, JPEG quality 80), re-encoded smaller when that derivative exceeds 5 MB. `match` builds an EXIF-oriented JPEG under 5 MB from the selfie (long edge 2048 down to 480, quality 85 down to 55). Selfie uploads may be up to 8 MiB; the shrink is in the worker.
+- `deleteCollection(eventId)` deletes that event's Rekognition collection.
+- `IndexFaces`, `SearchFacesByImage` are called with image **bytes**, which Rekognition caps at **5 MB** (hence the worker shrink above).
 - Throttling (`ProvisionedThroughputExceededException`, `ThrottlingException`, `TooManyRequestsException`) is rethrown as `RekognitionThrottleError`; any other Rekognition error is rethrown with image bytes stripped from the message. `AWS_REGION` other than `eu-central-1` makes the adapter throw at construction.
-- Do not persist raw embeddings. Not in Postgres, not in object storage, not in logs.
+- No `checkLiveness`: with `LIVENESS_CHECK=true` the `match` job simply skips the check.
+
+### `FACE_ENGINE=insightface`
+
+`InsightFaceEngine` (`packages/face-engine/src/insightface.ts`): embeddings from the HTTP face service, storage and nearest-neighbour search in Postgres + pgvector, in the **same database** as the app (`DATABASE_URL`, own `postgres` client, `max: 4`, one client per URL per process).
+
+**Face service HTTP contract** (`apps/face-service`, port 8090, no persistence, image bytes never logged):
+
+| Method | Path | Input | Response |
+| --- | --- | --- | --- |
+| `GET` | `/health` | | `200 { ok: true, model: "buffalo_l", providers: ["CPUExecutionProvider"] }`; `503 { ok: false }` while the model is not loaded |
+| `POST` | `/v1/embed` | multipart `image` (JPEG/PNG, ≤ 8 MiB, ≤ 120 MP); query `max_faces` 1–50 (default 50), `min_size` px (default 20) | `200 { width, height, faces: [{ bbox: { left, top, width, height } /* 0..1 */, score /* detector 0..1 */, quality /* 0..1 */, embedding: number[512] /* L2-normalised */ }] }` sorted by bbox area desc |
+| `POST` | `/v1/liveness` | multipart `image` | `200 { live: boolean, score: 0..1, method: "silent-face" \| "none" }` |
+
+- Decoding: Pillow, EXIF-oriented; long edge resized to **1600** before detection; `width` / `height` are the oriented original's, `bbox` is normalised against them. `quality = min(1, bbox_long_edge_px / 80) × score`, computed on the 1600 px image; faces with long edge < `min_size` are dropped. Model pack `buffalo_l` (SCRFD detector + ArcFace `w600k_r50`, 512-d), onnxruntime CPU, `ONNX_THREADS` intra-op threads (default CPU count), `DET_SIZE` 640, one uvicorn worker, `asyncio.Semaphore(2)` around the model. Models are downloaded at **image build** into `/models`; the running container needs no network.
+- Errors: `400 { detail: { code: "undecodable_image" | "empty_image" } }`, `413` (`payload_too_large` > 8 MiB, `image_too_large` > 120 MP), `422` (bad query / missing field), `503` (`model_not_loaded`). Bodies never echo image bytes.
+- `/v1/liveness`: MiniFASNet (Silent-Face-Anti-Spoofing architecture) ONNX weights from `hairymax/Face-AntiSpoofing` (pinned commit, SHA-256 verified at build; that repository publishes **no licence file**). Largest detected face, square crop 1.5× the bbox, 128×128; `score` = P(live), `live = score ≥ LIVENESS_THRESHOLD` (default 0.5); no face → `{ live: false, score: 0 }`. Built with `--build-arg WITH_LIVENESS=0`, or with `LIVENESS_MODEL` pointing nowhere, the endpoint always answers `{ live: true, score: 0, method: "none" }`.
+
+**Engine environment** (parsed by `envSchema`; `createFaceEngine` reads the same names from `process.env`):
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `FACE_SERVICE_URL` | `http://localhost:8090` | Base URL of the face service, `http(s)` only, trailing slashes stripped |
+| `INSIGHTFACE_MIN_COSINE` | `0.45` | Cosine below which a pair is not a match (0–1) |
+| `INSIGHTFACE_SURE_COSINE` | `0.65` | Cosine at/above which the pair is certain (0–1); must be `> MIN`, else boot fails |
+| `INSIGHTFACE_MAX_FACES` | `500` | Rows returned by `search` / `searchFaces` (1–4096) |
+| `INSIGHTFACE_MIN_FACE_QUALITY` | `0.3` | Faces with service `quality` below this are not indexed (0–1) |
+| `FACE_INDEX_TPS`, `FACE_SEARCH_TPS` | `20`, `20` | Rate limiter buckets per process (see *Rate limiter*) |
+| `LIVENESS_CHECK` | `false` | Read by the **worker** `match` job, not by the engine (see *Jobs*) |
+
+**Similarity mapping (frozen).** The rest of the system expects 0–100 with the worker threshold 0.8 and the gallery "sure" boundary 0.9. For a cosine `c` (`1 - (embedding <=> query)`, vectors are unit-norm):
+
+```text
+c <  MIN                → dropped (not a hit)
+c >= MIN                → similarity = 80 + 20 × clamp((c − MIN) / (SURE − MIN), 0, 1)
+```
+
+So `MIN ↔ 80`, `SURE ↔ 100`, and the gallery's 0.9 boundary sits halfway (`c = (MIN + SURE) / 2`, 0.55 with the defaults). `IndexedFace.confidence = score × 100`. `mapCosine(c, min, sure)` is exported and unit-tested; nothing else in the repo maps cosines.
+
+**Storage.** Migration `packages/db/migrations/005_face_vectors.sql`:
+
+```sql
+create extension if not exists vector;
+create table face_vectors (
+  external_face_id uuid primary key default gen_random_uuid(),
+  event_id uuid not null,
+  photo_id uuid not null,
+  embedding vector(512) not null,
+  created_at timestamptz not null default now()
+);
+create index face_vectors_event_idx on face_vectors (event_id);
+create index face_vectors_photo_idx on face_vectors (photo_id);
+create index face_vectors_embedding_idx on face_vectors using hnsw (embedding vector_cosine_ops) with (m = 16, ef_construction = 64);
+```
+
+The migration wraps this in a `DO` block: when `create extension` fails (plain `postgres:16` image) it raises a `NOTICE`, creates nothing, and is still recorded in `schema_migrations`, so `migrate()` never aborts. **Self-healing rule** (`InsightFaceEngine.ready()`, run once per process on first use): `select to_regclass('public.face_vectors')`; when the table is missing the engine runs `create extension if not exists vector` plus the same DDL (`create table if not exists` / `create index if not exists`) in one transaction. Only a failing `create extension` is fatal: `FaceVectorsTableMissing`, whose message names the database (credentials redacted) and the `pgvector/pgvector:pg16` image. No `faces`-table row references `face_vectors`; the link is `faces.external_id = face_vectors.external_face_id::text`.
+
+**Exact SQL** (constants in `insightface.ts`, positional parameters):
+
+```sql
+-- indexPhoto: one row per kept face, ids returned in input order
+insert into face_vectors (event_id, photo_id, embedding)
+select $1::uuid, $2::uuid, input.embedding::vector
+from unnest($3::text[]) with ordinality as input(embedding, ord)
+order by input.ord
+returning external_face_id;
+
+-- search (selfie): inside one transaction, after `set local hnsw.ef_search = max(100, $3)`
+select external_face_id, photo_id, 1 - (embedding <=> $1::vector) as cos
+from face_vectors
+where event_id = $2::uuid
+order by embedding <=> $1::vector
+limit $3;
+
+-- searchFaces (attach): same, minus the anchor face
+select external_face_id, photo_id, 1 - (embedding <=> $1::vector) as cos
+from face_vectors
+where event_id = $2::uuid and external_face_id <> $4::uuid
+order by embedding <=> $1::vector
+limit $3;
+
+-- vector of an indexed face (searchFaces input); unknown id → no hits
+select embedding::text as embedding from face_vectors where external_face_id = $1::uuid and event_id = $2::uuid;
+
+-- deleteFaces, chunks of 1000 ids
+delete from face_vectors where event_id = $1::uuid and external_face_id = any($2::uuid[]);
+
+-- deleteCollection
+delete from face_vectors where event_id = $1::uuid;
+```
+
+Behaviour:
+
+- `indexPhoto`: `POST /v1/embed?max_faces=50`; keep faces with a 512-number finite embedding and `quality ≥ INSIGHTFACE_MIN_FACE_QUALITY`; one insert for all of them; returns `{ externalFaceId = row uuid, bbox (clamped 0..1), confidence = score × 100 }`. Service `400` → `[]` (photo without a decodable image: indexed with zero faces).
+- `search`: embed the selfie (`max_faces` 50), take the **largest** face by bbox area (none → `[]`), nearest-neighbour query with `limit = INSIGHTFACE_MAX_FACES`, keep `cos ≥ MIN`, map to similarity. `searchFaces`: the stored vector of `externalFaceId` within the event, excluding itself; unknown id → `[]`.
+- `checkLiveness`: `POST /v1/liveness`; `400` → `{ live: true, score: 0, method: "none" }` (the search will find no face either); the body's `live` is read as `!== false`.
+- Errors: bytes over 8 MiB → `FaceServiceError(413)` before any round trip; connection failure or service `5xx` → `FaceServiceUnavailable` (retried by the worker like any error, attempts counted); other `4xx` → `FaceServiceError(status)` with the body sanitised to printable ASCII, 200 chars. The worker treats a `FaceServiceError` with status **400, 413 or 422** as **non-retryable** (`FACE_SERVICE_DEFINITIVE_STATUSES` in `apps/worker/src/handlers.ts`: `failTerminal` on the first attempt, `applyFinalFailure`); any other status retries. Neither error type ever contains image bytes.
+- Tests: `packages/face-engine/src/insightface.test.ts` (stubbed `fetch` and `sql`: mapping, filtering, chunking, error names); `insightface.integration.test.ts` runs only when `DATABASE_URL` points at a pgvector database and `FACE_SERVICE_URL` answers `/health`, otherwise skips with the reason. Service tests: `apps/face-service/tests` (`pytest`; the real-model tests skip when the pack cannot be loaded).
 
 ### Rate limiter
 
-`createFaceEngine(env)` wraps the Rekognition engine in `RateLimitedFaceEngine`: two token buckets per **process**, `REKOGNITION_INDEX_TPS` (default 5) for `indexPhoto` and `REKOGNITION_SEARCH_TPS` (default 5) shared by `search` and `searchFaces`. Capacity is `max(1, ceil(tps))`, refill is continuous, waiters are FIFO. Deletes are not limited. The fake engine is not wrapped. With N worker instances the account-level rate is N times these values; the Rekognition quota is per account, so set the envs to `quota / instances`.
+`createFaceEngine(env)` wraps the remote engines in `RateLimitedFaceEngine`: two token buckets per **process**, one for `indexPhoto` and one shared by `search`, `searchFaces` and `checkLiveness` (exposed only when the inner engine has it). Capacity is `max(1, ceil(tps))`, refill is continuous, waiters are FIFO. Deletes are not limited. The fake engine is not wrapped.
 
-### Collection id (frozen function)
+| Engine | Index bucket | Search bucket |
+| --- | --- | --- |
+| `rekognition` | `REKOGNITION_INDEX_TPS` (default 5); `FACE_INDEX_TPS` honoured when the Rekognition name is blank | `REKOGNITION_SEARCH_TPS` (default 5); `FACE_SEARCH_TPS` as fallback |
+| `insightface` | `FACE_INDEX_TPS` (default 20) | `FACE_SEARCH_TPS` (default 20) |
+
+With N worker instances the aggregate rate is N times these values. For Rekognition the quota is per account, so set the envs to `quota / instances`; for InsightFace the limit only protects the face service from a burst (its own semaphore of 2 is the real cap) and 20/20 with two workers is fine.
+
+### Collection id (frozen function, Rekognition only)
 
 Rekognition collection ids must match `[a-zA-Z0-9_.\-]` and be 1–255 characters. Hyphens are legal, so UUID hyphens in `eventId` are **kept**. Strip a character only when it is outside that set. The only legal builder is `rekognitionCollectionId` in `@rephoto/contracts`:
 
@@ -106,24 +225,36 @@ No AWS calls.
 | --- | --- | --- |
 | `DATABASE_URL` | `postgres://rephoto:rephoto@localhost:5432/rephoto` | Required |
 | `DATABASE_POOL_MAX` | `10` | Pool size per process (`postgres` `max`). The API passes it to `createSql`; the worker uses the default 10. Keep `api × pool + worker × pool` under the RDS limit |
-| `S3_ENDPOINT` | `http://localhost:9000` | Optional; omit on ECS so the task role is used |
+| `S3_ENDPOINT` | `http://localhost:9000` | Optional; omit on ECS so the task role is used. On the VPS: `http://minio:9000` (compose-internal) |
+| `S3_PUBLIC_ENDPOINT` | unset locally; `https://media.<domain>` on the VPS | Optional URL. When set, **every presigned URL** (GET, PUT, `UploadPart`) is signed by a second `S3Client` with this endpoint and `forcePathStyle: true`; every other operation keeps using `S3_ENDPOINT`. SigV4 covers `Host`, so the proxy in front of MinIO must pass the original `Host` through |
 | `S3_BUCKET` | `rephoto` | Required |
 | `S3_ACCESS_KEY` | `rephoto` | Required only when `S3_ENDPOINT` is set |
 | `S3_SECRET_KEY` | `rephoto-secret` | Local MinIO only; required only when `S3_ENDPOINT` is set |
-| `S3_REGION` | `eu-central-1` | Literal; any other value is rejected |
+| `S3_REGION` | `eu-central-1` | Literal; any other value is rejected (used only as the SigV4 region string with MinIO) |
 | `S3_FORCE_PATH_STYLE` | `true` | Default `true` when `S3_ENDPOINT` is set, `false` on real AWS |
 | `SESSION_SECRET` | long random string (min 16 chars) | Dev placeholder in `.env.example` |
-| `FACE_ENGINE` | `fake` locally, `rekognition` in AWS | Exactly one of the two |
+| `FACE_ENGINE` | `fake` locally (default), `insightface` on the VPS, `rekognition` on AWS | Exactly one of `fake` \| `rekognition` \| `insightface` |
+| `FACE_SERVICE_URL` | `http://localhost:8090` | URL of `apps/face-service`; used only by `insightface` |
+| `INSIGHTFACE_MIN_COSINE` | `0.45` | 0–1. Cosine ↔ similarity 80 |
+| `INSIGHTFACE_SURE_COSINE` | `0.65` | 0–1, must be `> MIN`. Cosine ↔ similarity 100 |
+| `INSIGHTFACE_MAX_FACES` | `500` | 1–4096. Nearest-neighbour `limit` |
+| `INSIGHTFACE_MIN_FACE_QUALITY` | `0.3` | 0–1. Faces below it are not indexed |
+| `FACE_INDEX_TPS` | `20` | Positive number. `indexPhoto` per second **per process** (`insightface`; fallback name for Rekognition) |
+| `FACE_SEARCH_TPS` | `20` | Positive number. `search` + `searchFaces` + `checkLiveness` per second **per process** |
+| `LIVENESS_CHECK` | `false` | `true` makes the worker's `match` job call `checkLiveness` before searching (engines without it: no-op). See *Jobs* |
 | `AWS_REGION` | `eu-central-1` | Literal, default `eu-central-1` |
 | `REKOGNITION_COLLECTION_PREFIX` | `rephoto-` | |
 | `REKOGNITION_SEARCH_MAX_FACES` | `500` | 1–4096. `SearchFacesByImage` and `SearchFaces` |
 | `REKOGNITION_MIN_SIMILARITY` | unset (= `90`) | 0–100. Read by the Rekognition adapter directly, not by `envSchema` |
 | `REKOGNITION_INDEX_TPS` | `5` | Positive number. `IndexFaces` per second **per worker process** |
 | `REKOGNITION_SEARCH_TPS` | `5` | Positive number. `SearchFacesByImage` + `SearchFaces` per second **per worker process** |
-| `MAIL_TRANSPORT` | `smtp` (Mailpit) | `ses` sends with SESv2 in `AWS_REGION` and does not require SMTP host or port |
+| `MAIL_TRANSPORT` | `smtp` (Mailpit) | `smtp` is **nodemailer** (pooled transport, 2 connections per process, 10 s connect / 20 s socket timeouts) towards any provider's SMTP endpoint; `ses` sends with SESv2 in `AWS_REGION` and does not require SMTP host or port |
 | `SMTP_HOST` | `localhost` | Required when `MAIL_TRANSPORT=smtp` |
 | `SMTP_PORT` | `1025` | Required when `MAIL_TRANSPORT=smtp` |
-| `SMTP_FROM` | `noreply@rephoto.local` | Sender for both transports |
+| `SMTP_USER`, `SMTP_PASSWORD` | unset (Mailpit, no AUTH) | Provider credentials; set both or neither (half-configured → boot fails). Never logged |
+| `SMTP_SECURE` | unset | Implicit TLS from the first byte (SMTPS). Default **`true` on port 465**, `false` otherwise |
+| `SMTP_STARTTLS` | `auto` | `auto` upgrades with STARTTLS when the server advertises it (`587`) and stays plain otherwise (Mailpit); `true` refuses to send without STARTTLS (`requireTLS`); `false` never upgrades (`ignoreTLS`) |
+| `SMTP_FROM` | `noreply@rephoto.local` | Sender for both transports; `Name <addr>` is accepted |
 | `SEED_DEMO` | unset locally | `false`, or `NODE_ENV=production`, skips the demo seed |
 | `WEB_ORIGIN` | `http://localhost:3000` | Base of e-mailed links; CORS allow-origin; `Origin` check on ZIP; cookie `Secure` when `https:` |
 | `API_ORIGIN` | `http://localhost:8787` | |
@@ -153,7 +284,7 @@ Derivative `kind` is `thumb` or `web` and matches those keys. The `objectKeys` h
 
 On `search` success (including zero matches), the match job deletes the selfie object before the job is marked `done`. On a thrown search, the object is kept for retry. After the final failed attempt, `applyFinalFailure` deletes the selfie anyway. The AWS bucket adds a 2-day lifecycle expiry on `selfies/` as a safety net (not applied by MinIO).
 
-Presigned GET URLs (`thumbUrl`, `webUrl`, download) expire after **30 minutes** (`SIGNED_URL_TTL_SECONDS`) and are signed with a `signingDate` rounded down to a **10-minute** window (`SIGNED_URL_WINDOW_SECONDS`), so the same key yields the same URL inside the window and browsers can cache thumbnails. Presigned PUT and `UploadPart` URLs also expire after 30 minutes; the single PUT is bound to the declared `Content-Length` and `Content-Type`.
+Presigned GET URLs (`thumbUrl`, `webUrl`, download) expire after **30 minutes** (`SIGNED_URL_TTL_SECONDS`) and are signed with a `signingDate` rounded down to a **10-minute** window (`SIGNED_URL_WINDOW_SECONDS`), so the same key yields the same URL inside the window and browsers can cache thumbnails. Presigned PUT and `UploadPart` URLs also expire after 30 minutes; the single PUT is bound to the declared `Content-Length` and `Content-Type`. All presigned URLs point at `S3_PUBLIC_ENDPOINT` when it is set (path-style: `https://media.<domain>/<bucket>/<key>`), else at `S3_ENDPOINT` / AWS; the object itself is read and written through `S3_ENDPOINT`.
 
 ## Jobs
 
@@ -182,7 +313,7 @@ Outcomes, in `apps/worker/src/run.ts`:
 - Payload that fails its Zod schema → `failTerminal` (`error`, `attempts = 5`, `last_error = "Payload non valido."`), log outcome `invalid`.
 - Success → `done`.
 - Rekognition throttle (`RekognitionThrottleError`, `ProvisionedThroughputExceededException`, `ThrottlingException`) → `requeue`: back to `queued` with `run_after = now() + 5 s`, `attempts` **not** incremented, log outcome `requeued`.
-- `NonRetryableError` (`sha256 mismatch`, `unsupported image`) → `failTerminal` + `applyFinalFailure`, log outcome `error`.
+- `NonRetryableError` (`sha256 mismatch`, `unsupported image`) and a `FaceServiceError` with status `400`, `413` or `422` (the face service gave a definitive answer; `isNonRetryable`) → `failTerminal` + `applyFinalFailure`, log outcome `error`. `FaceServiceUnavailable` and other statuses follow the generic retry rule below.
 - Any other error → `attempts + 1`, `last_error`; when `attempts >= 5` (`JOB_MAX_ATTEMPTS`) the row becomes `error` and `applyFinalFailure` runs (log `error`); otherwise back to `queued` with `run_after = now() + attempts × 30 s` (log `retry`).
 
 `applyFinalFailure`: `derive` and `index` set the photo to `error` with `photos.error = last error text`; `match` deletes the selfie object; other types (`verify` included) do nothing: a photo whose `verify` keeps failing stays as it is and keeps serving its web derivative.
@@ -193,8 +324,8 @@ Pipeline:
 2. `derive`: sets `processing`. With `original_status = 'present'`: downloads the original, **verifies sha256 against `photos.sha256`** (mismatch → non-retryable), renders `thumb` and `web` (a decode failure → non-retryable `unsupported image`), writes both objects with the derivative `Cache-Control`, upserts `derivatives`, enqueues `index`. With `original_status = 'pending'`: reads `web/{photoId}.jpg` (missing → retryable `Web derivative missing`), renders only `thumb` from it, upserts the `thumb` derivative, leaves the web derivative untouched, no sha256 check, enqueues `index`. Either way the photo is searchable after `index`; `FaceId`s are never recomputed when the original arrives.
 3. `index`: no-op when the photo is already `indexed` and has `faces`. Otherwise reads `web/{photoId}.jpg`, shrinks it under 5 MB if needed, calls `deleteFaces` on any existing `faces` external ids, calls `indexPhoto` with JPEG bytes, replaces the `faces` rows (confidence ÷ 100), sets `indexed` + `indexed_at = now()`, enqueues `attach`.
 4. `attach`: for each `faces` row of the photo, calls `searchFaces`. Hits on the same photo are ignored; a hit is kept when `similarity / 100 >= 0.8`, remembering per hit external id the best (faceId of this photo, score). `findGalleriesByAnchors(eventId, hitExternalIds)` returns the galleries whose `anchor_face_ids` overlap (`&&`, GIN index). For each such gallery the best score among its anchors is upserted into `gallery_items` as `(photoId, faceId, score, source = 'attach')` with `score = greatest(existing, new)`. When the row was new and the gallery's `notified_at` is null or older than **6 hours**, enqueue `email` kind `new` (deduped) and set `notified_at = now()`. No faces, no hits, or no anchored galleries → no-op.
-5. `POST .../selfie` stores the selfie object and enqueues `match`.
-6. `match`: shrinks the selfie to an oriented JPEG under 5 MB, calls `search`, loads the hit faces with one `faces` query (`external_id = any(...)`, index `faces_event_external_idx`) and the hit photos, keeps a hit only when the face belongs to that photo, the photo is in the event and `indexed`, and `similarity / 100 >= 0.8`; keeps the best score per photo. Anchors = the external ids of the best **5** photos by score. `replaceGallery` upserts `galleries` (`anchor_face_ids`, `matched_at = now()`, `notified_at = now()`), deletes the old items and inserts the new ones with `source = 'match'`. Then deletes the selfie object and enqueues `email` kind `ready` (deduped).
+5. `POST .../selfie` stores the selfie object, enqueues `match` and writes `audit_log` `selfie.submitted` (see *HTTP*).
+6. `match`: shrinks the selfie to an oriented JPEG under 5 MB. **Liveness gate**: when `LIVENESS_CHECK=true` **and** the engine exposes `checkLiveness` (InsightFace only), it is called on those bytes first; `live === false` ends the job as **done with an empty gallery**: `replaceGallery(userId, eventId, [], [])`, selfie object deleted, `email` kind `ready` enqueued (the UI shows «Nessuna corrispondenza»), log line gains `liveness: "rejected"`. A thrown `checkLiveness` (service down) is an ordinary error: the job retries and the selfie is kept. With `LIVENESS_CHECK=false`, or an engine without `checkLiveness`, nothing is called. Otherwise calls `search`, loads the hit faces with one `faces` query (`external_id = any(...)`, index `faces_event_external_idx`) and the hit photos, keeps a hit only when the face belongs to that photo, the photo is in the event and `indexed`, and `similarity / 100 >= 0.8`; keeps the best score per photo. Anchors = the external ids of the best **5** photos by score. `replaceGallery` upserts `galleries` (`anchor_face_ids`, `matched_at = now()`, `notified_at = now()`), deletes the old items and inserts the new ones with `source = 'match'`. Then deletes the selfie object and enqueues `email` kind `ready` (deduped).
 7. `email`: subject `Le tue foto sono pronte` (`ready`) or `Ci sono nuove foto per te` (`new`); body is only `${WEB_ORIGIN}${galleryPath}`, with `galleryPath = /e/{slug}`.
 8. `verify` (two-stage upload only): no-op unless the photo exists and `original_status = 'present'`. Reads the original (missing → sets `original_status = 'pending'` and `photos.error = "original missing"`, job done, no retry), compares its byte length with `photos.bytes` and its sha256 with `photos.sha256`. Match → clears `photos.error` when it was `sha256 mismatch` or `original missing`. Mismatch → deletes the original object, sets `original_status = 'pending'`, sets `photos.error = "sha256 mismatch"` (`photos.status` unchanged, the photo stays indexed and served from the web derivative), logs `{ verify: "mismatch", photoId, eventId }`. The uploader then resends the original (a new original-stage `init` is accepted again because the status is back to `pending`).
 9. `retention`: cutoff = `now() - events.retention_days`. In batches of 50 photos of that event with `created_at < cutoff`: `deleteFaces` in chunks of 1000, `removeAnchors(eventId, externalIds)` (drops those ids from every `anchor_face_ids` of the event), deletes the original and derivative objects, deletes each photo row (gallery items, faces, `face_index`) and writes `audit_log` `photo.deleted` with `meta { eventId, retention: true }` and `actor_id = payload.actorId`. When the event has no photos left, calls `deleteCollection`.
@@ -205,13 +336,13 @@ Worker runtime (`apps/worker/src/index.ts`, `loop.ts`):
 - `SIGINT` / `SIGTERM`: stop claiming, wait up to **60 s** for in-flight jobs, then log how many were abandoned (the 10-minute stale rule recovers them).
 - Housekeeping at boot and every **10 minutes** on every instance (idempotent): delete `done` jobs older than **7 days** (`pruneJobs`); set `open` upload sessions older than **24 hours** to `aborted` and abort their S3 multipart upload when `s3_upload_id` is set.
 - With `WORKER_PUBLISH_METRICS=true`: at boot and every **30 s** publish CloudWatch metric namespace `rephoto`, name `QueueDepth`, value = count of `queued` jobs, no dimensions. Publish errors are logged, never thrown.
-- Logs: one JSON line per finished job `{ ts, job, type, ms, outcome, error? }` with `outcome` in `done` \| `requeued` \| `retry` \| `error` \| `invalid`; `error` is the message truncated to 500 characters. No payload, no image bytes.
+- Logs: one JSON line per finished job `{ ts, job, type, ms, outcome, error?, liveness? }` with `outcome` in `done` \| `requeued` \| `retry` \| `error` \| `invalid`; `error` is the message truncated to 500 characters; `liveness: "rejected"` only on a `match` ended by the liveness gate. No payload, no image bytes, no embeddings.
 
 Terminal job failure on `derive` or `index` sets the photo to `error` and stores the reason in `photos.error`.
 
 ## Postgres
 
-Migrations in `packages/db/migrations`: `001_init.sql` (domain tables), `002_scale.sql` (`jobs.claimed_at`, `faces_event_external_idx`, `jobs_match_user_event_idx`), `003_v2.sql` (additive only; below), `004_two_stage.sql` (additive only: `photos.original_status`, `upload_sessions.stage` / `photo_id` / `original_content_type` / `original_bytes`, index `photos_event_original_pending_idx`). `migrate()` runs all pending files inside one transaction under `pg_advisory_xact_lock(727312)`, so several instances booting together do not race; bookkeeping table `schema_migrations` (not a domain table). `createSql`: `max = DATABASE_POOL_MAX`, `idle_timeout 20`, `connect_timeout 10`, `prepare: true`.
+Migrations in `packages/db/migrations`: `001_init.sql` (domain tables), `002_scale.sql` (`jobs.claimed_at`, `faces_event_external_idx`, `jobs_match_user_event_idx`), `003_v2.sql` (additive only; below), `004_two_stage.sql` (additive only: `photos.original_status`, `upload_sessions.stage` / `photo_id` / `original_content_type` / `original_bytes`, index `photos_event_original_pending_idx`), `005_face_vectors.sql` (`vector` extension + `face_vectors` table + HNSW index, inside a `DO` block that only raises a `NOTICE` on a Postgres without pgvector; see *`FACE_ENGINE=insightface`*). `migrate()` runs all pending files inside one transaction under `pg_advisory_xact_lock(727312)`, so several instances booting together do not race; bookkeeping table `schema_migrations` (not a domain table). `createSql`: `max = DATABASE_POOL_MAX`, `idle_timeout 20`, `connect_timeout 10`, `prepare: true`.
 
 Photo status: `uploaded` \| `processing` \| `indexed` \| `error`.
 
@@ -225,6 +356,7 @@ photos(id, event_id, photographer_id, sha256, status, original_key, content_type
 derivatives(id, photo_id, kind check in thumb|web, s3_key, unique photo_id+kind)
 faces(id, photo_id, event_id, external_id, bbox jsonb, confidence real, created_at, unique photo_id+external_id)  -- NO embedding column
 face_index(external_face_id pk, photo_id, event_id, r, g, b, unique event_id+photo_id)  -- fake engine only
+face_vectors(external_face_id uuid pk default gen_random_uuid(), event_id, photo_id, embedding vector(512), created_at)  -- insightface only; no FK, no row outside FACE_ENGINE=insightface
 galleries(id, user_id, event_id, anchor_face_ids text[] default '{}', matched_at null, notified_at null, unique user_id+event_id)
 gallery_items(id, gallery_id, photo_id, face_id, score double precision, source text default 'match' check in match|attach, created_at, unique gallery_id+photo_id)
 upload_sessions(id, event_id, photographer_id, s3_upload_id null, object_key, sha256, content_type, status check in open|completed|aborted, bytes bigint null, stage text default 'original' check in original|web, photo_id uuid null fk photos on delete set null, original_content_type text null, original_bytes bigint null, created_at)
@@ -256,14 +388,24 @@ Index added by `004_two_stage.sql`:
 | --- | --- |
 | `photos_event_original_pending_idx` | `photos (event_id) where original_status = 'pending'` (`originalsPending` counts, pending lookups) |
 
+Indexes added by `005_face_vectors.sql` (absent on a Postgres without pgvector):
+
+| Index | Definition |
+| --- | --- |
+| `face_vectors_event_idx` | `face_vectors (event_id)` (per-event delete, filter) |
+| `face_vectors_photo_idx` | `face_vectors (photo_id)` |
+| `face_vectors_embedding_idx` | `face_vectors using hnsw (embedding vector_cosine_ops) with (m = 16, ef_construction = 64)`; searches run with `set local hnsw.ef_search = max(100, limit)` |
+
 Clarifications (column names unchanged):
 
 - Ids are `uuid` default `gen_random_uuid()` unless a seed inserts a fixed id.
 - Timestamps are `timestamptz` default `now()` where the column is a creation or grant time. `used_at`, `withdrawn_at`, `indexed_at`, `matched_at`, `notified_at` are nullable.
 - `token_hash` is hex SHA-256 of the raw token. Raw tokens are never stored.
-- `faces.bbox` is `{ "x", "y", "width", "height" }` numbers in 0..1. No `embedding` column, ever.
+- `faces.bbox` is `{ "x", "y", "width", "height" }` numbers in 0..1. No `embedding` column on `faces`, ever: the only embeddings in Postgres are `face_vectors.embedding`, written and read by the InsightFace engine alone, never joined into an HTTP response.
+- `face_vectors` has no foreign keys on purpose (the engine is the only writer and must work on a database the app code does not otherwise know); consistency with `faces` is kept by the worker: `index` calls `deleteFaces` before `indexPhoto`, admin delete and `retention` call `deleteFaces` with the photo's `faces.external_id`s, `retention` calls `deleteCollection` when the event is empty.
+- `audit_log` actions: `photo.deleted`, `participant.deleted`, `selfie.submitted` (`actor_id` = participant, `target = event:{eventId}`, `meta { liveness: "challenge" | "file" }`).
 - `gallery_items.score` is the match similarity in 0..1. `source` says whether the `match` job (selfie) or the `attach` job (later upload) added the row.
-- `galleries.anchor_face_ids` holds Rekognition `FaceId`s (or fake ids) of faces **in event photos** that matched the participant's selfie: identifiers, not vectors. They let `attach` find the gallery without keeping the selfie. `matched_at` is the last `match`; `notified_at` throttles the `new` e-mail.
+- `galleries.anchor_face_ids` holds engine face ids (Rekognition `FaceId`s, `face_vectors.external_face_id` uuids as text, or fake ids) of faces **in event photos** that matched the participant's selfie: identifiers, not vectors (with InsightFace the identifier points at a vector in our own `face_vectors`, which is why `removeAnchors` and the deletes in *`FACE_ENGINE=insightface`* matter). They let `attach` find the gallery without keeping the selfie. `matched_at` is the last `match`; `notified_at` throttles the `new` e-mail.
 - `upload_sessions.bytes` is the size declared at `init` and enforced at `complete` (at the web stage it is the size of the 1600 px JPEG). `photos.bytes` and `photos.sha256` are **always the original's**: the size S3 reports after a plain upload, or the `originalBytes` / `sha256` declared at the web stage, enforced at the original-stage `complete` (size) and by `verify` (size and sha256). `photos.content_type` is the original's type.
 - `photos.original_status` is `present` for every v2 photo (column default) and `pending` from a web stage until the original-stage `complete`; `verify` can set it back to `pending`.
 - `upload_sessions.stage` says what the session transfers; `photo_id` is set only on the original stage of a web-first photo (it links the session to the existing `photos` row; `on delete set null`). `original_content_type` / `original_bytes` are set only on a web-stage session and are copied into `photos` at `complete`.
@@ -296,7 +438,7 @@ Cookie value is the raw session token. `sessions.token_hash` stores its SHA-256 
 
 CORS: when `Origin` equals `WEB_ORIGIN` the API answers with `Access-Control-Allow-Origin: <origin>`, `Access-Control-Allow-Credentials: true`, `Vary: Origin`; `OPTIONS` returns `204` with methods `GET,POST,PATCH,DELETE,OPTIONS` and header `Content-Type`. The browser normally talks to the Next.js `/v1/*` proxy (same origin), which streams bodies both ways and forwards headers, `x-forwarded-for` included, unchanged.
 
-Security headers on every API response: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Strict-Transport-Security: max-age=15552000` when `WEB_ORIGIN` is `https:`. The web adds a CSP (`default-src 'self'; img-src 'self' blob: data: ${NEXT_PUBLIC_MEDIA_ORIGINS}; connect-src 'self' ${NEXT_PUBLIC_MEDIA_ORIGINS}; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; form-action 'self'; base-uri 'self'`), `Permissions-Policy: camera=(self)` and HSTS when `NEXT_PUBLIC_WEB_ORIGIN` is `https://`.
+Security headers on every API response: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Strict-Transport-Security: max-age=15552000` when `WEB_ORIGIN` is `https:`. The web adds a CSP (`default-src 'self'; img-src 'self' blob: data: ${NEXT_PUBLIC_MEDIA_ORIGINS}; connect-src 'self' ${NEXT_PUBLIC_MEDIA_ORIGINS}; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; form-action 'self'; base-uri 'self'`; `'wasm-unsafe-eval'` is what lets the MediaPipe wasm runtime, served from `/mediapipe/` on our own origin, instantiate), `Permissions-Policy: camera=(self)` and HSTS when `NEXT_PUBLIC_WEB_ORIGIN` is `https://`. On the VPS, Caddy overwrites HSTS / nosniff / `X-Frame-Options` / `Referrer-Policy: same-origin` / `Permissions-Policy` on every path (`deploy/Caddyfile`); the CSP stays the web's.
 
 Error body: `{ "error": string }` (Italian text from `apps/api/src/errors.ts`) with `400` validation, `401` unauthenticated, `403` forbidden / not on list / consent missing, `404` missing, `409` conflict (duplicate `(event_id, sha256)`, session not `open`), `429` rate limit, `500` `Errore interno.`, `503` on health only. The two-stage upload adds no new code: `409` also covers an original-stage `init` for a photo whose original is already present, and `400` an original-stage `init` whose `sha256` / `bytes` differ from the stored ones.
 
@@ -308,7 +450,7 @@ Error body: `{ "error": string }` (Italian text from `apps/api/src/errors.ts`) w
 | `POST` | `/v1/auth/logout` | | `204` empty |
 | `GET` | `/v1/events/:slug` | | `200` `{ id, slug, name, retentionDays, access }` |
 | `POST` | `/v1/events/:slug/consent` | `{ textVersion, accepted: true }` | `201` `{ id, grantedAt }` |
-| `POST` | `/v1/events/:slug/selfie` | multipart field `selfie`, `image/jpeg` or `image/png`, ≤ 8 MiB | `202` `{ status: "queued" }` |
+| `POST` | `/v1/events/:slug/selfie` | multipart field `selfie`, `image/jpeg` or `image/png`, ≤ 8 MiB; optional field `liveness` = `challenge` \| `file` (`SELFIE_LIVENESS_FIELD`, default `file`) | `202` `{ status: "queued" }` |
 | `GET` | `/v1/events/:slug/gallery` | `?cursor=&limit=` (default 60, max 200) | `200` `{ status, total, items: [{ photoId, thumbUrl, webUrl, score, source, createdAt, originalReady }], nextCursor }` |
 | `POST` | `/v1/events/:slug/gallery/download` | `{ photoIds (1..100), variant?: "original" \| "web" }` | `200` `{ urls: [{ photoId, url }] }` signed |
 | `POST` | `/v1/events/:slug/gallery/zip` | form `ids=<csv>&variant=` or JSON `{ photoIds (1..500), variant? }` | `200` `application/zip` stream |
@@ -337,7 +479,7 @@ Auth rules:
 - `accept-invite`: consumes an unused, unexpired `invites` row (**7-day** TTL), creates the user for the invite's role if missing, inserts `event_photographers` when the role is `photographer`, starts a session. Invalid → generic `400`.
 - Participant: only the gallery, consent, selfie, download and zip for the signed-in user. Photographer: only upload routes, and only their own `upload_sessions` (`404` otherwise). Admin: the `/v1/admin/*` routes. A wrong role is `403`.
 - `consent`: participant only. `textVersion` must equal `CONSENT_TEXT_VERSION` (`packages/contracts/src/http.ts`, currently `2026-10-06`), otherwise `400`. Stores `ip` (see *Client IP*) and `user-agent`. No route withdraws a consent.
-- `selfie`, checks in this order: event `access = 'list'` and the user's e-mail not in `event_participants` → `403`; no consent row for this user and event with `withdrawn_at` null → `403`; **5 selfies per user per hour** (counted on `match` jobs with that `userId`) → `429`; then the image is validated (field `selfie`, `image/jpeg` or `image/png`, 1 byte to 8 MiB) → `400`. Stores `selfies/{eventId}/{userId}/{uuid}` and enqueues `match`.
+- `selfie`, checks in this order: event `access = 'list'` and the user's e-mail not in `event_participants` → `403`; no consent row for this user and event with `withdrawn_at` null → `403`; **5 selfies per user per hour** (counted on `match` jobs with that `userId`) → `429`; then the image is validated (field `selfie`, `image/jpeg` or `image/png`, 1 byte to 8 MiB) → `400`, and the optional `liveness` field must be `challenge` or `file` when present (`selfieLivenessSchema`, else `400`; absent = `file`, so v3 clients keep working). Stores `selfies/{eventId}/{userId}/{uuid}`, enqueues `match`, then inserts `audit_log` `{ actor_id: user.id, action: "selfie.submitted", target: "event:{eventId}", meta: { liveness } }`. The value is **client-asserted**: `challenge` means the browser reports that the camera challenge (`apps/web/lib/liveness.ts`: look → turn left → turn right → blink → frontal capture, 15 s per step, MediaPipe Face Landmarker run locally, JPEG q0.9 long edge 1280) completed; `file` is the file picker fallback (no camera, permission denied, landmarker failed, or an older client). The API does not verify it; the server-side check is the worker's `LIVENESS_CHECK` gate (see *Jobs*).
 - Gallery `status` is `queued` when the latest `match` job for this user+event is `queued` or `running` (index `jobs_match_user_event_idx`); `ready` when a gallery row exists or the latest job is `done` or `error`; `empty` otherwise. `items` come from one keyset query over `gallery_items` joined to both derivatives (`score desc, photo_id asc`); a photo missing a derivative is skipped and not counted in `total`. `nextCursor` is set when the page is full, else `null`. The cursor is opaque base64url of `score|photoId` (`encodeGalleryCursor` in `@rephoto/contracts`); a malformed cursor is `400`.
 - `download`: `variant` defaults to `original`; `web` signs `web/{photoId}.jpg`. `original` signs `originals/{eventId}/{photoId}` when `original_status = 'present'` and **falls back to `web/{photoId}.jpg` while it is `pending`** (`variantKey`); the response does not say which one was signed, the gallery item's `originalReady` does. Ownership is one query (`listOwnedPhotos`); any id not in the caller's gallery for that event → `403` for the whole request. URLs expire in 30 minutes.
 - `zip`: when an `Origin` header is present it must equal `WEB_ORIGIN` (else `403`). Accepts `application/json` `{ photoIds, variant }`, or `application/x-www-form-urlencoded` / `multipart/form-data` with `ids` = comma-separated uuids and optional `variant`; other content types are `400`. 1..500 distinct ids, all owned (else `403`). Streams `application/zip`, `Content-Disposition: attachment; filename="rephoto-{slug}.zip"`, `Cache-Control: no-store`, store mode (no compression), entries `{slug}-{index:04}.jpg` (`.png` when `variant = original`, the photo is PNG **and** its original is present), in request order. With `variant = original` a photo whose original is still `pending` contributes its web derivative (same `variantKey` fallback as `download`), always as `.jpg`. Objects are streamed from S3 one at a time, never buffered whole. A missing object is skipped (count logged); a client abort aborts the archive. Nothing is written to `audit_log`.
@@ -395,9 +537,11 @@ Behaviour of `/upload` (`apps/web/lib/upload-queue.ts`, `folder-watch.ts`, `uplo
 
 Client IP (`TRUSTED_PROXY_HOPS`): with `x-forwarded-for: a, b, c` and hops 1 the client is `c` (the entry appended by the first trusted proxy); hops 2 → `b`. When the header has fewer entries than hops the first entry is used. With hops 0 or no header → the socket address, else `"unknown"`. The Next.js proxy forwards the header unchanged; the CDK stack sets 2 (CloudFront appends the client, the ALB appends the edge).
 
-Web routes (`apps/web/app`): `/` (participant e-mail form), `/verify` (and `/verifica` redirect), `/invito`, `/selfie`, `/gallery` (event from `NEXT_PUBLIC_EVENT_SLUG`), `/e/[slug]`, `/eventi/[slug]/galleria` (redirect to `/e/[slug]`), `/upload`, `/admin`, `/v1/[...path]` (API proxy), `/api/s3-put` (dev-only PUT proxy to `localhost:9000`; `404` in production), `/manifest.webmanifest` (from `app/manifest.ts`) and the static `/sw.js`. After verify the web lands on `/selfie`, `/upload` or `/admin` by role.
+Web routes (`apps/web/app`): `/` (participant e-mail form), `/verify` (and `/verifica` redirect), `/invito`, `/selfie`, `/gallery` (event from `NEXT_PUBLIC_EVENT_SLUG`), `/e/[slug]`, `/eventi/[slug]/galleria` (redirect to `/e/[slug]`), `/upload`, `/admin`, `/v1/[...path]` (API proxy), `/api/s3-put` (dev-only PUT proxy to `localhost:9000`; `404` in production), `/manifest.webmanifest` (from `app/manifest.ts`), the static `/sw.js` and the static `/mediapipe/` tree (wasm runtime + `face_landmarker.task`, copied/downloaded by `apps/web/scripts/fetch-mediapipe.mjs` on `prebuild`, git-ignored; when the model download fails the script warns and the build goes on, unless `MEDIAPIPE_MODEL_REQUIRED=1`, which the web Dockerfile sets by default so a production image cannot ship without the model; when absent at runtime the selfie page falls back to the file picker). After verify the web lands on `/selfie`, `/upload` or `/admin` by role.
 
-Signed URL helpers and the Rekognition client stay out of `packages/contracts`.
+Selfie page capture (`/selfie`): with `getUserMedia` in a secure context (`https:` or `localhost`) the page opens the front camera, runs the challenge and sends the captured frame with `liveness=challenge`; otherwise, or on «Usa un file invece», it sends the picked file with `liveness=file`. No frame leaves the browser before the final capture; the landmarker runs in the page.
+
+Signed URL helpers, the Rekognition client and the face-service client stay out of `packages/contracts`.
 
 ## Changes from v1
 
@@ -418,3 +562,19 @@ Signed URL helpers and the Rekognition client stay out of `packages/contracts`.
 - Jobs: new type `verify` (priority 70, `verify:{photoId}`): one read of the original, size + sha256 check, mismatch → original deleted, `original_status` back to `pending`, `photos.error = "sha256 mismatch"`, photo status unchanged. `derive` on a pending photo renders only the thumb from the client-written web derivative; the original stage never re-derives or re-indexes.
 - Object keys: `web/{photoId}.jpg` may be written by the browser (no `Cache-Control` on that object); `originals/{eventId}/{photoId}` may not exist yet for a photo row.
 - Web: continuous uploader on `/upload`: watched folder (Chrome / Edge, File System Access, scan every 10 s, handle persisted in IndexedDB), «Prima il web, poi gli originali» toggle, web-first scheduling, adaptive concurrency 1–6, pause / resume / stop, fingerprint cache with `web-sent` state and resume through `lookup`, Wake Lock, `beforeunload` guard, PWA manifest + no-op service worker, «solo web» tag in the gallery and viewer. See *Web uploader*.
+
+## Changes from v3
+
+- **Self-hosted deployment is primary** (`deploy/`: Caddy, `pgvector/pgvector:pg16`, MinIO, `face-service`, api ×2, worker ×2, web, backup, uptime-kuma; `docs/infra.md`). The AWS stack in `infra/cdk` is kept as an alternative, not maintained as the reference.
+- **`FACE_ENGINE=insightface`** (`docs/v4-selfhost-spec.md`): `apps/face-service` (FastAPI, onnxruntime CPU, `buffalo_l`, `/health`, `/v1/embed`, `/v1/liveness`), `InsightFaceEngine` with the frozen cosine → similarity mapping (`80 + 20 × clamp((c − MIN) / (SURE − MIN), 0, 1)`, `MIN` 0.45, `SURE` 0.65), nearest-neighbour search in `face_vectors` (HNSW, cosine, `ef_search = max(100, limit)`), `deleteFaces` in chunks of 1000, errors `FaceServiceUnavailable` / `FaceServiceError` / `FaceVectorsTableMissing`. `FACE_ENGINE` enum is `fake | rekognition | insightface`.
+- **Embeddings rule rewritten**: raw embeddings are persisted only in `face_vectors`, only with `FACE_ENGINE=insightface`, never in logs or object storage, deleted with the photo (`deleteFaces`), with retention and with `deleteCollection`.
+- **Schema `005_face_vectors.sql`** (additive, tolerant of a Postgres without pgvector): `face_vectors` + `face_vectors_event_idx` / `face_vectors_photo_idx` / `face_vectors_embedding_idx`; the engine recreates the same DDL on first use when the table is missing (self-healing), failing with `FaceVectorsTableMissing` only when the extension cannot be created.
+- **`FaceEngine.checkLiveness?`** (`LivenessInput` / `LivenessResult`), implemented by the InsightFace engine only, rate-limited on the search bucket.
+- **Jobs**: `match` liveness gate under `LIVENESS_CHECK=true` (rejected → empty gallery, selfie deleted, `ready` mail still sent, log `liveness: "rejected"`).
+- **HTTP**: selfie multipart field `liveness` (`challenge | file`, default `file`, `SELFIE_LIVENESS_FIELD` / `selfieLivenessSchema`); new `audit_log` action `selfie.submitted` with `meta.liveness`. CSP `script-src` gains `'wasm-unsafe-eval'`.
+- **Web**: `/selfie` camera challenge (MediaPipe Face Landmarker served from `/mediapipe/`, steps look / left / right / blink / capture, 15 s each, file-picker fallback); `apps/web/scripts/fetch-mediapipe.mjs` on `prebuild` (warns and skips the model when offline; `MEDIAPIPE_MODEL_REQUIRED=1`, default in the web Dockerfile, makes it fatal).
+- **Worker**: face-service `4xx` `400` / `413` / `422` are non-retryable (`isNonRetryable` also matches `FaceServiceError` with those statuses); `5xx` / unreachable (`FaceServiceUnavailable`) retry as before.
+- **Env**: `FACE_SERVICE_URL`, `INSIGHTFACE_MIN_COSINE`, `INSIGHTFACE_SURE_COSINE`, `INSIGHTFACE_MAX_FACES`, `INSIGHTFACE_MIN_FACE_QUALITY`, `FACE_INDEX_TPS`, `FACE_SEARCH_TPS` (Rekognition names kept, generic names honoured as fallback), `LIVENESS_CHECK`, `S3_PUBLIC_ENDPOINT` (second `S3Client` for presigning only), `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_SECURE` (default true on 465), `SMTP_STARTTLS` (`auto | true | false`). `MAIL_TRANSPORT=smtp` is now nodemailer with a pooled transport.
+- **Rate limiter** wraps both remote engines; `checkLiveness` shares the search bucket. Defaults 20/20 for InsightFace.
+- **Local dev**: `docker compose up -d` starts `face-service` (port 8090) and `pgvector/pgvector:pg16`; `FACE_ENGINE=fake` stays the no-dependency default.
+- Tests added: `packages/face-engine/src/insightface.test.ts`, `apps/worker/test/v4.test.ts`, `apps/api/test/mailer.test.ts`, `apps/api/test/routes.test.ts` (presigned host = `S3_PUBLIC_ENDPOINT`, selfie `liveness` audit), `apps/face-service/tests` (pytest), `insightface.integration.test.ts` (skips without pgvector + service).

@@ -8,3 +8,4 @@ uploads
 *.pem
 *.tsbuildinfo
 apps/web/public/mediapipe/
+.DS_Store
