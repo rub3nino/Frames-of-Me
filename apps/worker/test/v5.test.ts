@@ -302,6 +302,33 @@ test("a selfie before any photo stores its vector (no_photos_yet) and a later ph
   assert.deepEqual(gallery?.anchorFaceIds, [`fake-${red}`]);
 });
 
+test("attach skips the selfie-vector search while no gallery of the event stores a vector", async () => {
+  const f = await fixture();
+  const inner = f.faces as FaceEngine;
+  let embeddingReads = 0;
+  const faceEmbedding = inner.faceEmbedding?.bind(inner);
+  assert.ok(faceEmbedding);
+  inner.faceEmbedding = (input) => {
+    embeddingReads += 1;
+    return faceEmbedding(input);
+  };
+  const red = await ingest(f, [255, 0, 0]);
+  // Anchors only, no vector: the second photo attaches through the anchor, no embedding read.
+  await f.db.replaceGallery(f.participantId, f.eventId, [], [`fake-${red}`]);
+  assert.equal(await f.db.countGalleriesWithQueryVector(f.eventId), 0);
+  const later = await ingest(f, [255, 0, 0]);
+  assert.equal(embeddingReads, 0);
+  assert.equal(
+    (await f.db.listGalleryPage(f.participantId, f.eventId, { limit: 10 })).items.some((item) => item.photoId === later),
+    true,
+  );
+  // A stored vector turns the path on.
+  await f.db.updateGalleryMatch(f.participantId, f.eventId, { queryEmbedding: fakeEmbedding(255, 0, 0) });
+  assert.equal(await f.db.countGalleriesWithQueryVector(f.eventId), 1);
+  await ingest(f, [255, 0, 0]);
+  assert.equal(embeddingReads, 1);
+});
+
 test("attach: with three or more anchors a single agreeing anchor is not enough, two are", async () => {
   const f = await fixture();
   const participant = f.participantId;

@@ -7,7 +7,7 @@
 // Writes objects straight into MinIO/S3 and rows straight into Postgres: no HTTP, no presigned
 // URLs. Every photo ends up exactly as `POST /v1/uploads/complete` leaves it (apps/api/src/routes.ts):
 //   photos (status 'uploaded', original_status 'present', original_key originals/<event>/<photoId>)
-//   derivatives (web, only with --web-first) and one `derive` job with dedupe key derive:<photoId>.
+//   and one `derive` job with dedupe key derive:<photoId>.
 // The worker then runs derive → index → attach as for a browser upload.
 //
 // See README.md next to this file for the options.
@@ -17,7 +17,7 @@ import { createReadStream } from "node:fs";
 import { appendFile, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { DeleteObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { jobDedupeKey, objectKeys } from "@rephoto/contracts";
 import { createSql, DuplicateKeyError, PostgresDatabase } from "@rephoto/db";
 import type { ImageContentType } from "@rephoto/db";
@@ -43,8 +43,6 @@ Options:
   --manifest <csv>        Append "filename,sha256,photoId,status,bytes,ms" per file (header on create)
   --tags a,b              Tags stored in photos.tags when the column exists (migration 007)
   --convert               HEIC/PNG/TIFF → JPEG quality 92 through sharp (sha256 of the converted bytes)
-  --web-first             Also render the 1600 px web derivative here (like the browser does) and
-                          register it, so the worker only makes the thumb before indexing
   --limit <n>             Stop after n files (quick checks)
   --dry-run               Scan, hash and print the plan; no database, no object store
   --help                  This text
@@ -66,7 +64,6 @@ type Options = {
   manifest: string | null;
   tags: string[];
   convert: boolean;
-  webFirst: boolean;
   limit: number | null;
   dryRun: boolean;
 };
@@ -85,7 +82,6 @@ function parseOptions(argv: string[]): Options | null {
       manifest: { type: "string" },
       tags: { type: "string", default: "" },
       convert: { type: "boolean", default: false },
-      "web-first": { type: "boolean", default: false },
       limit: { type: "string" },
       "dry-run": { type: "boolean", default: false },
       help: { type: "boolean", default: false },
@@ -124,7 +120,6 @@ function parseOptions(argv: string[]): Options | null {
       .map((tag) => tag.trim())
       .filter(Boolean),
     convert: Boolean(values.convert),
-    webFirst: Boolean(values["web-first"]),
     limit: int(values.limit, "limit", 1),
     dryRun: Boolean(values["dry-run"]),
   };
@@ -334,7 +329,6 @@ async function main(): Promise<void> {
     console.log(
       `plan: ${items.length} photos, ${(total / 1024 / 1024).toFixed(1)} MiB, event=${options.event}, photographer=${options.photographer}` +
         (options.convert ? ", convert" : "") +
-        (options.webFirst ? ", web-first" : "") +
         (options.tags.length ? `, tags=${options.tags.join(",")}` : "") +
         ` (${((Date.now() - started) / 1000).toFixed(1)} s)`,
     );
@@ -347,7 +341,7 @@ async function main(): Promise<void> {
   const sql = createSql(databaseUrl, { max: options.parallel + 2 });
   const db = new PostgresDatabase(sql);
   const { client: s3, bucket } = s3FromEnv();
-  const sharp = options.convert || options.webFirst ? await loadSharp() : null;
+  const sharp = options.convert ? await loadSharp() : null;
 
   try {
     const event = await db.findEventBySlug(options.event);
@@ -421,27 +415,6 @@ async function main(): Promise<void> {
           ContentType: contentType,
         }),
       );
-      let webKey: string | null = null;
-      if (options.webFirst) {
-        if (!sharp) throw new Error("sharp unavailable");
-        const web = await sharp(body ?? item.path)
-          .rotate()
-          .resize({ width: 1600, height: 1600, fit: "inside", withoutEnlargement: true })
-          .jpeg({ quality: 85 })
-          .toBuffer();
-        webKey = objectKeys.web(photoId);
-        await s3.send(
-          new PutObjectCommand({
-            Bucket: bucket,
-            Key: webKey,
-            Body: web,
-            ContentLength: web.length,
-            ContentType: "image/jpeg",
-            CacheControl: "private, max-age=31536000, immutable",
-          }),
-        );
-      }
-
       try {
         await db.insertPhoto({
           id: photoId,
@@ -456,6 +429,7 @@ async function main(): Promise<void> {
       } catch (error) {
         if (!(error instanceof DuplicateKeyError)) throw error;
         // Same bytes landed first under a parallel slot: the object we wrote is unreferenced.
+        await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: originalKey })).catch(() => undefined);
         const winner = await db.findPhotoBySha(event.id, sha256);
         return { name: item.name, sha256, photoId: winner?.id ?? null, status: "duplicate", bytes, ms: Date.now() - t0 };
       }
@@ -470,7 +444,6 @@ async function main(): Promise<void> {
           await sql`update photos set tags = ${itemTags} where id = ${photoId}`;
         }
       }
-      if (webKey) await db.upsertDerivative({ photoId, kind: "web", s3Key: webKey });
       const dedupeKey = jobDedupeKey("derive", { photoId });
       await db.enqueueJob("derive", { photoId }, dedupeKey ? { dedupeKey } : {});
       return { name: item.name, sha256, photoId, status: "uploaded", bytes, ms: Date.now() - t0 };

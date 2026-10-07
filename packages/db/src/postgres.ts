@@ -772,6 +772,15 @@ export class PostgresDatabase implements Database {
     return rows[0]?.count ?? 0;
   }
 
+  async countGalleriesWithQueryVector(eventId: string): Promise<number> {
+    if (!(await this.queryVectorAvailable())) return 0;
+    const rows = await this.sql<{ count: number }[]>`
+      select count(*)::int as count from galleries
+      where event_id = ${eventId} and query_embedding is not null
+    `;
+    return rows[0]?.count ?? 0;
+  }
+
   async findGalleriesByAnchors(eventId: string, externalFaceIds: string[]): Promise<AnchoredGallery[]> {
     if (externalFaceIds.length === 0) return [];
     const rows = await this.sql<{
@@ -1172,6 +1181,7 @@ export class PostgresDatabase implements Database {
       where event_id = ${eventId} and query_embedding is not null
         and 1 - (query_embedding <=> ${vector}::vector) >= ${minCosine}
       order by query_embedding <=> ${vector}::vector
+      limit ${QUERY_VECTOR_GALLERY_LIMIT}
     `;
     return rows.map((row) => ({
       id: row.id,
@@ -1833,6 +1843,8 @@ type PhotoAdminSql = PhotoSql & { filename: string | null; tags: string[] | null
 const JOB_FINISHED_SQL =
   "finished_at = now(), duration_ms = (extract(epoch from (now() - coalesce(claimed_at, now()))) * 1000)::int";
 const MATCH_HITS_CHUNK = 500;
+/** `findGalleriesByQueryVector` returns at most this many galleries (HNSW needs an ORDER BY … LIMIT). */
+const QUERY_VECTOR_GALLERY_LIMIT = 50;
 
 function prefixColumns(alias: string, columns: string): string {
   return columns

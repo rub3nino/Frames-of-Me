@@ -294,6 +294,8 @@ export interface Database {
   ): Promise<GalleryPage>;
   /** How many galleries of the event have anchors or a selfie vector (attach is a no-op when zero). */
   countAnchoredGalleries(eventId: string): Promise<number>;
+  /** How many galleries of the event hold a selfie vector (attach skips the vector search when zero). */
+  countGalleriesWithQueryVector(eventId: string): Promise<number>;
   /** Galleries of the event whose anchors overlap `externalFaceIds`. */
   findGalleriesByAnchors(eventId: string, externalFaceIds: string[]): Promise<AnchoredGallery[]>;
   /** Upsert keeping the greatest score. Returns how many rows were new. */
@@ -352,7 +354,7 @@ export interface Database {
   updateGalleryMatch(userId: string, eventId: string, patch: GalleryMatchPatch): Promise<void>;
   /**
    * Galleries of the event whose stored selfie vector has cosine ≥ `minCosine` with
-   * `embedding` (pgvector `<=>` over `galleries.query_embedding`), best first.
+   * `embedding` (pgvector `<=>` over `galleries.query_embedding`), best first, at most 50.
    */
   findGalleriesByQueryVector(
     eventId: string,

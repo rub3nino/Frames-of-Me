@@ -234,6 +234,12 @@ describe("MemoryDatabase galleries", () => {
     const remaining = await db.findGalleryByUser(one.id, EVENT_ID);
     assert.deepEqual(remaining?.anchorFaceIds, ["f1"]);
     assert.equal(await db.countAnchoredGalleries(EVENT_ID), 1);
+    assert.equal(await db.countGalleriesWithQueryVector(EVENT_ID), 0);
+    await db.updateGalleryMatch(three.id, EVENT_ID, { queryEmbedding: [1, 0, 0] });
+    assert.equal(await db.countGalleriesWithQueryVector(EVENT_ID), 1);
+    assert.equal(await db.countAnchoredGalleries(EVENT_ID), 2, "a vector counts as anchored");
+    await db.updateGalleryMatch(three.id, EVENT_ID, { queryEmbedding: null });
+    assert.equal(await db.countGalleriesWithQueryVector(EVENT_ID), 0);
   });
 });
 

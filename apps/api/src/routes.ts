@@ -956,7 +956,12 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     if (!user || !event) throw new ApiError(404, MESSAGES.notFound);
     const selfieKey = await deps.db.findGallerySelfieKey(userId, eventId);
     if (!selfieKey) throw new ApiError(409, MESSAGES.selfieNotKept);
-    const jobId = await deps.queue.enqueue("match", { userId, eventId, selfieKey });
+    // Repeated clicks collapse into the queued/running job (match has no dedupe key of its own).
+    const jobId = await deps.queue.enqueue(
+      "match",
+      { userId, eventId, selfieKey },
+      { dedupeKey: `rematch:${userId}:${eventId}` },
+    );
     await deps.db.insertAudit({
       actorId: actor.id,
       action: "gallery.rematch",

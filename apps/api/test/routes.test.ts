@@ -1792,6 +1792,11 @@ test("rematch needs KEEP_SELFIES and a stored selfie; delete gallery removes it"
   const job = kept.db.jobView(jobId);
   assert.equal(job?.status, "queued");
   assert.equal(await kept.db.countMatchJobsSince(keptParticipant, new Date(0)), 1);
+  // A second click while the job is queued returns the same job (dedupe rematch:<user>:<event>).
+  const repeat = await kept.app.request(new Request(`http://api.local${keptPath}/rematch`, { method: "POST", headers: { cookie: keptCookie } }));
+  assert.equal(repeat.status, 202);
+  assert.deepEqual(await repeat.json(), { jobId });
+  assert.equal(await kept.db.countMatchJobsSince(keptParticipant, new Date(0)), 1);
   const unknown = await kept.app.request(
     new Request(`http://api.local/v1/admin/galleries/${randomUUID()}/${kept.event.id}/rematch`, { method: "POST", headers: { cookie: keptCookie } }),
   );

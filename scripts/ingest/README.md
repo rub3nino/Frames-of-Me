@@ -25,7 +25,6 @@ npm run ingest -- --dir /data/foto --event conferenza-2026 \
 | `--manifest <csv>` | — | `filename,sha256,photoId,status,bytes,ms` in append (serve a `scripts/eval`) |
 | `--tags a,b` | — | `photos.tags` (colonna della migrazione 007; se manca, avviso e ignorato) |
 | `--convert` | off | HEIC/PNG/TIFF → JPEG q92 con sharp (sha256 dei byte convertiti); HEIC solo se libvips sa decodificarlo |
-| `--web-first` | off | rende qui il derivato web 1600 px e lo registra (come fa il browser): il worker fa solo il thumb prima di indicizzare — utile per alleggerire il worker |
 | `--limit <n>` | — | si ferma dopo n file |
 | `--dry-run` | off | scansiona, calcola gli sha256 e stampa il piano: niente DB né MinIO |
 

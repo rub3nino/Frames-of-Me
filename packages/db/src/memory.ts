@@ -49,6 +49,8 @@ import type {
   QueryVectorGallery,
 } from "./types.js";
 
+/** Same cap as PostgresDatabase.findGalleriesByQueryVector. */
+const QUERY_VECTOR_GALLERY_LIMIT = 50;
 const EVENT_ID = "00000000-0000-4000-8000-000000000001";
 const ADMIN_ID = "00000000-0000-4000-8000-000000000002";
 const PHOTOGRAPHER_ID = "00000000-0000-4000-8000-000000000003";
@@ -689,6 +691,12 @@ export class MemoryDatabase implements Database {
     ).length;
   }
 
+  async countGalleriesWithQueryVector(eventId: string): Promise<number> {
+    return this.galleries.filter(
+      (gallery) => gallery.eventId === eventId && gallery.queryEmbedding !== null,
+    ).length;
+  }
+
   async findGalleriesByAnchors(eventId: string, externalFaceIds: string[]): Promise<AnchoredGallery[]> {
     if (externalFaceIds.length === 0) return [];
     const wanted = new Set(externalFaceIds);
@@ -1043,7 +1051,7 @@ export class MemoryDatabase implements Database {
         cosine,
       });
     }
-    return hits.sort((a, b) => b.cosine - a.cosine);
+    return hits.sort((a, b) => b.cosine - a.cosine).slice(0, QUERY_VECTOR_GALLERY_LIMIT);
   }
 
   async insertMatchRun(input: MatchRunInsert): Promise<string> {

@@ -334,7 +334,12 @@ async function attachPhoto(photoId: string, deps: WorkerDeps): Promise<void> {
   // Nothing to attach to yet (uploads usually start before the first selfie): skip the searches.
   if ((await deps.db.countAnchoredGalleries(photo.eventId)) === 0) return;
   const env = deps.env;
-  const faceEmbedding = deps.faces.faceEmbedding?.bind(deps.faces);
+  // The selfie-vector path costs one engine read and one pgvector query per face: only when
+  // some gallery of the event actually stores a vector.
+  const faceEmbedding =
+    deps.faces.faceEmbedding && (await deps.db.countGalleriesWithQueryVector(photo.eventId)) > 0
+      ? deps.faces.faceEmbedding.bind(deps.faces)
+      : undefined;
   // hit external id → the face of this photo that matched it, with the best score
   const hitsByExternal = new Map<string, AttachCandidate>();
   // gallery id → the best selfie-vector candidate among this photo's faces
