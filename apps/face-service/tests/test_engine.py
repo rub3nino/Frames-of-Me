@@ -3,8 +3,8 @@ import math
 import numpy as np
 import pytest
 
-from app.engine import RawFace, build_faces, largest_face
-from tests.conftest import unit
+from app.engine import RawFace, build_faces, estimate_yaw, largest_face
+from tests.conftest import kps, unit
 
 
 def test_bbox_normalised_and_sorted_by_area(stub):
@@ -70,3 +70,42 @@ def test_wrong_embedding_size_raises():
 def test_largest_face(stub):
     assert largest_face([]) is None
     assert largest_face(stub.faces).bbox == (100.0, 100.0, 220.0, 200.0)
+
+
+def test_norm_is_the_pre_normalisation_l2(stub):
+    faces = build_faces(stub.faces, 400, 400, min_size=1, max_faces=50)
+    by_width = {round(f.bbox.width * 400): f for f in faces}
+    assert by_width[120].norm == pytest.approx(float(np.linalg.norm(unit(2))), rel=1e-5)
+    assert by_width[120].norm > 1.5  # the raw vector is deliberately not unit length
+
+
+def test_yaw_sign_positive_towards_image_right():
+    # eyes 40 px apart, nose 20 px to the right of the eye centre -> +0.5
+    assert estimate_yaw(kps((20.0, 25.0), (60.0, 25.0), (60.0, 40.0))) == pytest.approx(0.5)
+    # nose to the left of the eye centre -> negative
+    assert estimate_yaw(kps((20.0, 25.0), (60.0, 25.0), (20.0, 40.0))) == pytest.approx(-0.5)
+    # frontal
+    assert estimate_yaw(kps((20.0, 25.0), (60.0, 25.0), (40.0, 40.0))) == pytest.approx(0.0)
+    # mirrored landmarks mirror the sign
+    k = kps((20.0, 25.0), (60.0, 25.0), (52.0, 40.0))
+    mirrored = k.copy()
+    mirrored[:, 0] = 100.0 - mirrored[:, 0]
+    mirrored[[0, 1]] = mirrored[[1, 0]]  # the detector would re-label the eyes after a flip
+    assert estimate_yaw(mirrored) == pytest.approx(-estimate_yaw(k))
+
+
+def test_yaw_is_clamped_and_robust():
+    assert estimate_yaw(kps((20.0, 25.0), (30.0, 25.0), (90.0, 40.0))) == 1.0
+    assert estimate_yaw(kps((20.0, 25.0), (30.0, 25.0), (-90.0, 40.0))) == -1.0
+    assert estimate_yaw(None) is None
+    assert estimate_yaw(kps((25.0, 25.0), (25.0, 25.0), (25.0, 40.0))) is None  # coincident eyes
+    assert estimate_yaw(np.zeros((3, 2))) is None  # wrong shape
+    assert estimate_yaw(kps((20.0, 25.0), (60.0, 25.0), (float("nan"), 40.0))) is None
+
+
+def test_build_faces_carries_yaw(stub):
+    faces = build_faces(stub.faces, 400, 400, min_size=1, max_faces=50)
+    by_width = {round(f.bbox.width * 400): f for f in faces}
+    assert by_width[120].yaw == pytest.approx(0.5)
+    assert by_width[40].yaw == pytest.approx(0.0)
+    assert by_width[10].yaw is None

@@ -3,7 +3,8 @@ loaded (see conftest.real_analyzer); run with MODEL_ROOT=<dir with models/buffal
 
 Fixtures: `scripts/loadtest/fixtures/sample.jpg` is the repo's synthetic 640x480 gradient
 (no face, by design); the face photos are the ones bundled with the insightface package
-(`t1.jpg`, a group photo, and a 112 px single-face crop)."""
+(`t1.jpg`, a group photo, and a 112 px single-face crop). The latency test also uses the
+20 MP photos in the repo folder `photo/` when present (re-encoded under the 8 MiB cap)."""
 
 import io
 import math
@@ -14,7 +15,10 @@ import pytest
 from PIL import Image
 
 from app.liveness import NoLiveness
-from tests.conftest import SAMPLE_JPG, make_image
+from app.main import MAX_UPLOAD_BYTES
+from tests.conftest import LEGACY_DET_SIZE, LEGACY_LONG_EDGE, REAL_DET_SIZE, REAL_LONG_EDGE, REPO_ROOT, SAMPLE_JPG, make_image
+
+PHOTO_DIR = os.path.join(REPO_ROOT, "photo")
 
 
 def _insightface_image(name: str) -> bytes:
@@ -61,6 +65,49 @@ def portrait_bytes():
     return buf.getvalue()
 
 
+def _mirrored_jpeg(data: bytes) -> bytes:
+    img = Image.open(io.BytesIO(data)).convert("RGB").transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=92)
+    return buf.getvalue()
+
+
+def _on_canvas(data: bytes, scale: float, size=(6000, 4000)) -> bytes:
+    """`data` shrunk by `scale` and pasted in the middle of a 24 MP grey canvas: simulates
+    a hall photo where the faces are a small fraction of the frame (docs/test-readiness.md §3)."""
+    img = Image.open(io.BytesIO(data)).convert("RGB")
+    small = img.resize((round(img.width * scale), round(img.height * scale)), Image.Resampling.LANCZOS)
+    canvas = Image.new("RGB", size, (110, 110, 110))
+    canvas.paste(small, ((size[0] - small.width) // 2, (size[1] - small.height) // 2))
+    buf = io.BytesIO()
+    canvas.save(buf, format="JPEG", quality=90)
+    return buf.getvalue()
+
+
+def _repo_photos() -> dict[str, bytes]:
+    """The 20 MP photos in `photo/` (if any), re-encoded under MAX_UPLOAD_BYTES when needed."""
+    out: dict[str, bytes] = {}
+    if not os.path.isdir(PHOTO_DIR):
+        return out
+    for name in sorted(os.listdir(PHOTO_DIR)):
+        if not name.lower().endswith((".jpg", ".jpeg")):
+            continue
+        with open(os.path.join(PHOTO_DIR, name), "rb") as fh:
+            data = fh.read()
+        if len(data) > MAX_UPLOAD_BYTES:
+            img = Image.open(io.BytesIO(data))
+            img.load()
+            for q in (92, 88, 85, 80):
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG", quality=q, exif=img.info.get("exif", b""))
+                data = buf.getvalue()
+                if len(data) <= MAX_UPLOAD_BYTES:
+                    break
+        if len(data) <= MAX_UPLOAD_BYTES:
+            out[name] = data
+    return out
+
+
 def _timed(client, path, data, **params):
     t0 = time.perf_counter()
     r = client.post(path, params=params, files={"image": ("p.jpg", data, "image/jpeg")})
@@ -88,6 +135,8 @@ def test_embed_group_photo(real_client, group_bytes):
         assert 0 <= f["score"] <= 1 and 0 <= f["quality"] <= 1
         assert len(f["embedding"]) == 512
         assert math.isclose(math.sqrt(sum(v * v for v in f["embedding"])), 1.0, abs_tol=1e-4)
+        assert 5.0 < f["norm"] < 60.0  # ArcFace w600k_r50 raw norms are typically 15-35
+        assert f["yaw"] is not None and -1.0 <= f["yaw"] <= 1.0
         areas.append(b["width"] * b["height"])
     assert areas == sorted(areas, reverse=True)
     r1 = real_client.post("/v1/embed", params={"max_faces": 1}, files={"image": ("p.jpg", group_bytes, "image/jpeg")}).json()
@@ -114,6 +163,38 @@ def test_embeddings_separate_identities(real_client, group_bytes, portrait_bytes
     assert other < 0.45  # two different people in the group photo
 
 
+def test_yaw_sign_flips_with_a_mirrored_photo(real_client, group_bytes):
+    """Positive yaw = nose towards the image's right edge: mirroring the photo negates it."""
+    orig = real_client.post("/v1/embed", files={"image": ("p.jpg", group_bytes, "image/jpeg")}).json()["faces"]
+    flip = real_client.post("/v1/embed", files={"image": ("p.jpg", _mirrored_jpeg(group_bytes), "image/jpeg")}).json()["faces"]
+    assert len(orig) == len(flip) >= 3
+
+    def by_centre(faces):
+        return sorted(faces, key=lambda f: f["bbox"]["left"] + f["bbox"]["width"] / 2)
+
+    turned = 0
+    for a, b in zip(by_centre(orig), reversed(by_centre(flip))):  # same person, mirrored position
+        assert abs((a["bbox"]["left"] + a["bbox"]["width"] / 2) - (1 - b["bbox"]["left"] - b["bbox"]["width"] / 2)) < 0.03
+        assert a["yaw"] == pytest.approx(-b["yaw"], abs=0.12)
+        if abs(a["yaw"]) > 0.15:
+            turned += 1
+    assert turned >= 1  # the group photo has at least one clearly turned head
+
+
+def test_resolution_path_keeps_small_faces(real_client, legacy_client, group_bytes):
+    """The §3 experiment: the group photo at 0.75 scale on a 24 MP canvas (faces ~ 80-110 px in
+    the original). At 1600/640 some faces are lost; at 2560/1024 all six are kept."""
+    probe = _on_canvas(group_bytes, 0.75)
+    legacy = legacy_client.post("/v1/embed", params={"min_size": 1}, files={"image": ("p.jpg", probe, "image/jpeg")}).json()
+    current = real_client.post("/v1/embed", params={"min_size": 1}, files={"image": ("p.jpg", probe, "image/jpeg")}).json()
+    assert (legacy["width"], legacy["height"]) == (current["width"], current["height"]) == (6000, 4000)
+    assert len(current["faces"]) >= 6
+    assert len(current["faces"]) > len(legacy["faces"])
+    assert max(f["quality"] for f in current["faces"]) > max(f["quality"] for f in legacy["faces"])
+    # a face that is 20 px wide at 1600 is 32 px wide at 2560: `quality` grows with the resolution
+    assert min(f["quality"] for f in current["faces"]) > 0.3
+
+
 def test_embed_no_face(real_client, sample_bytes):
     r, _ = _timed(real_client, "/v1/embed", sample_bytes)
     assert r.status_code == 200
@@ -122,25 +203,38 @@ def test_embed_no_face(real_client, sample_bytes):
     assert r2.json()["faces"] == []
 
 
-def test_embed_latency(real_client, sample_bytes, group_bytes, capsys):
-    real_client.post("/v1/embed", files={"image": ("p.jpg", group_bytes, "image/jpeg")})  # warm-up
+def test_embed_latency(real_client, legacy_client, sample_bytes, group_bytes, capsys):
+    """Prints the embed latency for the current (DET_LONG_EDGE/DET_SIZE) and the legacy 1600/640
+    configuration; with the 20 MP photos from `photo/` when present."""
     cases = {
         "sample.jpg 640x480 no face": sample_bytes,
         "group 1280px": group_bytes,
         "group 1600px": _resized_jpeg(group_bytes, 1600),
-        "group 4000px (resized to 1600 by the service)": _resized_jpeg(group_bytes, 4000),
+        "group 4000px": _resized_jpeg(group_bytes, 4000),
     }
+    for name, data in _repo_photos().items():
+        cases[f"photo/{name} (20 MP)"] = data
+    configs = [
+        (f"{REAL_LONG_EDGE}/{REAL_DET_SIZE}", real_client),
+        (f"{LEGACY_LONG_EDGE}/{LEGACY_DET_SIZE}", legacy_client),
+    ]
     with capsys.disabled():
         print()
-        for label, data in cases.items():
-            times = []
-            faces = 0
-            for _ in range(5):
-                r, ms = _timed(real_client, "/v1/embed", data)
-                assert r.status_code == 200
-                faces = len(r.json()["faces"])
-                times.append(ms)
-            print(f"[latency] /v1/embed {label}: faces={faces} min {min(times):.0f} ms, avg {sum(times) / len(times):.0f} ms (5 runs, {len(data) // 1024} KB)")
+        for cfg, client in configs:
+            client.post("/v1/embed", files={"image": ("p.jpg", group_bytes, "image/jpeg")})  # warm-up
+            for label, data in cases.items():
+                times = []
+                faces = 0
+                for _ in range(5):
+                    r, ms = _timed(client, "/v1/embed", data)
+                    assert r.status_code == 200
+                    faces = len(r.json()["faces"])
+                    times.append(ms)
+                times.sort()
+                print(f"[latency {cfg}] /v1/embed {label}: faces={faces} min {times[0]:.0f} ms, median {times[2]:.0f} ms, max {times[-1]:.0f} ms (5 runs, {len(data) // 1024} KB)")
+    metrics = real_client.get("/metrics").text
+    assert "face_service_embed_latency_ms_p50 " in metrics
+    assert f"face_service_det_size {REAL_DET_SIZE}" in metrics
 
 
 def test_liveness_real(real_client, real_liveness, group_bytes, sample_bytes, capsys):

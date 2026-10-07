@@ -32,11 +32,17 @@ ENV PATH=/opt/venv/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1 \
     MODEL_ROOT=/models \
     MODEL_NAME=buffalo_l \
-    DET_SIZE=640 \
+    DET_SIZE=1024 \
+    DET_LONG_EDGE=2560 \
+    MODEL_CONCURRENCY=2 \
+    DECODE_CONCURRENCY=4 \
+    UVICORN_WORKERS=1 \
     HOME=/home/face
 
 USER face
 EXPOSE 8090
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
   CMD python -c "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=4).status == 200 else 1)"
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8090", "--workers", "1", "--no-server-header"]
+# UVICORN_WORKERS processes, each with its own model copy (~1-1.5 GB RSS each) and its own
+# MODEL_CONCURRENCY semaphore. `exec` keeps uvicorn as PID 1 so signals reach it directly.
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port 8090 --workers \"${UVICORN_WORKERS:-1}\" --no-server-header"]

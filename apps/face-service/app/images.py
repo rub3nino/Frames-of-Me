@@ -1,13 +1,14 @@
 """Image decoding for the face service.
 
 Pillow decodes the upload (EXIF orientation applied), the pixel count is capped,
-the long edge is bounded, and the result is handed to insightface as a BGR array.
-The image bytes are never logged or stored.
+the long edge is bounded (DET_LONG_EDGE, default 2560 px), and the result is handed
+to insightface as a BGR array. The image bytes are never logged or stored.
 """
 
 from __future__ import annotations
 
 import io
+import os
 from dataclasses import dataclass
 
 import numpy as np
@@ -17,8 +18,27 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 # its own cap (MAX_PIXELS) before any pixel is decoded, so the guard is disabled.
 Image.MAX_IMAGE_PIXELS = None
 
+
+
+def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer, got {raw!r}") from exc
+    if value < minimum:
+        raise ValueError(f"{name} must be >= {minimum}, got {value}")
+    return value
+
+
 MAX_PIXELS = 120_000_000
-MAX_LONG_EDGE = 1600
+DEFAULT_LONG_EDGE = 2560
+# Long edge of the image the detector sees. Detection recall on small faces (a 60-80 px
+# face in a 24 MP hall photo) is what motivates 2560 over the previous 1600: see
+# docs/test-readiness.md §3. Overridable per call (`max_long_edge`) and via DET_LONG_EDGE.
+MAX_LONG_EDGE = _env_int("DET_LONG_EDGE", DEFAULT_LONG_EDGE)
 ACCEPTED_FORMATS = frozenset({"JPEG", "PNG"})
 
 # EXIF orientations that swap width and height.
@@ -83,7 +103,11 @@ def decode_image(data: bytes, *, max_pixels: int | None = None, max_long_edge: i
     scale = min(1.0, max_long_edge / long_edge)
     target = (max(1, round(raw_w * scale)), max(1, round(raw_h * scale)))
     if scale < 1.0 and img.format == "JPEG":
-        # DCT-domain downscale: decodes a 24 MP JPEG at 1/2 or 1/4 size directly.
+        # DCT-domain downscale: Pillow picks the largest reduction (1/2, 1/4, 1/8) whose
+        # result is still >= `target`, so the decoded image is never smaller than the
+        # detector image; the resize below only shrinks it to the exact edge. With a
+        # 2560 px edge a 20 MP (5568 px) JPEG decodes at 1/2 (2784 px); a 7000 px one at
+        # 1/2 too (1/4 would give 1750 < 2560). With 1600 the same files decode at 1/2 and 1/4.
         img.draft("RGB", target)
 
     try:

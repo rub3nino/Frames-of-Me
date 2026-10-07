@@ -22,7 +22,9 @@ class RawFace:
     """One detection as produced by an analyser.
 
     `bbox` is (x1, y1, x2, y2) in pixels of the image passed to `analyze`. `embedding`
-    has any norm; it is L2-normalised by `build_faces`.
+    has any norm; it is L2-normalised by `build_faces`. `kps` are the five SCRFD landmarks
+    (left eye, right eye, nose, left mouth corner, right mouth corner) as a (5, 2) array
+    in the same pixel space, or None.
     """
 
     bbox: tuple[float, float, float, float]
@@ -52,10 +54,34 @@ class FaceResult:
     score: float
     quality: float
     embedding: list[float]
+    norm: float  # L2 norm of the raw ArcFace embedding before normalisation (a weak quality cue)
+    yaw: float | None  # see `estimate_yaw`; None when the detector gave no landmarks
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
     return lo if v < lo else hi if v > hi else v
+
+
+def estimate_yaw(kps: np.ndarray | None) -> float | None:
+    """Cheap head-yaw proxy from the five landmarks, in [-1, 1].
+
+    (nose.x - eye_centre.x) / inter-eye distance, clamped. Sign convention: **positive when
+    the nose points towards the right edge of the image** (the subject's left as they face
+    the camera), negative towards the left edge; ~0 is frontal. |yaw| around 0.5 is already
+    a strong three-quarter view. Returns None without landmarks or with coincident eyes.
+    """
+
+    if kps is None:
+        return None
+    pts = np.asarray(kps, dtype=np.float64)
+    if pts.shape != (5, 2) or not np.all(np.isfinite(pts)):
+        return None
+    left_eye, right_eye, nose = pts[0], pts[1], pts[2]
+    eye_dist = float(np.hypot(*(right_eye - left_eye)))
+    if eye_dist <= 1e-6:
+        return None
+    centre_x = (left_eye[0] + right_eye[0]) / 2.0
+    return _clamp((float(nose[0]) - centre_x) / eye_dist, -1.0, 1.0)
 
 
 def largest_face(raw: Sequence[RawFace]) -> RawFace | None:
@@ -98,6 +124,8 @@ def build_faces(raw: Sequence[RawFace], img_w: int, img_h: int, *, min_size: int
             score=score,
             quality=quality,
             embedding=[float(v) for v in unit],
+            norm=norm,
+            yaw=estimate_yaw(face.kps),
         )
         scored.append((w * h, result))
 

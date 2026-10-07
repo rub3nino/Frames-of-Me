@@ -86,6 +86,10 @@ services:
     environment:
       # intra-op threads per inference; defaults to the CPU count inside the container
       ONNX_THREADS: "4"
+      DET_SIZE: ${FACE_DET_SIZE:-1024}
+      DET_LONG_EDGE: ${FACE_DET_LONG_EDGE:-2560}
+      UVICORN_WORKERS: ${FACE_SERVICE_WORKERS:-1}
+      MODEL_CONCURRENCY: ${FACE_MODEL_CONCURRENCY:-2}
     healthcheck:
       test: ["CMD", "python", "-c", "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=4).status == 200 else 1)"]
       interval: 15s

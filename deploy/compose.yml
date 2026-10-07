@@ -189,7 +189,15 @@ services:
     environment:
       MODEL_NAME: buffalo_l
       ONNX_THREADS: ${FACE_SERVICE_THREADS:-4}
-      DET_SIZE: "640"
+      # Detection on a 2560 px long edge with a 1024 px SCRFD input: ~2x the cost of the
+      # old 1600/640 but it keeps 60-80 px faces in 24 MP hall photos (docs/test-readiness.md §3).
+      DET_SIZE: ${FACE_DET_SIZE:-1024}
+      DET_LONG_EDGE: ${FACE_DET_LONG_EDGE:-2560}
+      # uvicorn worker processes; each loads its own model (≈ 1-1.5 GB RSS) and runs up to
+      # MODEL_CONCURRENCY inferences at once. Size FACE_SERVICE_MEMORY ≈ workers × 1.5 GB + 1 GB.
+      UVICORN_WORKERS: ${FACE_SERVICE_WORKERS:-1}
+      MODEL_CONCURRENCY: ${FACE_MODEL_CONCURRENCY:-2}
+      DECODE_CONCURRENCY: ${FACE_DECODE_CONCURRENCY:-4}
     deploy:
       resources:
         limits:
