@@ -12,3 +12,6 @@ frontend/apps/*/public/mediapipe/
 photo/
 .DS_Store
 __pycache__/
+
+# Local Claude Code session + agent worktrees
+.claude/

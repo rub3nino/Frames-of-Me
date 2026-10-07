@@ -13,3 +13,11 @@ infra/cdk/node_modules
 docker-compose.override.yml
 uploads
 *.pem
+
+# Not needed by the backend images (api/worker/web); keeps the build context small.
+frontend
+photo
+docs
+deploy
+**/*.test.ts
+**/test

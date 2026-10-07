@@ -1,4 +1,4 @@
-import { createSql, migrate, PostgresDatabase, seedDemo } from "@rephoto/db";
+import { createSql, PostgresDatabase } from "@rephoto/db";
 import { loadEnv } from "@rephoto/api/env";
 import { loadFaceEngine } from "@rephoto/api/face";
 import { createMailer } from "@rephoto/api/mailer";
@@ -16,9 +16,9 @@ const METRICS_MS = 30 * 1000;
 
 const env = loadEnv();
 const sql = createSql(env.DATABASE_URL, { max: env.DATABASE_POOL_MAX });
-await migrate(sql);
+// The worker never migrates or seeds: the one-shot `migrate` service (and `pnpm db:seed`
+// in local dev) owns the schema. The worker starts only after that has completed.
 const db = new PostgresDatabase(sql);
-await seedDemo(db);
 const deps: WorkerDeps = {
   env,
   db,

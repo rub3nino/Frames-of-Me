@@ -1,0 +1,16 @@
+# pnpm workspace for the RePhoto backend monorepo (api, worker, web + shared packages).
+# The separate frontend/ monorepo (landing + participant/photographer/admin apps) is NOT
+# part of this workspace and keeps its own per-app lockfiles.
+packages:
+  - "apps/*"
+  - "packages/*"
+
+# Dependency install/build scripts pnpm is allowed to run (pnpm blocks all by default).
+# esbuild backs tsx (the api/worker TypeScript runtime); sharp is the worker's native image codec.
+onlyBuiltDependencies:
+  - esbuild
+  - sharp
+
+minimumReleaseAgeExclude:
+  - '@aws-sdk/client-cloudwatch@3.1147.0'
+  - '@mediapipe/tasks-vision@1.1.0'

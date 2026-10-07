@@ -10,7 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@rephoto/contracts": "file:../contracts",
+    "@rephoto/contracts": "workspace:*",
     "postgres": "^3.4.7"
   },
   "devDependencies": {
