@@ -612,6 +612,10 @@ async function hideForReporter(
     photoId: photo.id,
     verdict: "not_me",
     scoreAtTime: item?.score ?? null,
+    // Still the recognition flow (migration 018): we only get here when the photo is in the
+    // reporter's own match gallery, so "non sono io" is the same judgement about the matcher
+    // the gallery button records, reached through the report sheet instead.
+    source: "recognition",
   });
   return true;
 }

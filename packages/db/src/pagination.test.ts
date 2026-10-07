@@ -53,6 +53,7 @@ async function seedMemoryFeedback(db: MemoryDatabase, count: number): Promise<st
       photoId: id,
       verdict: index % 2 === 0 ? "me" : "not_me",
       scoreAtTime: 0.9,
+      source: "recognition",
     });
     ids.push(id);
   }

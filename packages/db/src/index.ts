@@ -96,3 +96,5 @@ export {
   normalizeDisplayName,
   TAG_SEARCH_MIN_PREFIX,
 } from "./types.js";
+// v6 (integration): gallery_feedback.source (migration 018)
+export type { FeedbackSource } from "./types.js";

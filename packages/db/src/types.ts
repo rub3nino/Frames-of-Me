@@ -441,12 +441,19 @@ export interface Database {
   findGallerySelfieKey(userId: string, eventId: string): Promise<string | null>;
   /** Removes the gallery and its items; false when there was none. */
   deleteGallery(userId: string, eventId: string): Promise<boolean>;
+  /**
+   * `source` is REQUIRED on purpose (migration 018): the same `not_me` row is written by the
+   * recognition flow and by tag removal, and only the recognition rows are ground truth for
+   * the matcher. A caller that does not state which flow it is would silently pollute the
+   * precision/recall numbers. See {@link FeedbackSource}.
+   */
   upsertFeedback(input: {
     userId: string;
     eventId: string;
     photoId: string;
     verdict: FeedbackVerdict;
     scoreAtTime: number | null;
+    source: FeedbackSource;
   }): Promise<void>;
   /**
    * `photoIds` restricts the read to the photos of one gallery page; without it the whole
@@ -888,6 +895,21 @@ export class AlbumRecognitionLockedError extends Error {
 
 export type FeedbackVerdict = "me" | "not_me";
 
+/**
+ * Which flow wrote a `gallery_feedback` row (`gallery_feedback.source`, migration 018).
+ *
+ * - `recognition` — the matcher put the photo in this person's personal match gallery and
+ *   they ruled on it. `me` confirms the match; `not_me` is a FALSE POSITIVE of face
+ *   recognition. These are the only rows that belong in a precision/recall calculation.
+ * - `tag` — a human tagged this person and the person refused the tag (`verdict` is always
+ *   `not_me`). It says nothing about the matcher and must be excluded when measuring
+ *   recognition quality.
+ *
+ * The participant sees one gesture, "non sono io", for both — that is agent E's deliberate
+ * reuse and it stays. This column is how the export keeps the two apart anyway.
+ */
+export type FeedbackSource = "recognition" | "tag";
+
 export type EventWithCounts = EventRow & {
   photos: number;
   galleries: number;
@@ -997,6 +1019,8 @@ export type FeedbackExportRow = {
   verdict: FeedbackVerdict;
   scoreAtTime: number | null;
   createdAt: Date;
+  /** Migration 018: which flow wrote the row. See {@link FeedbackSource}. */
+  source: FeedbackSource;
 };
 
 export type MetricsExtras = {

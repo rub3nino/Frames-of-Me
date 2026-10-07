@@ -42,6 +42,7 @@ import type {
   UserRow,
   EventWithCounts,
   FeedbackExportRow,
+  FeedbackSource,
   FeedbackVerdict,
   GalleryExportRow,
   GalleryListCursor,
@@ -1545,6 +1546,7 @@ export class MemoryDatabase implements Database {
     photoId: string;
     verdict: FeedbackVerdict;
     scoreAtTime: number | null;
+    source: FeedbackSource;
   }): Promise<void> {
     const existing = this.feedback.find(
       (row) =>
@@ -1553,6 +1555,8 @@ export class MemoryDatabase implements Database {
     if (existing) {
       existing.verdict = input.verdict;
       existing.scoreAtTime = input.scoreAtTime;
+      // Mirrors `on conflict ... set source = excluded.source` in Postgres (migration 018).
+      existing.source = input.source;
       existing.createdAt = new Date();
       return;
     }
@@ -1684,6 +1688,7 @@ export class MemoryDatabase implements Database {
         verdict: row.verdict,
         scoreAtTime: row.scoreAtTime,
         createdAt: row.createdAt,
+        source: row.source,
       };
     }
   }
@@ -2792,6 +2797,8 @@ type FeedbackRow = {
   verdict: FeedbackVerdict;
   scoreAtTime: number | null;
   createdAt: Date;
+  /** `gallery_feedback.source` (migration 018): which flow wrote the row. */
+  source: FeedbackSource;
 };
 
 type MatchRunStored = {

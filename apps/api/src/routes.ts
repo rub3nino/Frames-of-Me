@@ -1172,6 +1172,20 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     );
   });
 
+  /*
+   * The file the recognition thresholds are tuned from after the event. `source` (migration
+   * 018) is what keeps it honest, and anyone computing precision/recall must filter on it:
+   *
+   *   source = 'recognition'   the matcher put this photo in the person's personal match
+   *                            gallery and they ruled on it. verdict = 'me' is a true
+   *                            positive, verdict = 'not_me' is a FALSE POSITIVE. These are
+   *                            the only rows a precision/recall calculation may use.
+   *   source = 'tag'           a human tagged this person and the person refused the tag.
+   *                            verdict is always 'not_me'. It is NOT a matcher error and
+   *                            must be excluded.
+   *
+   * Rows written before migration 018 are all 'recognition', which is what they were.
+   */
   app.get("/v1/admin/export/feedback.csv", async (c) => {
     const actor = requireUser(c);
     requireRole(actor, ["admin"]);
@@ -1179,7 +1193,19 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     return streamCsv(
       c,
       `feedback-${safeFilenamePart(event.slug)}.csv`,
-      ["email", "user_id", "photo_id", "sha256", "filename", "verdict", "score_at_time", "created_at"],
+      [
+        "email",
+        "user_id",
+        "photo_id",
+        "sha256",
+        "filename",
+        "verdict",
+        "score_at_time",
+        "created_at",
+        // Appended, not inserted: a column added in the middle would break every script
+        // already reading this file by position.
+        "source",
+      ],
       deps.db.exportFeedback(event.id),
       (row) => [
         row.email,
@@ -1190,6 +1216,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
         row.verdict,
         row.scoreAtTime === null ? "" : String(row.scoreAtTime),
         row.createdAt.toISOString(),
+        row.source,
       ],
     );
   });
@@ -1234,6 +1261,9 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       photoId: body.data.photoId,
       verdict: body.data.verdict,
       scoreAtTime: item?.score ?? null,
+      // The recognition flow: this is a ruling on what the matcher put in the gallery, so
+      // `not_me` here IS a false positive and belongs in the precision/recall numbers.
+      source: "recognition",
     });
     await deps.db.insertAudit({
       actorId: user.id,

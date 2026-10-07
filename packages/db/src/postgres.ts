@@ -44,6 +44,7 @@ import type {
   UserRow,
   EventWithCounts,
   FeedbackExportRow,
+  FeedbackSource,
   FeedbackVerdict,
   GalleryExportRow,
   GalleryListCursor,
@@ -1700,12 +1701,20 @@ export class PostgresDatabase implements Database {
     photoId: string;
     verdict: FeedbackVerdict;
     scoreAtTime: number | null;
+    source: FeedbackSource;
   }): Promise<void> {
+    // `source` moves with the verdict on a conflict (migration 018): the row records the
+    // judgement that stands, and the flow that produced THAT judgement. A person who refused
+    // a tag and later rules on the same photo in their gallery leaves a `recognition` row,
+    // which is correct — that last ruling is a statement about the matcher.
     await this.sql`
-      insert into gallery_feedback (user_id, event_id, photo_id, verdict, score_at_time)
-      values (${input.userId}, ${input.eventId}, ${input.photoId}, ${input.verdict}, ${input.scoreAtTime})
+      insert into gallery_feedback (user_id, event_id, photo_id, verdict, score_at_time, source)
+      values (${input.userId}, ${input.eventId}, ${input.photoId}, ${input.verdict}, ${input.scoreAtTime}, ${input.source})
       on conflict (user_id, event_id, photo_id) do update
-        set verdict = excluded.verdict, score_at_time = excluded.score_at_time, created_at = now()
+        set verdict = excluded.verdict,
+            score_at_time = excluded.score_at_time,
+            source = excluded.source,
+            created_at = now()
     `;
   }
 
@@ -1868,8 +1877,10 @@ export class PostgresDatabase implements Database {
       verdict: FeedbackVerdict;
       score_at_time: number | null;
       created_at: Date;
+      source: FeedbackSource;
     }[]>`
-      select u.email, f.user_id, f.photo_id, p.sha256, p.filename, f.verdict, f.score_at_time, f.created_at
+      select u.email, f.user_id, f.photo_id, p.sha256, p.filename, f.verdict, f.score_at_time,
+             f.created_at, f.source
       from gallery_feedback f
       join users u on u.id = f.user_id
       join photos p on p.id = f.photo_id
@@ -1887,6 +1898,7 @@ export class PostgresDatabase implements Database {
           verdict: row.verdict,
           scoreAtTime: row.score_at_time === null ? null : Number(row.score_at_time),
           createdAt: row.created_at,
+          source: row.source,
         };
       }
     }

@@ -2050,10 +2050,16 @@ test("csv exports stream galleries, match hits and feedback", async () => {
   const feedback = await h.app.request(get(`/v1/admin/export/feedback.csv?eventId=${h.event.id}`, cookie));
   assert.equal(feedback.status, 200);
   const feedbackLines = (await feedback.text()).trim().split("\n");
-  assert.equal(feedbackLines[0], "email,user_id,photo_id,sha256,filename,verdict,score_at_time,created_at");
+  // `source` is appended last (migration 018), never inserted: a column in the middle would
+  // break every script already reading this file by position.
+  assert.equal(
+    feedbackLines[0],
+    "email,user_id,photo_id,sha256,filename,verdict,score_at_time,created_at,source",
+  );
   assert.equal(feedbackLines.length, 2);
   assert.ok(feedbackLines[1]?.includes(`,${first.photoId},`));
   assert.ok(feedbackLines[1]?.includes(`,not_me,${first.score},`));
+  assert.ok(feedbackLines[1]?.endsWith(",recognition"));
 
   assert.equal((await h.app.request(get("/v1/admin/export/galleries.csv", cookie))).status, 400);
   assert.equal((await h.app.request(get(`/v1/admin/export/galleries.csv?eventId=${randomUUID()}`, cookie))).status, 404);

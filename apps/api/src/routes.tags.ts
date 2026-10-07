@@ -279,6 +279,11 @@ export function registerTagRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       photoId,
       verdict: "not_me",
       scoreAtTime: null,
+      // `source: 'tag'` (migration 018). The participant's gesture is the same as the
+      // gallery's "Non sono io" and stays the same — but a tag is a HUMAN assertion, so
+      // refusing one says nothing about the matcher and must not count as a recognition
+      // false positive when the thresholds are tuned after the event.
+      source: "tag",
     });
     await auditUntag(deps, {
       actorId: user.id,

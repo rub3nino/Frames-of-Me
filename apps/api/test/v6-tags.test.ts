@@ -978,3 +978,122 @@ test("tagging leaves the personal match gallery untouched", async () => {
   assert.equal(body.total, 1);
   assert.deepEqual(body.items.map((row) => row.photoId), [own]);
 });
+
+// ---- integration fix 3: gallery_feedback.source keeps the two flows apart -------------------
+//
+// Agent E's tag removal writes a `not_me` row, the same row the gallery's "Non sono io"
+// button writes. That reuse is deliberate and stays — the participant learns one gesture.
+// But `GET /v1/admin/export/feedback.csv` is the file the recognition thresholds are tuned
+// from, and "the matcher was wrong about me" and "I refused a tag a human asserted" are not
+// the same measurement. Migration 018 adds `source` so the export can say which is which.
+
+test("tag removal and gallery feedback are distinguishable in gallery_feedback.source", async () => {
+  const h = await harness();
+  const bob = await participant(h, "bob@example.com");
+  const alice = await participant(h, "alice@example.com");
+  await optIn(h, alice, "Alice Rossi");
+
+  // Two photos, both in Alice's own match gallery so she may rule on either.
+  const tagged = await seedPhoto(h);
+  const matched = await seedPhoto(h);
+  await giveGallery(h, alice.id, [tagged, matched]);
+  await giveGallery(h, bob.id, [tagged]);
+
+  // Flow 1: Bob tags Alice, Alice refuses the tag. A HUMAN assertion she rejected.
+  const tagPath = `/v1/events/${h.event.slug}/tags`;
+  assert.equal(
+    (await h.app.request(json("POST", tagPath, { photoId: tagged, userId: alice.id }, { cookie: bob.cookie })))
+      .status,
+    201,
+  );
+  const untagged = await h.app.request(del(`${tagPath}/${tagged}`, alice.cookie));
+  assert.equal(untagged.status, 200);
+  assert.deepEqual(await untagged.json(), { photoId: tagged, verdict: "not_me" });
+
+  // Flow 2: the matcher put `matched` in her gallery and she says it is not her. A FALSE
+  // POSITIVE of face recognition — the row the thresholds are actually tuned from.
+  const ruled = await h.app.request(
+    json(
+      "POST",
+      `/v1/events/${h.event.slug}/gallery/feedback`,
+      { photoId: matched, verdict: "not_me" },
+      { cookie: alice.cookie },
+    ),
+  );
+  assert.equal(ruled.status, 201);
+
+  // Both are `not_me`: the participant's gesture is identical, which is the point.
+  assert.deepEqual(
+    (await h.db.listFeedback(alice.id, h.event.id, [tagged, matched]))
+      .map((row) => row.verdict)
+      .sort(),
+    ["not_me", "not_me"],
+  );
+
+  // The export tells them apart. `source` is the last column (migration 018).
+  const admin = await h.db.findUserByEmailRole("admin@rephoto.local", "admin");
+  assert.ok(admin);
+  const adminCookie = await sessionCookie(h.db, admin.id);
+  const csv = await h.app.request(
+    get(`/v1/admin/export/feedback.csv?eventId=${h.event.id}`, adminCookie),
+  );
+  assert.equal(csv.status, 200);
+  const lines = (await csv.text()).trim().split("\n");
+  assert.equal(
+    lines[0],
+    "email,user_id,photo_id,sha256,filename,verdict,score_at_time,created_at,source",
+  );
+  const bySource = new Map(
+    lines.slice(1).map((line) => {
+      const cells = line.split(",");
+      return [cells[2] as string, cells[cells.length - 1] as string];
+    }),
+  );
+  assert.equal(bySource.get(tagged), "tag", "a refused tag is not a matcher error");
+  assert.equal(bySource.get(matched), "recognition", "a wrong match is");
+
+  // Which is the whole point: the false-positive count is the 'recognition' rows alone.
+  const falsePositives = lines
+    .slice(1)
+    .filter((line) => line.includes(",not_me,") && line.endsWith(",recognition"));
+  assert.equal(falsePositives.length, 1);
+});
+
+test("ruling on a photo in the gallery after refusing its tag leaves a recognition row", async () => {
+  const h = await harness();
+  const bob = await participant(h, "bob@example.com");
+  const alice = await participant(h, "alice@example.com");
+  await optIn(h, alice, "Alice Rossi");
+  const photoId = await seedPhoto(h);
+  await giveGallery(h, alice.id, [photoId]);
+  await giveGallery(h, bob.id, [photoId]);
+
+  const tagPath = `/v1/events/${h.event.slug}/tags`;
+  await h.app.request(json("POST", tagPath, { photoId, userId: alice.id }, { cookie: bob.cookie }));
+  await h.app.request(del(`${tagPath}/${photoId}`, alice.cookie));
+
+  // The pair (user, event, photo) is a primary key, so the second ruling replaces the first.
+  // `source` moves with the verdict: the judgement that stands is about the matcher now.
+  const ruled = await h.app.request(
+    json(
+      "POST",
+      `/v1/events/${h.event.slug}/gallery/feedback`,
+      { photoId, verdict: "me" },
+      { cookie: alice.cookie },
+    ),
+  );
+  assert.equal(ruled.status, 201);
+
+  const admin = await h.db.findUserByEmailRole("admin@rephoto.local", "admin");
+  assert.ok(admin);
+  const csv = await h.app.request(
+    get(
+      `/v1/admin/export/feedback.csv?eventId=${h.event.id}`,
+      await sessionCookie(h.db, admin.id),
+    ),
+  );
+  const lines = (await csv.text()).trim().split("\n");
+  assert.equal(lines.length, 2, "one row per (user, event, photo)");
+  assert.ok(lines[1]?.includes(",me,"));
+  assert.ok(lines[1]?.endsWith(",recognition"));
+});
