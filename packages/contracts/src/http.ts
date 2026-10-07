@@ -73,7 +73,9 @@ export const loginBodySchema = z
   .object({
     email: z.string().trim().email().max(320),
     password: z.string().min(1).max(200),
-    role: staffRoleSchema,
+    // v6 (agent B): participants self-register with a password, so they log in here too.
+    // Staff accounts are unaffected; `findUserForLogin` already keys on (email, role).
+    role: roleSchema,
   })
   .strict();
 
@@ -795,3 +797,68 @@ export const galleryFeedbackResponseSchema = z
 export const webConfigResponseSchema = z
   .object({ eventSlug: eventSlugSchema })
   .strict();
+
+// ---- auth v6 (agent B): Google OIDC + participant self-registration ------------------------
+
+export const identityProviderSchema = z.enum(["google"]);
+export type IdentityProvider = z.infer<typeof identityProviderSchema>;
+
+/** Minimum password length for self-registration and password resets. */
+export const PASSWORD_MIN_LENGTH = 10;
+export const PASSWORD_MAX_LENGTH = 200;
+/** Short-lived cookie holding the signed state + PKCE verifier during the Google round-trip. */
+export const OAUTH_STATE_COOKIE_NAME = "rephoto_oauth";
+/** The signed state is only valid this long: long enough for a Google consent screen. */
+export const OAUTH_STATE_TTL_SECONDS = 10 * 60;
+/** Self-registrations per IP / per event code, counted over this window. */
+export const REGISTER_RATE_LIMIT = { windowSeconds: 60 * 60 } as const;
+
+/** Printed on the badge/QR. Case and surrounding spaces are normalised by the api. */
+export const eventCodeSchema = z
+  .string()
+  .trim()
+  .min(4)
+  .max(64)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9-]*$/);
+
+export const registerBodySchema = z
+  .object({
+    email: z.string().trim().email().max(320),
+    password: z.string().min(PASSWORD_MIN_LENGTH).max(PASSWORD_MAX_LENGTH),
+    eventCode: eventCodeSchema,
+  })
+  .strict();
+
+export const registerResponseSchema = z
+  .object({ user: userSchema })
+  .strict();
+
+/** The only e-mail a self-registered participant ever triggers (lazy verification). */
+export const passwordResetBodySchema = z
+  .object({ email: z.string().trim().email().max(320) })
+  .strict();
+
+export const passwordResetResponseSchema = z
+  .object({ status: z.literal("sent") })
+  .strict();
+
+export const passwordResetConfirmBodySchema = z
+  .object({
+    token: z.string().min(1),
+    password: z.string().min(PASSWORD_MIN_LENGTH).max(PASSWORD_MAX_LENGTH),
+  })
+  .strict();
+
+export const passwordResetConfirmResponseSchema = z
+  .object({ user: userSchema })
+  .strict();
+
+/**
+ * Google appends `scope`, `authuser`, `prompt` and friends to the callback, so this is
+ * deliberately not `.strict()`. `error` arrives when the user refuses consent.
+ */
+export const googleCallbackQuerySchema = z.object({
+  code: z.string().min(1).max(2048).optional(),
+  state: z.string().min(1).max(4096).optional(),
+  error: z.string().min(1).max(200).optional(),
+});

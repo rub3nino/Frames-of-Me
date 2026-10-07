@@ -49,6 +49,14 @@ import {
   type DownloadVariant,
   type Role,
   type SelfieLiveness,
+  // v6 (agent B): auth
+  googleCallbackQuerySchema,
+  OAUTH_STATE_COOKIE_NAME,
+  OAUTH_STATE_TTL_SECONDS,
+  passwordResetBodySchema,
+  passwordResetConfirmBodySchema,
+  registerBodySchema,
+  REGISTER_RATE_LIMIT,
 } from "@rephoto/contracts";
 import {
   DuplicateKeyError,
@@ -71,6 +79,16 @@ import {
   webOrigin,
 } from "./http.js";
 import { ipMatches, parseIpList } from "./net.js";
+import {
+  assertGoogleClaims,
+  createGoogleTokenExchange,
+  decodeIdToken,
+  googleConfig,
+  OauthError,
+  startGoogleFlow,
+  verifiedEmail,
+  verifyCallbackState,
+} from "./oauth.js";
 import { purgePhoto } from "./purge.js";
 
 const UUID =
@@ -80,6 +98,8 @@ const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
 const INVITE_TTL_SECONDS = 7 * 24 * 60 * 60;
 const SELFIE_MAX_BYTES = 8_388_608;
 const HEALTH_TIMEOUT_MS = 2_000;
+/** v6 (agent B): keys kept by the in-process registration limiter before it prunes. */
+const RATE_LIMIT_KEYS_MAX = 20_000;
 
 export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
   const health = async (c: Context<AppEnv>) => {
@@ -130,6 +150,8 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       }
       user = await deps.db.insertUser(consumed.email, "participant");
     }
+    // v6: clicking the link proves the address (lazy verification, migration 012).
+    await deps.db.markEmailVerified(user.id);
     await startSession(c, deps, user);
     return c.json({ user: publicUser(user) });
   });
@@ -1168,6 +1190,168 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     });
     return c.json({ photoId: body.data.photoId, verdict: body.data.verdict }, 201);
   });
+
+  // ---- auth v6 (agent B): Google OIDC + participant self-registration --------------------
+  //
+  // The magic-link routes above are untouched and keep working: they are the event-day
+  // fallback (see RUN.md) and the carrier of the password-reset link. Only the web UI
+  // stopped offering them.
+
+  const googleExchange = deps.googleTokenExchange ?? createGoogleTokenExchange();
+  // Per-process sliding windows. The hard gate is `event_codes.max_uses` in the database;
+  // these only blunt a bot loop, so losing them on restart (or multiplying them by the
+  // number of api replicas) is acceptable.
+  const registerLimiter = createRateLimiter(REGISTER_RATE_LIMIT.windowSeconds);
+
+  app.get("/v1/auth/google/start", async (c) => {
+    const config = googleConfig(deps.env);
+    if (!config) throw new ApiError(404, MESSAGES.googleUnavailable);
+    const flow = startGoogleFlow(config);
+    // state + PKCE verifier + nonce, signed, httpOnly, single use, 10 minutes.
+    setCookie(c, OAUTH_STATE_COOKIE_NAME, flow.cookie, {
+      httpOnly: true,
+      sameSite: "Lax",
+      path: "/",
+      secure: deps.env.WEB_ORIGIN.startsWith("https:"),
+      maxAge: OAUTH_STATE_TTL_SECONDS,
+    });
+    return c.redirect(flow.authorizeUrl, 302);
+  });
+
+  app.get("/v1/auth/google/callback", async (c) => {
+    const config = googleConfig(deps.env);
+    if (!config) throw new ApiError(404, MESSAGES.googleUnavailable);
+    const query = googleCallbackQuerySchema.safeParse(c.req.query());
+    const cookie = getCookie(c, OAUTH_STATE_COOKIE_NAME);
+    // The cookie is single-use: drop it before anything can fail, so a replayed callback
+    // cannot reuse the same state/verifier.
+    deleteCookie(c, OAUTH_STATE_COOKIE_NAME, {
+      path: "/",
+      secure: deps.env.WEB_ORIGIN.startsWith("https:"),
+    });
+    if (!query.success) throw new ApiError(400, MESSAGES.validation);
+    // The user pressed "deny" on the consent screen: back to the sign-in page, no error.
+    if (query.data.error) return c.redirect(`${webOrigin(deps.env)}/?google=annullato`, 302);
+
+    let user: UserRow;
+    try {
+      const flow = verifyCallbackState(config, {
+        cookie,
+        state: query.data.state,
+      });
+      if (!query.data.code) throw new OauthError("missing code");
+      const { idToken } = await googleExchange({
+        code: query.data.code,
+        codeVerifier: flow.verifier,
+        config,
+      });
+      const claims = decodeIdToken(idToken);
+      assertGoogleClaims(claims, { config, nonce: flow.nonce });
+      // `verifiedEmail` returns null unless the token said `email_verified`. An unverified
+      // address is never used to find or create an account.
+      const email = verifiedEmail(claims);
+      user = await resolveGoogleUser(deps, claims.sub, email);
+    } catch (error) {
+      if (error instanceof OauthError) throw new ApiError(400, MESSAGES.linkInvalid);
+      throw error;
+    }
+    await deps.db.insertAudit({
+      actorId: user.id,
+      action: "auth.google",
+      target: `user:${user.id}`,
+      meta: { role: user.role },
+    });
+    await startSession(c, deps, user);
+    return c.redirect(`${webOrigin(deps.env)}${homePathForRole(user.role)}`, 302);
+  });
+
+  app.post("/v1/auth/register", async (c) => {
+    const body = registerBodySchema.safeParse(await readJson(c));
+    if (!body.success) throw new ApiError(400, MESSAGES.validation);
+    const email = body.data.email.toLowerCase();
+    const eventCode = body.data.eventCode.trim().toUpperCase();
+    const ip = c.get("ip");
+    if (!rateLimitExempt(deps, ip)) {
+      const perIp = deps.env.REGISTER_PER_IP;
+      if (perIp > 0 && !registerLimiter.allow(`ip:${ip}`, perIp)) {
+        throw new ApiError(429, MESSAGES.rateLimited);
+      }
+      const perCode = deps.env.REGISTER_PER_CODE;
+      if (perCode > 0 && !registerLimiter.allow(`code:${eventCode}`, perCode)) {
+        throw new ApiError(429, MESSAGES.rateLimited);
+      }
+    }
+    // Checked before the code is claimed, so a second tap on "Registrati" does not burn a
+    // use of a single-use badge code. The cost is a weak existence oracle on this route,
+    // which is rate limited per IP; an existing account is never adopted by a new password.
+    if (await deps.db.findUserByEmailRole(email, "participant")) {
+      throw new ApiError(409, MESSAGES.accountExists);
+    }
+    // One statement in Postgres: expiry and `max_uses` are checked and `uses` incremented
+    // atomically. Absent, expired and exhausted are one answer on purpose.
+    const claimed = await deps.db.claimEventCode(eventCode);
+    if (!claimed) throw new ApiError(403, MESSAGES.eventCodeInvalid);
+    const user = await deps.db.insertUser(email, "participant");
+    await deps.db.setUserPassword(user.id, hashPassword(body.data.password));
+    // Lazy verification (v6): no e-mail is sent here and `email_verified_at` stays null.
+    // The address is proven later, by a password-reset link or a Google token.
+    await deps.db.insertAudit({
+      actorId: user.id,
+      action: "auth.registered",
+      target: `event:${claimed.eventId}`,
+      meta: { eventCode: claimed.code, uses: claimed.uses },
+    });
+    await startSession(c, deps, user);
+    return c.json({ user: publicUser(user) }, 201);
+  });
+
+  app.post("/v1/auth/password-reset", async (c) => {
+    const body = passwordResetBodySchema.safeParse(await readJson(c));
+    if (!body.success) throw new ApiError(400, MESSAGES.validation);
+    const email = body.data.email.toLowerCase();
+    const ip = c.get("ip");
+    await enforceMailLinkLimits(deps, email, ip);
+    const user = await deps.db.findUserByEmailRole(email, "participant");
+    // Always 202: whether the account exists is not answered here.
+    if (user) {
+      const token = newToken();
+      await deps.db.insertMagicLink({
+        email,
+        role: "participant",
+        tokenHash: sha256Hex(token),
+        expiresAt: new Date(Date.now() + MAGIC_LINK_TTL_SECONDS * 1000),
+        ip: ip === "unknown" ? null : ip,
+      });
+      await deps.mailer.send({
+        to: email,
+        subject: "Reimposta la password RePhoto",
+        text: `${webOrigin(deps.env)}/registrati?reset=${encodeURIComponent(token)}`,
+      });
+    }
+    return c.json({ status: "sent" }, 202);
+  });
+
+  app.post("/v1/auth/password-reset/confirm", async (c) => {
+    const body = passwordResetConfirmBodySchema.safeParse(await readJson(c));
+    if (!body.success) throw new ApiError(400, MESSAGES.validation);
+    const consumed = await deps.db.consumeMagicLink(sha256Hex(body.data.token));
+    if (!consumed || consumed.role !== "participant") {
+      throw new ApiError(400, MESSAGES.linkInvalid);
+    }
+    const user = await deps.db.findUserByEmailRole(consumed.email, "participant");
+    if (!user) throw new ApiError(400, MESSAGES.linkInvalid);
+    await deps.db.setUserPassword(user.id, hashPassword(body.data.password));
+    // Clicking the link proves the address: this is where lazy verification completes.
+    await deps.db.markEmailVerified(user.id);
+    await deps.db.insertAudit({
+      actorId: user.id,
+      action: "auth.password_reset",
+      target: `user:${user.id}`,
+      meta: {},
+    });
+    await startSession(c, deps, user);
+    return c.json({ user: publicUser(user) });
+  });
 }
 
 // ---- admin and participant tooling v5 (agent D) helpers --------------------------------------
@@ -1542,4 +1726,114 @@ async function readSelfie(c: Context<AppEnv>): Promise<{
     throw new ApiError(400, MESSAGES.validation);
   }
   return { bytes, contentType, liveness };
+}
+
+// ---- auth v6 (agent B) helpers ---------------------------------------------------------------
+
+/**
+ * Finds the user behind a Google sign-in, in the order of B2: the identity row first, then
+ * a link by **verified** e-mail to an existing participant, then a new participant.
+ *
+ * `role` is always `participant` for a user created here; an existing identity row decides
+ * the role for everyone else, which is how a photographer who signed up with Google keeps
+ * their role. `users.unique (email, role)` is untouched: the same address can exist as a
+ * participant and as a photographer, and only the participant row is looked up by e-mail.
+ */
+async function resolveGoogleUser(
+  deps: AppDeps,
+  subject: string,
+  verifiedEmailAddress: string | null,
+): Promise<UserRow> {
+  const linked = await deps.db.findUserByIdentity("google", subject);
+  if (linked) {
+    if (verifiedEmailAddress) await deps.db.markEmailVerified(linked.id);
+    return linked;
+  }
+  if (!verifiedEmailAddress) {
+    // No identity row and no address we are allowed to trust: nothing can be created.
+    throw new OauthError("no verified email");
+  }
+  const existing = await deps.db.findUserByEmailRole(verifiedEmailAddress, "participant");
+  const user = existing ?? (await deps.db.insertUser(verifiedEmailAddress, "participant"));
+  try {
+    await deps.db.insertIdentity({
+      userId: user.id,
+      provider: "google",
+      subject,
+      email: verifiedEmailAddress,
+    });
+  } catch (error) {
+    // Two callbacks raced: whoever lost re-reads the row the winner wrote.
+    if (!(error instanceof DuplicateKeyError)) throw error;
+    const raced = await deps.db.findUserByIdentity("google", subject);
+    if (!raced) throw error;
+    await deps.db.markEmailVerified(raced.id);
+    return raced;
+  }
+  await deps.db.markEmailVerified(user.id);
+  return user;
+}
+
+/** Where the web sends each role after a sign-in. Mirrors `apps/web/lib/paths.ts`. */
+function homePathForRole(role: Role): string {
+  if (role === "photographer") return "/upload";
+  if (role === "admin") return "/admin";
+  return "/selfie";
+}
+
+/**
+ * The same per-email / per-IP budget `request-link` uses, on the same `magic_links` table:
+ * a password reset and a login link are one mail budget, so the Resend day cap holds.
+ */
+async function enforceMailLinkLimits(
+  deps: AppDeps,
+  email: string,
+  ip: string,
+): Promise<void> {
+  if (rateLimitExempt(deps, ip)) return;
+  const windowStart = since(MAGIC_LINK_RATE_LIMIT.windowSeconds);
+  const perEmail = deps.env.MAGIC_LINK_PER_EMAIL;
+  if (perEmail > 0) {
+    const byEmail = await deps.db.countMagicLinksSince({ email, since: windowStart });
+    if (byEmail >= perEmail) throw new ApiError(429, MESSAGES.rateLimited);
+  }
+  const perIp = deps.env.MAGIC_LINK_PER_IP;
+  if (perIp > 0) {
+    const byIp = await deps.db.countMagicLinksSince({ ip, since: windowStart });
+    if (byIp >= perIp) throw new ApiError(429, MESSAGES.rateLimited);
+  }
+}
+
+type RateLimiter = {
+  /** True when the call is within `max` hits for `key` in the window, and counts it. */
+  allow(key: string, max: number): boolean;
+};
+
+/**
+ * In-process sliding window, one instance per app (so tests do not leak into each other).
+ * Deliberately not in the database: these limits guard against a bot loop, while the
+ * hard guarantee for an event code is `event_codes.max_uses`, enforced in one statement.
+ */
+function createRateLimiter(windowSeconds: number): RateLimiter {
+  const hits = new Map<string, number[]>();
+  const windowMs = windowSeconds * 1000;
+  return {
+    allow(key, max) {
+      const now = Date.now();
+      const cutoff = now - windowMs;
+      const kept = (hits.get(key) ?? []).filter((at) => at > cutoff);
+      if (kept.length >= max) {
+        hits.set(key, kept);
+        return false;
+      }
+      kept.push(now);
+      hits.set(key, kept);
+      if (hits.size > RATE_LIMIT_KEYS_MAX) {
+        for (const [other, times] of hits) {
+          if (times.length === 0 || times[times.length - 1]! <= cutoff) hits.delete(other);
+        }
+      }
+      return true;
+    },
+  };
 }

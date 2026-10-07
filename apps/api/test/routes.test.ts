@@ -364,7 +364,9 @@ test("staff password login issues a session; wrong password and participant role
   );
   assert.equal(unset.status, 401);
 
-  // Participants are magic-link only — the schema rejects the role.
+  // v6 (agent B) revoked the v5 rule "participants are magic-link only": they now
+  // self-register with a password (`/v1/auth/register`), so the role is accepted and an
+  // unknown account answers exactly like a wrong password, 401 with MESSAGES.loginInvalid.
   const participant = await h.app.request(
     json("POST", "/v1/auth/login", {
       email: "p@example.com",
@@ -372,7 +374,7 @@ test("staff password login issues a session; wrong password and participant role
       role: "participant",
     }),
   );
-  assert.equal(participant.status, 400);
+  assert.equal(participant.status, 401);
 });
 
 test("admin creates staff credentials that then work for login", async () => {

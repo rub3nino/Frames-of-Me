@@ -25,7 +25,7 @@ npm run dev:web
 
 Seeded data: event slug `demo` (`access = open`), admin `admin@rephoto.local`, photographer `photographer@rephoto.local` with the invite already accepted and the `event_photographers` row in place. `FACE_ENGINE=fake` is the default in `.env.example`. No real secrets are in the repo.
 
-Flow to try: open http://localhost:3000/staff, ask a link as `photographer@rephoto.local` with role «Fotografo» (`/` is the participant form; photographers and admins use `/staff` since v5, same magic link with their role, see `CONTRACTS.md`), read it in Mailpit, click **Entra** on `/verify`, upload on `/upload`; then as any participant e-mail ask a link on `/`, give consent and send a selfie on `/selfie`, open `/e/demo`. With the fake engine two images with the same average colour are the same person; with the InsightFace engine (below) it is real face matching. The admin console (`admin@rephoto.local` on `/staff` with role «Amministratore», then `/admin`) is described further down.
+Flow to try: open http://localhost:3000/staff, ask a link as `photographer@rephoto.local` with role «Fotografo» (`/` is the participant form; photographers and admins use `/staff` since v5, same magic link with their role, see `CONTRACTS.md`), read it in Mailpit, click **Entra** on `/verify`, upload on `/upload`; then register a participant on `/registrati` with an event code (`insert into event_codes (event_id, code) select id, 'DEMO-2026' from events where slug = 'demo'`), give consent and send a selfie on `/selfie`, open `/e/demo` — or, for a pre-v6 account, mint a magic link and open `/verify?token=…`. With the fake engine two images with the same average colour are the same person; with the InsightFace engine (below) it is real face matching. The admin console (`admin@rephoto.local` on `/staff` with role «Amministratore», then `/admin`) is described further down.
 
 ## Face engine: `fake` or `insightface`
 
@@ -45,13 +45,33 @@ Thresholds (`INSIGHTFACE_MIN_COSINE=0.50`, `INSIGHTFACE_SURE_COSINE=0.70`, v5 de
 
 Running the Python service outside Docker (venv, `MODEL_ROOT`, `uvicorn`) is described in `apps/face-service/README.md`.
 
+## Participant sign-in (v6): Google, password, event code — and the magic-link fallback
+
+The participant home page (`/`) no longer offers a magic link. It offers **Accedi con Google** and **e-mail + password**, with `/registrati` for a new account and «Password dimenticata?» for a reset.
+
+- **Self-registration:** `POST /v1/auth/register` `{ email, password, eventCode }` → creates the `participant`, scrypt-hashes the password into `users.password_hash` and sets the `rephoto_session` cookie, `201`. The password is at least 10 characters. The **event code** is the anti-bot gate: it is the code printed on the badge/QR, stored in `event_codes` (migration `012_auth_identities.sql`) with an optional `max_uses` and `expires_at`. Absent, expired and exhausted all answer `403` with one message. The claim is a single `update … where uses < max_uses returning …`, so `max_uses` holds under concurrent registrations. A code string that exists in two events charges exactly one of them.
+- **Registration sends no e-mail at all** and `users.email_verified_at` stays null. Lazy verification is deliberate: 6 000 same-day registrations would blow through the Resend free tier (3 000/month, 100/day) in minutes. The address is proven later — by a password reset, a magic link, or a Google token with `email_verified`.
+- **Password reset** (the only e-mail a self-registered participant can trigger): `POST /v1/auth/password-reset` `{ email }` → always `202`, and a link is mailed only when a participant with that address exists. It reuses the `magic_links` table and therefore the same `MAGIC_LINK_PER_EMAIL` / `MAGIC_LINK_PER_IP` budget. The link lands on `/registrati?reset=<token>`, which posts `POST /v1/auth/password-reset/confirm` `{ token, password }` → new password, `email_verified_at` stamped, session started. Single use.
+- **Google:** `GET /v1/auth/google/start` (302 to Google, with a short-lived signed `rephoto_oauth` cookie carrying state + the PKCE verifier + the nonce) and `GET /v1/auth/google/callback` (verifies state, PKCE, nonce, issuer, audience and expiry, then resolves the user and 302s into the app). Without `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REDIRECT_URL` both routes answer `404`, and the web only shows the button when `NEXT_PUBLIC_GOOGLE_LOGIN=true`. The `email` claim is used **only** when the token says `email_verified`; an unverified claim never finds or creates an account. A sign-in resolves to `role = 'participant'` unless a `user_identities` row already points at another role, and `users.unique (email, role)` is untouched, so the same address can be a participant and a photographer.
+- Register the redirect URI in the Google console exactly as `GOOGLE_REDIRECT_URL`. Through the web proxy that is `https://<web host>/v1/auth/google/callback`; pointing it straight at the API host works too.
+
+### Magic links are the event-day fallback — the path is alive
+
+`POST /v1/auth/request-link` + `/verify` (the `/verifica` redirect) still work for **every** role and are unchanged. They are the way in when Google is down, when a participant mistypes the address they registered with, when an account predates v6 (no password set), or when the reset mail does not arrive. Nothing in the UI links there any more, so:
+
+- Type **http://localhost:3000/verify?token=…** (production: `https://<host>/verifica?token=…`) after minting a link, or
+- mint one from the admin console, **Accessi staff** → the magic-link card, which shows it as a QR and as text for any e-mail and role and never mails it, or
+- ask for one with `curl -X POST https://<api>/v1/auth/request-link -H 'content-type: application/json' -d '{"email":"guest@example.com","role":"participant"}'` and read it in Mailpit (local) or the mailbox.
+
+Do not delete this path. `apps/api/test/v6-auth.test.ts` keeps a test that walks request-link → mail → verify → an authenticated gallery call; if it fails, participants have lost their fallback.
+
 ## Admin console, staff login and test tooling (v5)
 
 Admins and photographers ask their magic link on **http://localhost:3000/staff** (e-mail + role; the home page form is for participants only; the page is not linked from anywhere, type the URL). A fresh database can also get an admin from `BOOTSTRAP_ADMINS=you@example.com` in `.env` (upserted when `dev:api` boots). Then http://localhost:3000/admin, sections by hash:
 
 ### Staff login with e-mail + password
 
-Admins and photographers can also log in with **e-mail + password** (participants stay magic-link only). This is what the new `frontend/` apps use: the admin area (`frontend/apps/admin`) and the photographer area (`frontend/apps/fotografi`) show a credentials form first, with the magic link kept as a fallback link.
+Admins and photographers can also log in with **e-mail + password** (in v5 participants were magic-link only; since v6 they have passwords too, see the participant section above). This is what the new `frontend/` apps use: the admin area (`frontend/apps/admin`) and the photographer area (`frontend/apps/fotografi`) show a credentials form first, with the magic link kept as a fallback link.
 
 - **Endpoint:** `POST /v1/auth/login` `{ email, password, role }` (role `photographer` or `admin`) → sets the `rephoto_session` cookie, same as a verified magic link. Wrong credentials → `401`.
 - **Create / reset credentials (admin-only):** `POST /v1/admin/staff` `{ email, role, password, eventId? }` creates the account if missing, sets the password (scrypt-hashed in `users.password_hash`, migration `008_staff_passwords.sql`), and attaches a photographer to `eventId` when given. In the admin UI it is the **Accessi staff** page (`/admin/link`), card “Credenziali con password” (with a password generator).
@@ -128,6 +148,10 @@ All variables are listed in `.env.example` and described in `CONTRACTS.md` (sect
 | `MAGIC_LINK_PER_EMAIL`, `MAGIC_LINK_PER_IP`, `SELFIE_MAX_PER_HOUR` | `3`, `20`, `5` | v5. Rate limits per hour; `0` = off |
 | `RATE_LIMIT_EXEMPT_IPS` | empty | v5. Comma-separated IPs / CIDRs that skip the limits |
 | `BOOTSTRAP_ADMINS` | empty | v5. Comma-separated e-mails upserted as admin when the API boots |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URL` | unset | v6. Google OIDC client. All three together or none: a partial set fails env validation at boot, and with none set `/v1/auth/google/*` answers `404`. The redirect URL must match the Google console entry, e.g. `https://<host>/v1/auth/google/callback` |
+| `OAUTH_STATE_SECRET` | = `SESSION_SECRET` | v6. HMAC key of the short-lived `rephoto_oauth` state/PKCE cookie (min 16 chars). Rotating it only invalidates sign-ins in flight |
+| `REGISTER_PER_IP`, `REGISTER_PER_CODE` | `20`, `600` | v6. Self-registrations per hour per client IP and per event code; `0` = off. In-process counters (per API instance, lost on restart) — the hard cap is `event_codes.max_uses` |
+| `NEXT_PUBLIC_GOOGLE_LOGIN` | unset | v6, web build-time: `true` shows «Accedi con Google» on `/`. Leave unset when no Google client is configured, otherwise the button leads to a `404` |
 | `FACE_DET_LONG_EDGE`, `FACE_DET_SIZE`, `FACE_SERVICE_WORKERS`, `FACE_MODEL_CONCURRENCY` | `2560`, `1024`, `1`, `2` | v5, compose only: face-service detection resolution, uvicorn processes (≈ 1–1.5 GB RSS each), inferences per process |
 | `WORKER_CONCURRENCY` | `4` | Jobs in flight per worker process (1–32). The face-service runs two inferences at once per process; more jobs only queue inside it |
 | `REKOGNITION_INDEX_TPS`, `REKOGNITION_SEARCH_TPS` | `5` | Token buckets for Rekognition. Ignored with `fake` and `insightface` |

@@ -12,6 +12,11 @@ export const MESSAGES = {
   rateLimited: "Troppe richieste. Riprova più tardi.",
   selfieNotKept: "Il selfie non è stato conservato: serve KEEP_SELFIES e un nuovo selfie.",
   internal: "Errore interno.",
+  // v6 (agent B): self-registration and Google login.
+  eventCodeInvalid: "Codice evento non valido, scaduto o esaurito.",
+  accountExists: "Esiste già un account con questa email. Accedi o reimposta la password.",
+  passwordTooShort: "La password deve avere almeno 10 caratteri.",
+  googleUnavailable: "Accesso con Google non disponibile.",
 } as const;
 
 export class ApiError extends Error {

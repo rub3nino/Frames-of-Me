@@ -50,4 +50,7 @@ export type {
   PhotoAdminFilters,
   PhotoAdminRow,
   PhotoDetail,
+  // v6 (agent B)
+  EventCodeRow,
+  IdentityProvider,
 } from "./types.js";

@@ -7,6 +7,11 @@ import { ApiError, api } from "@/lib/api";
 import { pathForRole } from "@/lib/paths";
 import type { User } from "@/lib/types";
 
+/**
+ * Magic-link sign-in. Since v6 nothing links here — the home page offers Google and
+ * e-mail + password — but the path stays working on purpose: it is the event-day fallback
+ * documented in RUN.md, reachable by typing the URL or by following a mailed link.
+ */
 const inflight = new Map<string, Promise<User>>();
 
 function Verify() {
