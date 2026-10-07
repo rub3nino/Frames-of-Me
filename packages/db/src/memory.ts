@@ -335,6 +335,7 @@ export class MemoryDatabase implements Database {
     id: string;
     eventId: string;
     photographerId: string;
+    uploaderId?: string;
     collection?: PhotoCollection;
     s3UploadId: string | null;
     objectKey: string;
@@ -354,6 +355,7 @@ export class MemoryDatabase implements Database {
       id: input.id,
       eventId: input.eventId,
       photographerId: input.photographerId,
+      uploaderId: input.uploaderId ?? input.photographerId,
       collection: input.collection ?? "official",
       s3UploadId: input.s3UploadId,
       objectKey: input.objectKey,
@@ -435,6 +437,7 @@ export class MemoryDatabase implements Database {
     id: string;
     eventId: string;
     photographerId: string;
+    uploaderId?: string;
     collection?: PhotoCollection;
     sha256: string;
     originalKey: string;
@@ -450,6 +453,7 @@ export class MemoryDatabase implements Database {
       id: input.id,
       eventId: input.eventId,
       photographerId: input.photographerId,
+      uploaderId: input.uploaderId ?? input.photographerId,
       collection: input.collection ?? "official",
       sha256: input.sha256,
       originalKey: input.originalKey,

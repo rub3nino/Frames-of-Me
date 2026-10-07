@@ -38,6 +38,7 @@ export type PhotoRow = {
   id: string;
   eventId: string;
   photographerId: string;
+  uploaderId: string | null;
   collection: PhotoCollection;
   sha256: string;
   status: PhotoStatus;
@@ -54,6 +55,7 @@ export type UploadSessionRow = {
   id: string;
   eventId: string;
   photographerId: string;
+  uploaderId: string | null;
   collection: PhotoCollection;
   s3UploadId: string | null;
   objectKey: string;
@@ -209,6 +211,7 @@ export interface Database {
     id: string;
     eventId: string;
     photographerId: string;
+    uploaderId?: string;
     collection?: PhotoCollection;
     s3UploadId: string | null;
     objectKey: string;
@@ -240,6 +243,7 @@ export interface Database {
     id: string;
     eventId: string;
     photographerId: string;
+    uploaderId?: string;
     collection?: PhotoCollection;
     sha256: string;
     originalKey: string;

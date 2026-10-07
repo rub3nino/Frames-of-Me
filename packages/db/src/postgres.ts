@@ -60,10 +60,10 @@ const PHOTOGRAPHER_ID = "00000000-0000-4000-8000-000000000003";
 const INVITE_ID = "00000000-0000-4000-8000-000000000004";
 
 const PHOTO_COLUMNS =
-  "id, event_id, photographer_id, collection, sha256, status, original_key, content_type, bytes, original_status, indexed_at, error, created_at";
+  "id, event_id, photographer_id, uploader_id, collection, sha256, status, original_key, content_type, bytes, original_status, indexed_at, error, created_at";
 const EVENT_COLUMNS = "id, slug, name, retention_days, access, created_at";
 const UPLOAD_COLUMNS =
-  "id, event_id, photographer_id, collection, s3_upload_id, object_key, sha256, content_type, status, bytes, stage, photo_id, original_content_type, original_bytes, filename, tags, created_at";
+  "id, event_id, photographer_id, uploader_id, collection, s3_upload_id, object_key, sha256, content_type, status, bytes, stage, photo_id, original_content_type, original_bytes, filename, tags, created_at";
 const PHOTO_ADMIN_COLUMNS = `${PHOTO_COLUMNS}, filename, tags`;
 
 function asContentType(value: string): ImageContentType {
@@ -283,7 +283,7 @@ export class PostgresDatabase implements Database {
   async countUploadsSince(userId: string, eventId: string, since: Date): Promise<number> {
     const rows = await this.sql<{ count: number }[]>`
       select count(*)::int as count from upload_sessions
-      where photographer_id = ${userId} and event_id = ${eventId} and created_at >= ${since}
+      where uploader_id = ${userId} and event_id = ${eventId} and created_at >= ${since}
     `;
     return rows[0]?.count ?? 0;
   }
@@ -313,6 +313,7 @@ export class PostgresDatabase implements Database {
     id: string;
     eventId: string;
     photographerId: string;
+    uploaderId?: string;
     collection?: PhotoCollection;
     s3UploadId: string | null;
     objectKey: string;
@@ -328,10 +329,10 @@ export class PostgresDatabase implements Database {
   }): Promise<void> {
     await this.sql`
       insert into upload_sessions (
-        id, event_id, photographer_id, collection, s3_upload_id, object_key, sha256, content_type, status, bytes,
+        id, event_id, photographer_id, uploader_id, collection, s3_upload_id, object_key, sha256, content_type, status, bytes,
         stage, photo_id, original_content_type, original_bytes, filename, tags
       ) values (
-        ${input.id}, ${input.eventId}, ${input.photographerId}, ${input.collection ?? "official"}, ${input.s3UploadId},
+        ${input.id}, ${input.eventId}, ${input.photographerId}, ${input.uploaderId ?? input.photographerId}, ${input.collection ?? "official"}, ${input.s3UploadId},
         ${input.objectKey}, ${input.sha256}, ${input.contentType}, 'open', ${input.bytes},
         ${input.stage ?? "original"}, ${input.photoId ?? null},
         ${input.originalContentType ?? null}, ${input.originalBytes ?? null},
@@ -443,6 +444,7 @@ export class PostgresDatabase implements Database {
     id: string;
     eventId: string;
     photographerId: string;
+    uploaderId?: string;
     collection?: PhotoCollection;
     sha256: string;
     originalKey: string;
@@ -455,11 +457,11 @@ export class PostgresDatabase implements Database {
     try {
       const rows = await this.sql<PhotoSql[]>`
         insert into photos (
-          id, event_id, photographer_id, collection, sha256, status, original_key, content_type, bytes, original_status,
+          id, event_id, photographer_id, uploader_id, collection, sha256, status, original_key, content_type, bytes, original_status,
           filename, tags
         )
         values (
-          ${input.id}, ${input.eventId}, ${input.photographerId}, ${input.collection ?? "official"}, ${input.sha256},
+          ${input.id}, ${input.eventId}, ${input.photographerId}, ${input.uploaderId ?? input.photographerId}, ${input.collection ?? "official"}, ${input.sha256},
           'uploaded', ${input.originalKey}, ${input.contentType}, ${input.bytes},
           ${input.originalStatus ?? "present"}, ${input.filename ?? null}, ${input.tags ?? []}::text[]
         )
@@ -1913,6 +1915,7 @@ type PhotoSql = {
   id: string;
   event_id: string;
   photographer_id: string;
+  uploader_id: string | null;
   collection: PhotoCollection;
   sha256: string;
   status: PhotoStatus;
@@ -1928,6 +1931,7 @@ type UploadSql = {
   id: string;
   event_id: string;
   photographer_id: string;
+  uploader_id: string | null;
   collection: PhotoCollection;
   s3_upload_id: string | null;
   object_key: string;
@@ -1991,6 +1995,7 @@ function mapPhoto(row: PhotoSql): PhotoRow {
     id: row.id,
     eventId: row.event_id,
     photographerId: row.photographer_id,
+    uploaderId: row.uploader_id,
     collection: row.collection,
     sha256: row.sha256,
     status: row.status,
@@ -2008,6 +2013,7 @@ function mapUpload(row: UploadSql): UploadSessionRow {
     id: row.id,
     eventId: row.event_id,
     photographerId: row.photographer_id,
+    uploaderId: row.uploader_id,
     collection: row.collection,
     s3UploadId: row.s3_upload_id,
     objectKey: row.object_key,
