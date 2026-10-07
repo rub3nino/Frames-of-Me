@@ -7,3 +7,4 @@ coverage
 uploads
 *.pem
 *.tsbuildinfo
+apps/web/public/mediapipe/

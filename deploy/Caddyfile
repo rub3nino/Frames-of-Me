@@ -1,0 +1,129 @@
+# RePhoto v4 — Caddy 2 (image caddy:2-alpine). Placeholders `{$NAME}` come from the
+# container environment (compose.yml → .env.production).
+#
+# Sites:
+#   {$DOMAIN}          /v1/* → api:8787 (70 MB body cap), everything else → web:3000
+#   media.{$DOMAIN}    → minio:9000, plain reverse proxy for presigned URLs
+#   status.{$DOMAIN}   → uptime-kuma:3001 behind basic auth (optional)
+#
+# Rate limiting: Caddy's `rate_limit` handler is not in the stock image. The API has its own
+# limits on /v1/auth/*; for brute force at the edge use fail2ban on the access log
+# (/var/log/caddy/access.log, see README.md § "fail2ban").
+#
+# Validate: docker run --rm -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" \
+#             -e DOMAIN=example.com -e ACME_EMAIL=a@b.c -e STATUS_BASIC_AUTH_USER=admin \
+#             -e STATUS_BASIC_AUTH_HASH='$2a$14$x' caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile
+
+{
+	email {$ACME_EMAIL}
+	# No proxy in front of Caddy: incoming X-Forwarded-* headers are untrusted and replaced,
+	# so the api sees exactly one hop (TRUSTED_PROXY_HOPS=1). If you ever put Cloudflare or
+	# another proxy in front, add `servers { trusted_proxies static <its ranges> }` here and
+	# raise TRUSTED_PROXY_HOPS to 2.
+}
+
+(security_headers) {
+	header {
+		# Next.js already sends CSP/X-Frame-Options/etc. on its pages; `header` overwrites, so the
+		# values below win on every path (api responses included) and are never duplicated.
+		Strict-Transport-Security "max-age=63072000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "same-origin"
+		Permissions-Policy "camera=(self), microphone=(), geolocation=()"
+		-Server
+		-X-Powered-By
+	}
+}
+
+(access_log) {
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 50mb
+			roll_keep 5
+			roll_keep_for 168h
+		}
+		format json
+	}
+}
+
+# ------------------------------------------------------------------ app
+{$DOMAIN} {
+	import security_headers
+	import access_log
+	encode zstd gzip
+
+	# API: straight to the api replicas (Docker DNS round-robins `api`), not through the
+	# Next.js /v1 proxy. Uploads go to MinIO with presigned URLs, so 70 MB is only for the
+	# selfie, the ZIP requests and the occasional staged PUT via the API.
+	@api path /v1/*
+	handle @api {
+		request_body {
+			max_size 70MB
+		}
+		reverse_proxy api:8787 {
+			# Default behaviour, spelled out: the original Host reaches the upstream.
+			header_up Host {host}
+			transport http {
+				dial_timeout 5s
+				response_header_timeout 60s
+			}
+			lb_try_duration 5s
+		}
+	}
+
+	# ZIP downloads stream for minutes: no response timeout on the web side either.
+	handle {
+		reverse_proxy web:3000 {
+			header_up Host {host}
+			transport http {
+				dial_timeout 5s
+			}
+			lb_try_duration 5s
+		}
+	}
+}
+
+www.{$DOMAIN} {
+	redir https://{$DOMAIN}{uri} permanent
+}
+
+# ------------------------------------------------------------------ media (MinIO)
+# Presigned URLs are signed by the api for `https://media.{$DOMAIN}` (S3_PUBLIC_ENDPOINT).
+# SigV4 includes the Host header, so MinIO must see exactly that host: Caddy's reverse_proxy
+# passes the original Host by default (`header_up Host {host}` is the default, shown here for
+# clarity) — never set `header_up Host {upstream_hostport}` on this site. URLs are path-style
+# (`/<bucket>/<key>`), which is why MINIO_DOMAIN stays unset in compose.yml.
+media.{$DOMAIN} {
+	import access_log
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		-Server
+	}
+	# Originals are up to 8 MB per PUT and 5 MB-ish per multipart part; 100 MB leaves room.
+	request_body {
+		max_size 100MB
+	}
+	reverse_proxy minio:9000 {
+		header_up Host {host}
+		transport http {
+			dial_timeout 5s
+			# Large downloads (originals, 8 MB each) and uploads on slow links.
+			response_header_timeout 120s
+		}
+		# MinIO's own CORS (MINIO_API_CORS_ALLOW_ORIGIN) answers preflights; nothing to add here.
+	}
+}
+
+# ------------------------------------------------------------------ status (optional)
+# Delete this block (and the uptime-kuma service in compose.yml) to disable monitoring.
+status.{$DOMAIN} {
+	import security_headers
+	import access_log
+	encode zstd gzip
+	basic_auth {
+		{$STATUS_BASIC_AUTH_USER} {$STATUS_BASIC_AUTH_HASH}
+	}
+	reverse_proxy uptime-kuma:3001
+}

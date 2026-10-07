@@ -51,13 +51,22 @@ export class NonRetryableError extends Error {
   }
 }
 
+/**
+ * Face service answers that retrying cannot change: the bytes are not an image the
+ * service accepts (400), too large (413) or the request itself was invalid (422).
+ * 5xx and connection failures are `FaceServiceUnavailable` and stay retryable.
+ */
+const FACE_SERVICE_DEFINITIVE_STATUSES = new Set([400, 413, 422]);
+
 export function isNonRetryable(error: unknown): error is NonRetryableError {
+  if (error instanceof NonRetryableError) return true;
+  if (typeof error !== "object" || error === null || !("name" in error)) return false;
+  if (error.name === "NonRetryableError") return true;
   return (
-    error instanceof NonRetryableError ||
-    (typeof error === "object" &&
-      error !== null &&
-      "name" in error &&
-      error.name === "NonRetryableError")
+    error.name === "FaceServiceError" &&
+    "status" in error &&
+    typeof error.status === "number" &&
+    FACE_SERVICE_DEFINITIVE_STATUSES.has(error.status)
   );
 }
 
@@ -68,7 +77,12 @@ export type JobLogEntry = {
   ms: number;
   outcome: "done" | "requeued" | "retry" | "error" | "invalid";
   error?: string;
+  /** `match` only: the selfie failed the engine's liveness check and got an empty gallery. */
+  liveness?: "rejected";
 };
+
+/** Extra fields a handler wants on its job log line. */
+export type JobNote = Pick<JobLogEntry, "liveness">;
 
 export type WorkerDeps = {
   env: Env;
@@ -90,7 +104,7 @@ export type WorkerJob =
   | ({ type: "retention" } & RetentionPayload)
   | ({ type: "verify" } & VerifyPayload);
 
-export async function runJob(job: WorkerJob, deps: WorkerDeps): Promise<void> {
+export async function runJob(job: WorkerJob, deps: WorkerDeps): Promise<JobNote | undefined> {
   if (job.type === "derive") {
     await derivePhoto(job.photoId, deps);
     return;
@@ -104,8 +118,7 @@ export async function runJob(job: WorkerJob, deps: WorkerDeps): Promise<void> {
     return;
   }
   if (job.type === "match") {
-    await matchSelfie(job, deps);
-    return;
+    return matchSelfie(job, deps);
   }
   if (job.type === "retention") {
     await retainEvent(job, deps);
@@ -301,10 +314,36 @@ async function attachPhoto(photoId: string, deps: WorkerDeps): Promise<void> {
   }
 }
 
-async function matchSelfie(job: { type: "match" } & MatchPayload, deps: WorkerDeps): Promise<void> {
+/**
+ * Searches the event with the selfie and rebuilds the participant's gallery. With
+ * `LIVENESS_CHECK=true` and an engine that can judge liveness, a selfie the engine
+ * rejects gets an empty gallery: the "ready" mail still goes out and the UI shows
+ * "Nessuna corrispondenza". The selfie object is deleted either way.
+ */
+async function matchSelfie(
+  job: { type: "match" } & MatchPayload,
+  deps: WorkerDeps,
+): Promise<JobNote | undefined> {
   const selfie = await deps.objects.get(job.selfieKey);
   if (!selfie) throw new Error("Selfie object missing");
   const imageBytes = await fitRekognitionJpeg(selfie.body);
+  const event = await deps.db.findEventById(job.eventId);
+  if (!event) throw new Error("Event missing");
+  const liveness = deps.env.LIVENESS_CHECK ? deps.faces.checkLiveness?.bind(deps.faces) : undefined;
+  if (liveness) {
+    const verdict = await liveness({ imageBytes, contentType: "image/jpeg" });
+    if (verdict.live === false) {
+      await deps.db.replaceGallery(job.userId, job.eventId, [], []);
+      await deps.objects.delete(job.selfieKey);
+      await enqueue(deps, "email", {
+        userId: job.userId,
+        eventId: job.eventId,
+        galleryPath: `/e/${event.slug}`,
+        kind: "ready",
+      } satisfies EmailPayload);
+      return { liveness: "rejected" };
+    }
+  }
   const hits = await deps.faces.search({
     eventId: job.eventId,
     imageBytes,
@@ -330,8 +369,6 @@ async function matchSelfie(job: { type: "match" } & MatchPayload, deps: WorkerDe
       best.set(hit.photoId, { faceId: face.id, externalId: face.externalId, score });
     }
   }
-  const event = await deps.db.findEventById(job.eventId);
-  if (!event) throw new Error("Event missing");
   const ranked = [...best.entries()].sort((a, b) => b[1].score - a[1].score);
   const anchors = ranked.slice(0, ANCHOR_COUNT).map(([, item]) => item.externalId);
   await deps.db.replaceGallery(
@@ -351,6 +388,7 @@ async function matchSelfie(job: { type: "match" } & MatchPayload, deps: WorkerDe
     galleryPath: `/e/${event.slug}`,
     kind: "ready",
   } satisfies EmailPayload);
+  return undefined;
 }
 
 async function retainEvent(

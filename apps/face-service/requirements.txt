@@ -1,0 +1,16 @@
+# Runtime dependencies, pinned (verified on macOS arm64 / Python 3.12 and in the
+# python:3.11-slim image). insightface itself is in requirements-insightface.txt and is
+# installed with --no-deps because it declares opencv-python (needs libGL); we ship
+# opencv-python-headless instead. Everything insightface imports is listed here.
+fastapi==0.142.2
+uvicorn[standard]==0.54.0
+python-multipart==0.0.32
+pillow==12.3.0
+numpy==1.26.4
+opencv-python-headless==4.11.0.86
+onnxruntime==1.30.0
+onnx==1.23.2
+scikit-image==0.26.0
+scipy==1.17.1
+requests==2.34.2
+tqdm==4.70.1

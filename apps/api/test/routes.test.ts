@@ -1196,3 +1196,87 @@ test("gallery, download and zip fall back to the web derivative while the origin
   assert.ok(text.includes("web-0"));
   assert.ok(text.includes("original-1-"));
 });
+
+test("presigned URLs use S3_PUBLIC_ENDPOINT when set, S3_ENDPOINT otherwise", async () => {
+  const internal = createS3ObjectStore(env);
+  assert.equal(new URL(await internal.presignGet("thumbs/x.jpg")).origin, "http://localhost:9000");
+  assert.equal(
+    new URL(await internal.presignPut("web/x.jpg", "image/jpeg", 10)).origin,
+    "http://localhost:9000",
+  );
+
+  const publicEnv: Env = envSchema.parse({
+    DATABASE_URL: env.DATABASE_URL,
+    S3_ENDPOINT: "http://minio:9000",
+    S3_PUBLIC_ENDPOINT: "https://media.example.com",
+    S3_BUCKET: "rephoto",
+    S3_ACCESS_KEY: "rephoto",
+    S3_SECRET_KEY: "rephoto-secret",
+    S3_REGION: "eu-central-1",
+    SESSION_SECRET: "test-session-secret-value",
+    FACE_ENGINE: "fake",
+    SMTP_HOST: "localhost",
+    SMTP_PORT: "1025",
+    SMTP_FROM: "noreply@rephoto.local",
+    WEB_ORIGIN: "https://example.com",
+    API_ORIGIN: "https://example.com",
+  });
+  const store = createS3ObjectStore(publicEnv);
+  const get = new URL(await store.presignGet("thumbs/x.jpg"));
+  assert.equal(get.origin, "https://media.example.com");
+  // Path style: the bucket stays in the path, so no `rephoto.media.example.com` DNS record is needed.
+  assert.equal(get.pathname, "/rephoto/thumbs/x.jpg");
+  assert.equal(get.searchParams.get("X-Amz-Expires"), "1800");
+  const put = new URL(await store.presignPut("web/x.jpg", "image/jpeg", 10));
+  assert.equal(put.origin, "https://media.example.com");
+  assert.equal(put.pathname, "/rephoto/web/x.jpg");
+  const part = new URL(await store.presignUploadPart("originals/x.jpg", "upload-1", 2));
+  assert.equal(part.origin, "https://media.example.com");
+  assert.equal(part.searchParams.get("partNumber"), "2");
+  assert.equal(part.searchParams.get("uploadId"), "upload-1");
+});
+
+test("selfie records the liveness field in the audit log and defaults it to file", async () => {
+  const h = await harness();
+  const participant = await h.db.createUser({ email: "live@example.com", role: "participant" });
+  const cookie = await sessionCookie(h.db, participant.id);
+  await h.db.insertConsent({
+    userId: participant.id,
+    eventId: h.event.id,
+    textVersion: CONSENT_TEXT_VERSION,
+    ip: "127.0.0.1",
+    userAgent: "test",
+  });
+  const audits: Array<{ actorId: string | null; action: string; target: string; meta: Record<string, unknown> }> = [];
+  const db: Database = h.db;
+  db.insertAudit = async (input) => {
+    audits.push(input);
+  };
+  const post = (liveness?: string) => {
+    const form = new FormData();
+    form.set("selfie", new File([Buffer.from("not really a jpeg")], "me.jpg", { type: "image/jpeg" }));
+    if (liveness !== undefined) form.set("liveness", liveness);
+    return h.app.request(
+      new Request(`http://api.local/v1/events/${h.event.slug}/selfie`, {
+        method: "POST",
+        headers: { cookie },
+        body: form,
+      }),
+    );
+  };
+
+  assert.equal((await post("challenge")).status, 202);
+  assert.equal((await post()).status, 202);
+  const bogus = await post("bogus");
+  assert.equal(bogus.status, 400);
+  assert.deepEqual(await bogus.json(), { error: MESSAGES.validation });
+
+  const target = `event:${h.event.id}`;
+  assert.deepEqual(
+    audits.map((row) => [row.actorId, row.action, row.target, row.meta]),
+    [
+      [participant.id, "selfie.submitted", target, { liveness: "challenge" }],
+      [participant.id, "selfie.submitted", target, { liveness: "file" }],
+    ],
+  );
+});

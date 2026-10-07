@@ -10,6 +10,10 @@ export const imageContentTypeSchema = z.enum(["image/jpeg", "image/png"]);
 export const CONSENT_TEXT_VERSION = "2026-10-06";
 export const SESSION_COOKIE_NAME = "rephoto_session";
 export const SELFIE_FIELD_NAME = "selfie";
+/** Multipart field next to the selfie: how it was captured. Stored in audit_log, meta.liveness. */
+export const SELFIE_LIVENESS_FIELD = "liveness";
+export const selfieLivenessSchema = z.enum(["challenge", "file"]);
+export type SelfieLiveness = z.infer<typeof selfieLivenessSchema>;
 export const SELFIE_RATE_LIMIT = { max: 5, windowSeconds: 60 * 60 } as const;
 /** 10 MiB: the largest body the api accepts (selfie multipart of 8 MiB plus overhead). */
 export const API_BODY_MAX_BYTES = 10_485_760;

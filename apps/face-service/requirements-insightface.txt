@@ -1,0 +1,2 @@
+# Install with: pip install --no-deps -r requirements-insightface.txt   (see requirements.txt)
+insightface==2.1

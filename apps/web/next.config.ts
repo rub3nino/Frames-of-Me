@@ -14,7 +14,7 @@ const csp = [
   "default-src 'self'",
   `img-src 'self' blob: data: ${mediaOrigins}`,
   `connect-src 'self' ${mediaOrigins}`,
-  `script-src 'self' 'unsafe-inline'${production ? "" : " 'unsafe-eval'"}`,
+  `script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'${production ? "" : " 'unsafe-eval'"}`,
   "style-src 'self' 'unsafe-inline'",
   "frame-ancestors 'none'",
   "form-action 'self'",

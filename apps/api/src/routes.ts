@@ -22,7 +22,9 @@ import {
   requestLinkBodySchema,
   retentionBodySchema,
   SELFIE_FIELD_NAME,
+  SELFIE_LIVENESS_FIELD,
   SELFIE_RATE_LIMIT,
+  selfieLivenessSchema,
   SESSION_COOKIE_NAME,
   uploadCompleteBodySchema,
   uploadInitBodySchema,
@@ -33,6 +35,7 @@ import {
   verifyBodySchema,
   type DownloadVariant,
   type Role,
+  type SelfieLiveness,
 } from "@rephoto/contracts";
 import { DuplicateKeyError, type EventRow, type PhotoRow, type UserRow } from "@rephoto/db";
 import { newToken, sha256Hex } from "./crypto.js";
@@ -181,6 +184,15 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       userId: user.id,
       eventId: event.id,
       selfieKey: key,
+    });
+    // The DPIA cites this: whether the selfie went through the browser liveness challenge.
+    // The value is asserted by the client (a deterrent, not proof): the server cannot verify
+    // the challenge ran. The server-side check, when enabled, is LIVENESS_CHECK in the worker.
+    await deps.db.insertAudit({
+      actorId: user.id,
+      action: "selfie.submitted",
+      target: `event:${event.id}`,
+      meta: { liveness: image.liveness },
     });
     return c.json({ status: "queued" }, 202);
   });
@@ -889,12 +901,22 @@ async function startSession(c: Context<AppEnv>, deps: AppDeps, user: UserRow): P
   });
 }
 
-async function readSelfie(
-  c: Context<AppEnv>,
-): Promise<{ bytes: Uint8Array; contentType: "image/jpeg" | "image/png" }> {
+async function readSelfie(c: Context<AppEnv>): Promise<{
+  bytes: Uint8Array;
+  contentType: "image/jpeg" | "image/png";
+  liveness: SelfieLiveness;
+}> {
   const body = await c.req.parseBody();
   const image = body[SELFIE_FIELD_NAME];
   if (!(image instanceof File)) throw new ApiError(400, MESSAGES.validation);
+  // Optional: absent means the plain file picker (v3 clients); anything else must be a known value.
+  let liveness: SelfieLiveness = "file";
+  const livenessField = body[SELFIE_LIVENESS_FIELD];
+  if (livenessField !== undefined) {
+    const parsed = selfieLivenessSchema.safeParse(livenessField);
+    if (!parsed.success) throw new ApiError(400, MESSAGES.validation);
+    liveness = parsed.data;
+  }
   const contentType = image.type.split(";")[0]?.trim();
   if (contentType !== "image/jpeg" && contentType !== "image/png") {
     throw new ApiError(400, MESSAGES.validation);
@@ -906,5 +928,5 @@ async function readSelfie(
   if (bytes.byteLength <= 0 || bytes.byteLength > SELFIE_MAX_BYTES) {
     throw new ApiError(400, MESSAGES.validation);
   }
-  return { bytes, contentType };
+  return { bytes, contentType, liveness };
 }

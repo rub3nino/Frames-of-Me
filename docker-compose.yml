@@ -15,7 +15,8 @@ name: rephoto
 
 services:
   postgres:
-    image: postgres:16
+    # pgvector-enabled build of Postgres 16 (same major: the existing volume keeps working).
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: rephoto
       POSTGRES_PASSWORD: rephoto
@@ -75,6 +76,24 @@ services:
       retries: 20
       start_period: 5s
 
+  # Self-hosted face engine (InsightFace on CPU). Starts by default; the first build
+  # downloads the model pack (~280 MB). The api/worker use it with FACE_ENGINE=insightface.
+  face-service:
+    build:
+      context: apps/face-service
+    ports:
+      - "8090:8090"
+    environment:
+      # intra-op threads per inference; defaults to the CPU count inside the container
+      ONNX_THREADS: "4"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=4).status == 200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    restart: unless-stopped
+
   # ---- optional `app` profile: the three images built from the Dockerfiles ----
 
   api:
@@ -93,6 +112,7 @@ services:
       S3_FORCE_PATH_STYLE: "true"
       SESSION_SECRET: dev-only-change-me-please-32chars
       FACE_ENGINE: fake
+      FACE_SERVICE_URL: http://face-service:8090
       AWS_REGION: eu-central-1
       REKOGNITION_COLLECTION_PREFIX: rephoto-
       MAIL_TRANSPORT: smtp

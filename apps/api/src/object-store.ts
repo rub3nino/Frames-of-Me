@@ -32,7 +32,10 @@ export interface ObjectStore {
   stream(key: string): Promise<StreamedObject | null>;
   head(key: string): Promise<{ bytes: number; contentType: string } | null>;
   delete(key: string): Promise<void>;
-  /** When `bytes` is given the signed PUT is bound to that `Content-Length`. */
+  /**
+   * When `bytes` is given the signed PUT is bound to that `Content-Length`.
+   * All presigned URLs point at `S3_PUBLIC_ENDPOINT` when it is set, else at `S3_ENDPOINT`.
+   */
   presignPut(key: string, contentType: string, bytes?: number): Promise<string>;
   createMultipartUpload(key: string, contentType: string): Promise<string>;
   presignUploadPart(key: string, uploadId: string, partNumber: number): Promise<string>;

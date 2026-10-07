@@ -25,6 +25,9 @@ COPY apps/web apps/web
 ARG NEXT_PUBLIC_EVENT_SLUG=demo
 ARG NEXT_PUBLIC_MEDIA_ORIGINS=http://localhost:9000
 ARG NEXT_PUBLIC_WEB_ORIGIN=http://localhost:3000
+# A production image must ship the MediaPipe model (the build downloads it; see scripts/fetch-mediapipe.mjs).
+ARG MEDIAPIPE_MODEL_REQUIRED=1
+ENV MEDIAPIPE_MODEL_REQUIRED=$MEDIAPIPE_MODEL_REQUIRED
 ENV NEXT_PUBLIC_EVENT_SLUG=$NEXT_PUBLIC_EVENT_SLUG
 ENV NEXT_PUBLIC_MEDIA_ORIGINS=$NEXT_PUBLIC_MEDIA_ORIGINS
 ENV NEXT_PUBLIC_WEB_ORIGIN=$NEXT_PUBLIC_WEB_ORIGIN
@@ -40,6 +43,7 @@ ENV HOSTNAME=0.0.0.0
 # Standalone output: a pruned node_modules plus the server, rooted at the repo root.
 COPY --from=builder --chown=node:node /app/apps/web/.next/standalone /app
 COPY --from=builder --chown=node:node /app/apps/web/.next/static /app/apps/web/.next/static
+COPY --from=builder --chown=node:node /app/apps/web/public /app/apps/web/public
 
 USER node
 EXPOSE 3000

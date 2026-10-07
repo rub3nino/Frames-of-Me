@@ -21,7 +21,39 @@ export const envSchema = z
       z.enum(["true", "false"]).optional(),
     ),
     SESSION_SECRET: z.string().min(16),
-    FACE_ENGINE: z.enum(["fake", "rekognition"]),
+    FACE_ENGINE: z.enum(["fake", "rekognition", "insightface"]),
+    FACE_SERVICE_URL: z.preprocess(
+      blankToUndefined,
+      z.string().url().default("http://localhost:8090"),
+    ),
+    INSIGHTFACE_MIN_COSINE: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().min(0).max(1).default(0.45),
+    ),
+    INSIGHTFACE_SURE_COSINE: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().min(0).max(1).default(0.65),
+    ),
+    INSIGHTFACE_MAX_FACES: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().int().min(1).max(4096).default(500),
+    ),
+    INSIGHTFACE_MIN_FACE_QUALITY: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().min(0).max(1).default(0.3),
+    ),
+    FACE_INDEX_TPS: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().positive().default(20),
+    ),
+    FACE_SEARCH_TPS: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().positive().default(20),
+    ),
+    LIVENESS_CHECK: z.preprocess(
+      blankToUndefined,
+      z.enum(["true", "false"]).default("false"),
+    ),
     AWS_REGION: z.literal("eu-central-1").default("eu-central-1"),
     REKOGNITION_COLLECTION_PREFIX: z.string().min(1).default("rephoto-"),
     REKOGNITION_SEARCH_MAX_FACES: z.preprocess(
@@ -33,6 +65,15 @@ export const envSchema = z
     SMTP_PORT: z.preprocess(
       blankToUndefined,
       z.coerce.number().int().positive().optional(),
+    ),
+    SMTP_USER: optionalText,
+    SMTP_PASSWORD: optionalText,
+    /** Implicit TLS from the first byte (SMTPS). Defaults to true on port 465, false otherwise. */
+    SMTP_SECURE: z.preprocess(blankToUndefined, z.enum(["true", "false"]).optional()),
+    /** STARTTLS on a plain connection: auto = upgrade when the server offers it, true = require, false = never. */
+    SMTP_STARTTLS: z.preprocess(
+      blankToUndefined,
+      z.enum(["true", "false", "auto"]).default("auto"),
     ),
     SMTP_FROM: z.string().min(1),
     WEB_ORIGIN: z.string().url(),
@@ -62,8 +103,17 @@ export const envSchema = z
       blankToUndefined,
       z.enum(["true", "false"]).default("false"),
     ),
+    /** Host the browser uses for presigned URLs (MinIO behind a proxy); S3_ENDPOINT stays internal. */
+    S3_PUBLIC_ENDPOINT: z.preprocess(blankToUndefined, z.string().url().optional()),
   })
   .superRefine((env, ctx) => {
+    if (env.INSIGHTFACE_SURE_COSINE <= env.INSIGHTFACE_MIN_COSINE) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["INSIGHTFACE_SURE_COSINE"],
+        message: "must be greater than INSIGHTFACE_MIN_COSINE",
+      });
+    }
     if (env.S3_ENDPOINT) {
       if (!env.S3_ACCESS_KEY) {
         ctx.addIssue({
@@ -104,6 +154,9 @@ export const envSchema = z
         ? Boolean(env.S3_ENDPOINT)
         : env.S3_FORCE_PATH_STYLE === "true",
     WORKER_PUBLISH_METRICS: env.WORKER_PUBLISH_METRICS === "true",
+    SMTP_SECURE:
+      env.SMTP_SECURE === undefined ? env.SMTP_PORT === 465 : env.SMTP_SECURE === "true",
+    LIVENESS_CHECK: env.LIVENESS_CHECK === "true",
   }));
 
 export type Env = z.infer<typeof envSchema>;

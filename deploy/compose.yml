@@ -1,0 +1,350 @@
+# RePhoto v4 — production stack on one VPS (Debian/Ubuntu, Docker + Compose plugin).
+#
+#   cd /srv/rephoto/deploy
+#   docker compose --env-file .env.production build
+#   docker compose --env-file .env.production up -d
+#
+# Everything is read from `.env.production` (see `.env.production.example`). The compose
+# project name is fixed so the scripts in `scripts/` can address it from anywhere.
+#
+# Topology (see README.md):
+#   caddy        :80/:443   TLS, `/v1/*` → api, everything else → web,
+#                           media.${DOMAIN} → minio (presigned URLs), status.${DOMAIN} → uptime-kuma
+#   postgres     internal   pgvector/pgvector:pg16 (face vectors live in the app database)
+#   minio        internal   objects; reached by the browser only through Caddy on media.${DOMAIN}
+#   face-service internal   InsightFace (CPU) on :8090
+#   api ×2       internal   :8787
+#   worker ×2    internal   no port
+#   web          internal   :3000
+#   backup       internal   daily pg_dump + mc mirror into ${BACKUP_DIR}
+#   uptime-kuma  internal   optional; remove the service and the Caddy site to disable it
+
+name: rephoto
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "5"
+
+# Shared by api and worker. S3_ENDPOINT is the compose-internal MinIO; S3_PUBLIC_ENDPOINT is
+# what ends up in presigned URLs, i.e. the host the browser talks to (Caddy → minio).
+x-app-env: &app_env
+  NODE_ENV: production
+  DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+  DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-10}
+  S3_ENDPOINT: http://minio:9000
+  S3_PUBLIC_ENDPOINT: https://media.${DOMAIN}
+  S3_BUCKET: ${S3_BUCKET:-rephoto}
+  S3_ACCESS_KEY: ${MINIO_ROOT_USER}
+  S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+  S3_REGION: eu-central-1
+  S3_FORCE_PATH_STYLE: "true"
+  SESSION_SECRET: ${SESSION_SECRET}
+  FACE_ENGINE: ${FACE_ENGINE:-insightface}
+  FACE_SERVICE_URL: http://face-service:8090
+  INSIGHTFACE_MIN_COSINE: ${INSIGHTFACE_MIN_COSINE:-0.45}
+  INSIGHTFACE_SURE_COSINE: ${INSIGHTFACE_SURE_COSINE:-0.65}
+  INSIGHTFACE_MAX_FACES: ${INSIGHTFACE_MAX_FACES:-500}
+  INSIGHTFACE_MIN_FACE_QUALITY: ${INSIGHTFACE_MIN_FACE_QUALITY:-0.3}
+  FACE_INDEX_TPS: ${FACE_INDEX_TPS:-20}
+  FACE_SEARCH_TPS: ${FACE_SEARCH_TPS:-20}
+  LIVENESS_CHECK: ${LIVENESS_CHECK:-false}
+  AWS_REGION: eu-central-1
+  REKOGNITION_COLLECTION_PREFIX: rephoto-
+  MAIL_TRANSPORT: smtp
+  # The api authenticates and encrypts to the provider itself (AUTH + STARTTLS/TLS): no relay.
+  SMTP_HOST: ${SMTP_HOST}
+  SMTP_PORT: ${SMTP_PORT:-587}
+  SMTP_USER: ${SMTP_USER}
+  SMTP_PASSWORD: ${SMTP_PASSWORD}
+  SMTP_SECURE: ${SMTP_SECURE:-false}
+  SMTP_STARTTLS: ${SMTP_STARTTLS:-true}
+  SMTP_FROM: ${SMTP_FROM}
+  WEB_ORIGIN: https://${DOMAIN}
+  API_ORIGIN: https://${DOMAIN}
+  SEED_DEMO: "false"
+  # Caddy is the only proxy in front of the api (`/v1/*` goes straight to it, not through web).
+  TRUSTED_PROXY_HOPS: "1"
+  WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
+  WORKER_PUBLISH_METRICS: "false"
+
+services:
+  # ------------------------------------------------------------------ edge
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+      STATUS_BASIC_AUTH_USER: ${STATUS_BASIC_AUTH_USER:-admin}
+      STATUS_BASIC_AUTH_HASH: ${STATUS_BASIC_AUTH_HASH}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+      - caddy_logs:/var/log/caddy
+    depends_on:
+      - api
+      - web
+      - minio
+    healthcheck:
+      # The admin API listens on localhost:2019 inside the container.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging: *logging
+
+  # ------------------------------------------------------------------ data
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    shm_size: 1g
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    # Sized for 32 GB of RAM shared with the rest of the stack; adjust with the README table.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=${POSTGRES_SHARED_BUFFERS:-4GB}
+      - -c
+      - effective_cache_size=${POSTGRES_EFFECTIVE_CACHE_SIZE:-12GB}
+      - -c
+      - work_mem=32MB
+      - -c
+      - maintenance_work_mem=1GB
+      - -c
+      - max_connections=${POSTGRES_MAX_CONNECTIONS:-200}
+      - -c
+      - wal_compression=on
+      - -c
+      - checkpoint_completion_target=0.9
+      - -c
+      - max_wal_size=4GB
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    logging: *logging
+
+  minio:
+    image: cgr.dev/chainguard/minio:latest
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      # The browser PUTs straight to presigned URLs on media.${DOMAIN}: allow the web origin.
+      MINIO_API_CORS_ALLOW_ORIGIN: https://${DOMAIN}
+      # Keep path-style addressing: presigned URLs are https://media.${DOMAIN}/<bucket>/<key>.
+      # Do NOT set MINIO_DOMAIN, or MinIO would expect <bucket>.media.<domain> virtual hosts.
+      MINIO_BROWSER: "off"
+    volumes:
+      - ${MINIO_DATA_DIR:-minio_data}:/data
+    healthcheck:
+      test: ["CMD", "/usr/bin/mc", "ready", "local"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    logging: *logging
+
+  minio-init:
+    image: cgr.dev/chainguard/minio:latest
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      S3_BUCKET: ${S3_BUCKET:-rephoto}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        /usr/bin/mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
+        /usr/bin/mc mb --ignore-existing "local/$$S3_BUCKET"
+    logging: *logging
+
+  # ------------------------------------------------------------------ face engine
+  face-service:
+    build:
+      # Its Dockerfile COPYs relative to apps/face-service (see the root docker-compose.yml).
+      context: ../apps/face-service
+    image: rephoto-face-service:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      MODEL_NAME: buffalo_l
+      ONNX_THREADS: ${FACE_SERVICE_THREADS:-4}
+      DET_SIZE: "640"
+    deploy:
+      resources:
+        limits:
+          cpus: "${FACE_SERVICE_CPUS:-4}"
+          memory: ${FACE_SERVICE_MEMORY:-4g}
+    healthcheck:
+      # python:3.11-slim has no curl/wget; use the interpreter.
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=5).status == 200 else 1)"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    logging: *logging
+
+  # ------------------------------------------------------------------ app
+  api:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    image: rephoto-api:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    deploy:
+      replicas: ${API_REPLICAS:-2}
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2g
+    environment: *app_env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      face-service:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    logging: *logging
+
+  worker:
+    build:
+      context: ..
+      dockerfile: apps/worker/Dockerfile
+    image: rephoto-worker:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    deploy:
+      replicas: ${WORKER_REPLICAS:-2}
+      resources:
+        limits:
+          cpus: "${WORKER_CPUS:-3}"
+          memory: ${WORKER_MEMORY:-4g}
+    environment: *app_env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      face-service:
+        condition: service_started
+    healthcheck:
+      # The worker has no port; liveness is the process itself (`restart` covers exits).
+      # This check only confirms PID 1 is alive so `docker compose ps` shows a status.
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    logging: *logging
+
+  web:
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile
+      # NEXT_PUBLIC_* are inlined by `next build`: changing them means rebuilding this image.
+      args:
+        NEXT_PUBLIC_EVENT_SLUG: ${EVENT_SLUG}
+        NEXT_PUBLIC_MEDIA_ORIGINS: https://media.${DOMAIN}
+        NEXT_PUBLIC_WEB_ORIGIN: https://${DOMAIN}
+    image: rephoto-web:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      API_PROXY_TARGET: http://api:8787
+      NEXT_PUBLIC_EVENT_SLUG: ${EVENT_SLUG}
+      NEXT_PUBLIC_MEDIA_ORIGINS: https://media.${DOMAIN}
+      NEXT_PUBLIC_WEB_ORIGIN: https://${DOMAIN}
+    depends_on:
+      - api
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging: *logging
+
+  # ------------------------------------------------------------------ backup
+  backup:
+    build:
+      context: ./backup
+    image: rephoto-backup:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      S3_BUCKET: ${S3_BUCKET:-rephoto}
+      BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-7}
+      BACKUP_AT: ${BACKUP_AT:-03:30}
+    volumes:
+      - ${BACKUP_DIR}:/backup
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      # The loop touches /backup/.alive every minute while idle (not during a long mirror).
+      test: ["CMD-SHELL", "find /backup/.alive -mmin -720 | grep -q ."]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+    logging: *logging
+
+  # ------------------------------------------------------------------ monitoring (optional)
+  # To disable: delete this service and the `status.{$DOMAIN}` site in the Caddyfile
+  # (or `docker compose stop uptime-kuma` and leave the DNS record out).
+  uptime-kuma:
+    image: louislam/uptime-kuma:1
+    restart: unless-stopped
+    volumes:
+      - kuma_data:/app/data
+    healthcheck:
+      test: ["CMD", "extra/healthcheck"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
+      start_period: 60s
+    logging: *logging
+
+volumes:
+  caddy_data:
+  caddy_config:
+  caddy_logs:
+  postgres_data:
+  minio_data:
+  kuma_data:

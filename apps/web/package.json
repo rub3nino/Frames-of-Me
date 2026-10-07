@@ -4,11 +4,13 @@
   "private": true,
   "scripts": {
     "dev": "next dev -p 3000",
+    "prebuild": "node scripts/fetch-mediapipe.mjs",
     "build": "next build",
     "start": "next start -p 3000",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@mediapipe/tasks-vision": "^1.1.0",
     "@rephoto/contracts": "0.0.0",
     "hash-wasm": "^4.12.0",
     "next": "^15.5.4",

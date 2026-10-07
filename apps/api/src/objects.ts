@@ -63,6 +63,19 @@ export function createS3ObjectStore(env: Env): ObjectStore {
     forcePathStyle: env.S3_FORCE_PATH_STYLE,
     ...(credentials ? { credentials } : {}),
   });
+  // Presigned URLs are consumed by the browser, which may reach the store through a
+  // different host than the api/worker do (MinIO behind a reverse proxy, S3_ENDPOINT
+  // being the compose-internal name). S3_PUBLIC_ENDPOINT, when set, is the host the
+  // signature is computed for; every other operation keeps using the internal client.
+  // SigV4 covers the Host header, so the browser must send the URL to that same host.
+  const signer = env.S3_PUBLIC_ENDPOINT
+    ? new S3Client({
+        region: env.S3_REGION,
+        endpoint: env.S3_PUBLIC_ENDPOINT,
+        forcePathStyle: true,
+        ...(credentials ? { credentials } : {}),
+      })
+    : client;
   const bucket = env.S3_BUCKET;
   const expiresIn = SIGNED_URL_TTL_SECONDS;
 
@@ -135,7 +148,7 @@ export function createS3ObjectStore(env: Env): ObjectStore {
     },
     presignPut(key, contentType, bytes) {
       return getSignedUrl(
-        client,
+        signer,
         new PutObjectCommand({
           Bucket: bucket,
           Key: key,
@@ -158,7 +171,7 @@ export function createS3ObjectStore(env: Env): ObjectStore {
     },
     presignUploadPart(key, uploadId, partNumber) {
       return getSignedUrl(
-        client,
+        signer,
         new UploadPartCommand({
           Bucket: bucket,
           Key: key,
@@ -197,7 +210,7 @@ export function createS3ObjectStore(env: Env): ObjectStore {
     },
     presignGet(key) {
       return getSignedUrl(
-        client,
+        signer,
         new GetObjectCommand({ Bucket: bucket, Key: key }),
         { expiresIn, signingDate: signingWindowStart() },
       );

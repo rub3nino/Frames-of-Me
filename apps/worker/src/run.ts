@@ -13,13 +13,14 @@ import {
   isNonRetryable,
   runJob,
   type JobLogEntry,
+  type JobNote,
   type WorkerDeps,
   type WorkerJob,
 } from "./handlers.js";
 
 export async function processJob(claimed: ClaimedJob, deps: WorkerDeps): Promise<void> {
   const started = Date.now();
-  const log = (outcome: JobLogEntry["outcome"], error?: string): void => {
+  const log = (outcome: JobLogEntry["outcome"], error?: string, note?: JobNote): void => {
     const entry: JobLogEntry = {
       ts: new Date().toISOString(),
       job: claimed.id,
@@ -27,6 +28,7 @@ export async function processJob(claimed: ClaimedJob, deps: WorkerDeps): Promise
       ms: Date.now() - started,
       outcome,
       ...(error ? { error } : {}),
+      ...(note ?? {}),
     };
     (deps.log ?? defaultLog)(entry);
   };
@@ -38,9 +40,9 @@ export async function processJob(claimed: ClaimedJob, deps: WorkerDeps): Promise
     return;
   }
   try {
-    await runJob(parsed, deps);
+    const note = await runJob(parsed, deps);
     await deps.queue.complete(claimed.id);
-    log("done");
+    log("done", undefined, note);
   } catch (error) {
     const message = errorText(error);
     if (isThrottle(error)) {

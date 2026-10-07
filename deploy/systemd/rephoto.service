@@ -1,0 +1,32 @@
+# RePhoto production stack — brings deploy/compose.yml up at boot and down at shutdown.
+#
+#   sudo cp deploy/systemd/rephoto.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now rephoto
+#
+# bootstrap.sh installs it with the right paths. Logs: journalctl -u rephoto, scripts/logs.sh.
+
+[Unit]
+Description=RePhoto (Docker Compose stack)
+Documentation=file:///srv/rephoto/app/deploy/README.md
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=rephoto
+Group=rephoto
+WorkingDirectory=/srv/rephoto/app/deploy
+Environment=COMPOSE_FILE=/srv/rephoto/app/deploy/compose.yml
+Environment=COMPOSE_ENV_FILES=/srv/rephoto/app/deploy/.env.production
+# `--remove-orphans` drops containers of services removed from compose.yml (e.g. uptime-kuma).
+ExecStart=/usr/bin/docker compose up -d --remove-orphans
+ExecReload=/usr/bin/docker compose up -d --remove-orphans
+# Give ZIP streams and in-flight jobs a minute; the worker drains on SIGTERM.
+ExecStop=/usr/bin/docker compose down --timeout 60
+TimeoutStartSec=600
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,107 @@
+#!/bin/sh
+# RePhoto backup sidecar. Runs inside the `backup` service (postgres:16-alpine + mc).
+#
+#   rephoto-backup loop     # default: wait for BACKUP_AT (HH:MM, container TZ) every day
+#   rephoto-backup once     # one backup now (used by scripts/backup.sh)
+#   rephoto-backup restore <dump-file>   # pg_restore + mirror objects back (scripts/restore.sh)
+#
+# Layout under /backup:
+#   postgres/rephoto-YYYYMMDD-HHMMSS.dump   pg_dump -Fc, kept BACKUP_KEEP_DAYS days
+#   objects/<bucket>/...                    `mc mirror` of the bucket (one copy, kept current)
+#   .alive                                  touched every minute by the loop (healthcheck)
+#   last-ok                                 timestamp of the last successful run
+#
+# Env: PGHOST PGUSER PGPASSWORD PGDATABASE MINIO_ROOT_USER MINIO_ROOT_PASSWORD S3_BUCKET
+#      BACKUP_KEEP_DAYS (7) BACKUP_AT (03:30)
+set -eu
+
+BACKUP_ROOT=${BACKUP_ROOT:-/backup}
+KEEP_DAYS=${BACKUP_KEEP_DAYS:-7}
+AT=${BACKUP_AT:-03:30}
+BUCKET=${S3_BUCKET:-rephoto}
+MINIO_URL=${MINIO_URL:-http://minio:9000}
+
+log() {
+  printf '%s backup: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"
+}
+
+mc_alias() {
+  mc alias set --quiet backup "$MINIO_URL" "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null
+}
+
+run_backup() {
+  stamp=$(date -u +%Y%m%d-%H%M%S)
+  mkdir -p "$BACKUP_ROOT/postgres" "$BACKUP_ROOT/objects"
+  tmp="$BACKUP_ROOT/postgres/.rephoto-$stamp.part"
+  out="$BACKUP_ROOT/postgres/rephoto-$stamp.dump"
+
+  log "pg_dump $PGDATABASE -> $out"
+  pg_dump --format=custom --compress=6 --no-owner --no-privileges --file="$tmp" "$PGDATABASE"
+  mv "$tmp" "$out"
+
+  log "prune dumps older than $KEEP_DAYS days"
+  find "$BACKUP_ROOT/postgres" -name 'rephoto-*.dump' -type f -mtime "+$KEEP_DAYS" -print -delete || true
+
+  log "mc mirror $BUCKET -> $BACKUP_ROOT/objects/$BUCKET"
+  mc_alias
+  # --overwrite keeps the copy current; --remove deletes locally what was deleted in the bucket
+  # (photos purged by an admin). The daily dump keeps 7 days of metadata; the object copy is
+  # the state of the bucket at the last run, which is what a restore of the latest dump needs.
+  mc mirror --quiet --overwrite --remove "backup/$BUCKET" "$BACKUP_ROOT/objects/$BUCKET"
+
+  date -u +%Y-%m-%dT%H:%M:%SZ > "$BACKUP_ROOT/last-ok"
+  log "done"
+}
+
+run_restore() {
+  dump=$1
+  [ -f "$dump" ] || { log "dump not found: $dump"; exit 2; }
+  log "pg_restore $dump -> $PGDATABASE (dropping existing objects)"
+  # --clean --if-exists: drop then recreate every object in the dump; the database itself stays.
+  pg_restore --clean --if-exists --no-owner --no-privileges --exit-on-error \
+    --dbname="$PGDATABASE" "$dump"
+  log "mc mirror $BACKUP_ROOT/objects/$BUCKET -> $BUCKET"
+  mc_alias
+  mc mb --ignore-existing "backup/$BUCKET" >/dev/null
+  mc mirror --quiet --overwrite "$BACKUP_ROOT/objects/$BUCKET" "backup/$BUCKET"
+  log "restore done"
+}
+
+seconds_until() {
+  # $1 = HH:MM; seconds from now until the next occurrence.
+  target_h=${1%%:*}
+  target_m=${1##*:}
+  now=$(date +%s)
+  today=$(date -d "$(date +%Y-%m-%d) $target_h:$target_m:00" +%s 2>/dev/null \
+    || date -j -f '%Y-%m-%d %H:%M:%S' "$(date +%Y-%m-%d) $target_h:$target_m:00" +%s)
+  if [ "$today" -le "$now" ]; then
+    today=$((today + 86400))
+  fi
+  echo $((today - now))
+}
+
+run_loop() {
+  mkdir -p "$BACKUP_ROOT"
+  log "loop started, daily at $AT, keep $KEEP_DAYS days, root $BACKUP_ROOT"
+  while :; do
+    wait=$(seconds_until "$AT")
+    while [ "$wait" -gt 0 ]; do
+      touch "$BACKUP_ROOT/.alive"
+      step=60
+      [ "$wait" -lt "$step" ] && step=$wait
+      sleep "$step"
+      wait=$((wait - step))
+    done
+    if ! run_backup; then
+      log "FAILED (will retry tomorrow; run \`rephoto-backup once\` to retry now)"
+    fi
+    sleep 61
+  done
+}
+
+case "${1:-loop}" in
+  loop) run_loop ;;
+  once) run_backup ;;
+  restore) shift; run_restore "${1:?usage: rephoto-backup restore <dump-file>}" ;;
+  *) echo "usage: rephoto-backup {loop|once|restore <dump-file>}" >&2; exit 64 ;;
+esac

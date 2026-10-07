@@ -2,6 +2,8 @@ import type {
   FaceEngine,
   IndexedFace,
   IndexPhotoInput,
+  LivenessInput,
+  LivenessResult,
   SearchFacesInput,
   SearchHit,
   SearchInput,
@@ -68,13 +70,15 @@ export interface RateLimitOptions {
 }
 
 /**
- * Per-process throttle in front of Rekognition. `indexPhoto` uses the index
- * bucket; `search` and `searchFaces` share the search bucket. Deletes are not
- * limited. With several worker instances the effective quota is the sum.
+ * Per-process throttle in front of a remote engine. `indexPhoto` uses the index
+ * bucket; `search`, `searchFaces` and `checkLiveness` share the search bucket.
+ * Deletes are not limited. With several worker instances the effective quota
+ * is the sum. `checkLiveness` is exposed only when the inner engine has it.
  */
 export class RateLimitedFaceEngine implements FaceEngine {
   private readonly indexBucket: TokenBucket;
   private readonly searchBucket: TokenBucket;
+  readonly checkLiveness?: (input: LivenessInput) => Promise<LivenessResult>;
 
   constructor(
     private readonly inner: FaceEngine,
@@ -82,6 +86,13 @@ export class RateLimitedFaceEngine implements FaceEngine {
   ) {
     this.indexBucket = new TokenBucket(options.indexTps);
     this.searchBucket = new TokenBucket(options.searchTps);
+    const liveness = inner.checkLiveness?.bind(inner);
+    if (liveness) {
+      this.checkLiveness = async (input) => {
+        await this.searchBucket.acquire();
+        return liveness(input);
+      };
+    }
   }
 
   async indexPhoto(input: IndexPhotoInput): Promise<IndexedFace[]> {
