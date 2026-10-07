@@ -37,7 +37,13 @@ import {
   jobDedupeKey,
   type ModerationState,
 } from "@rephoto/contracts";
-import { DuplicateKeyError, type AlbumRow, type PhotoRow, type UploadSessionRow } from "@rephoto/db";
+import {
+  DuplicateKeyError,
+  type AlbumRow,
+  type EventRow,
+  type PhotoRow,
+  type UploadSessionRow,
+} from "@rephoto/db";
 import type { AppDeps, AppEnv } from "./deps.js";
 import { ApiError, MESSAGES } from "./errors.js";
 import { decodeCursor, encodeCursor, readJson, requireRole, requireUser, since } from "./http.js";
@@ -50,7 +56,7 @@ export function registerCrowdRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
   app.post("/v1/albums/:albumId/uploads/init", async (c) => {
     const user = requireUser(c);
     requireRole(user, ["participant"]);
-    const album = await crowdAlbumForUpload(deps, c.req.param("albumId"), user.email);
+    const album = await crowdAlbumForUpload(deps, c.req.param("albumId"), user.id, user.email);
     const body = albumUploadInitBodySchema.safeParse(await readJson(c));
     if (!body.success) throw new ApiError(400, MESSAGES.validation);
     const input = body.data;
@@ -117,7 +123,7 @@ export function registerCrowdRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
   app.post("/v1/albums/:albumId/uploads/:id/parts", async (c) => {
     const user = requireUser(c);
     requireRole(user, ["participant"]);
-    const album = await crowdAlbumForUpload(deps, c.req.param("albumId"), user.email);
+    const album = await crowdAlbumForUpload(deps, c.req.param("albumId"), user.id, user.email);
     const session = await ownCrowdUpload(deps, c.req.param("id"), user.id, album.id);
     if (!session.s3UploadId) throw new ApiError(400, MESSAGES.validation);
     const body = uploadPartBodySchema.safeParse(await readJson(c));
@@ -133,7 +139,7 @@ export function registerCrowdRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
   app.post("/v1/albums/:albumId/uploads/:id/complete", async (c) => {
     const user = requireUser(c);
     requireRole(user, ["participant"]);
-    const album = await crowdAlbumForUpload(deps, c.req.param("albumId"), user.email);
+    const album = await crowdAlbumForUpload(deps, c.req.param("albumId"), user.id, user.email);
     const session = await ownCrowdUpload(deps, c.req.param("id"), user.id, album.id);
     if (session.status !== "open") throw new ApiError(409, MESSAGES.conflict);
     const parsed = uploadCompleteBodySchema.safeParse(await readJson(c));
@@ -255,7 +261,7 @@ export function registerCrowdRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       // `link` are both readable by a participant of the event (a link album is simply not
       // listed for them, which is the admin console's business, not this route's).
       if (album.visibility === "staff") throw new ApiError(403, MESSAGES.forbidden);
-      await assertEventMember(deps, album, user.email);
+      await assertEventMember(deps, album, user.id, user.email);
     }
     const query = albumPhotosQuerySchema.safeParse(c.req.query());
     if (!query.success) throw new ApiError(400, MESSAGES.validation);
@@ -295,7 +301,7 @@ export function registerCrowdRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     if (!photo) throw new ApiError(404, MESSAGES.notFound);
     const album = await deps.db.findAlbum(photo.albumId);
     if (!album) throw new ApiError(404, MESSAGES.notFound);
-    await assertEventMember(deps, album, user.email);
+    await assertEventMember(deps, album, user.id, user.email);
     // Nothing already withheld can be reported again: there is nothing left to withhold.
     if (photo.moderationState === "rejected" || photo.moderationState === "auto_rejected") {
       throw new ApiError(404, MESSAGES.photoNotVisible);
@@ -449,22 +455,50 @@ async function loadAlbum(deps: AppDeps, raw: string | undefined): Promise<AlbumR
   return album;
 }
 
-/**
- * Clause 3 of C2: the caller is a participant of the album's event. `access = 'list'` events
- * check the imported participant list, exactly as the selfie route does; an `open` event
- * accepts any signed-in participant, which is what the event code already gated (B3).
- */
-async function assertEventMember(
-  deps: AppDeps,
-  album: AlbumRow,
-  email: string,
-): Promise<void> {
+async function loadAlbumEvent(deps: AppDeps, album: AlbumRow): Promise<EventRow> {
   const event = await deps.db.findEventById(album.eventId);
   if (!event) throw new ApiError(404, MESSAGES.notFound);
+  return event;
+}
+
+/**
+ * The allowlist half of clause 3: an `access = 'list'` event checks the imported participant
+ * list, exactly as the selfie route does. For an `access = 'open'` event this is a no-op —
+ * "open" is the policy decision that any signed-in participant may take part.
+ *
+ * Kept separate from {@link assertEventMember} because the upload path needs it on its own:
+ * see the comment there.
+ */
+async function assertOnEventList(deps: AppDeps, event: EventRow, email: string): Promise<void> {
   if (event.access !== "list") return;
   if (!(await deps.db.isEventParticipant(event.id, email.toLowerCase()))) {
     throw new ApiError(403, MESSAGES.notOnList);
   }
+}
+
+/**
+ * Clause 3 of C2: the caller belongs to the album's event.
+ *
+ * This used to be `if (event.access !== "list") return;`, which on an `open` event authorised
+ * ANY signed-in participant: a person registered at event A could list and report in event
+ * B's crowd album. The event code gated registration once, but until `event_members`
+ * (migration 013) the event it resolved to was never persisted, so there was nothing to
+ * compare against. Now there is, and it is checked first.
+ */
+async function assertEventMember(
+  deps: AppDeps,
+  album: AlbumRow,
+  userId: string,
+  email: string,
+): Promise<void> {
+  const event = await loadAlbumEvent(deps, album);
+  if (!(await deps.db.isEventMember(userId, event.id))) {
+    throw new ApiError(403, MESSAGES.notEventMember);
+  }
+  // The allowlist is checked ON TOP of membership, not folded into it: `events.access` can be
+  // switched to `list` after people have joined, and from that moment the allowlist is the
+  // authoritative answer rather than the historical membership row.
+  await assertOnEventList(deps, event, email);
 }
 
 /**
@@ -479,6 +513,7 @@ async function assertEventMember(
 async function crowdAlbumForUpload(
   deps: AppDeps,
   raw: string | undefined,
+  userId: string,
   email: string,
 ): Promise<AlbumRow> {
   const album = await loadAlbum(deps, raw);
@@ -486,7 +521,26 @@ async function crowdAlbumForUpload(
   // 423 Locked: the event-day kill switch, and the only status that tells the client the
   // upload would have been fine at any other moment.
   if (!album.uploadsOpen) throw new ApiError(423, MESSAGES.uploadsClosed);
-  await assertEventMember(deps, album, email);
+
+  // Clause 3, and the one place in v6 where membership is WRITTEN rather than read.
+  //
+  // Uploading into a crowd album is how people join one. The flow is a QR code or a share
+  // link on the table: sign in with Google (which knows nothing about any event), open the
+  // album, upload. Those accounts have no `event_members` row — only self-registration with
+  // an event code and the 013 backfill create one — so gating this path on membership would
+  // lock out the main event-day path. Instead it ENROLS, with `source: 'upload'`, so that
+  // from the first upload onward the person is on the record for this event and the gates
+  // below (the feed, the report button) have something honest to check.
+  //
+  // What still bounds it: `assertOnEventList` runs FIRST, so a gated (`access = 'list'`)
+  // event refuses a non-allowlisted person and no stray membership row is written for an
+  // event they cannot use. On an `access = 'open'` event any signed-in participant may
+  // upload — that is what `open` means, it is agent C's frozen decision in C2, and a crowd
+  // album is post-moderated and per-user capped. The cross-event hole that mattered was
+  // READING other people's photos and REPORTING them, and those two are now hard gates.
+  const event = await loadAlbumEvent(deps, album);
+  await assertOnEventList(deps, event, email);
+  await deps.db.addEventMember({ userId, eventId: event.id, source: "upload" });
   return album;
 }
 

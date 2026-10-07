@@ -176,7 +176,23 @@ async function harness(
   };
 }
 
+/**
+ * A signed-in participant who belongs to the harness event, which is what registering with
+ * an event code produces (`event_members`, migration 013). Since the integration fix to
+ * `assertEventMember`, membership is what the crowd feed and the report button check, so the
+ * default fixture has to have it. Use {@link strangerParticipant} for someone who does not.
+ */
 async function participant(h: Harness, email: string): Promise<{ user: UserRow; cookie: string }> {
+  const user = await h.db.createUser({ email, role: "participant" });
+  await h.db.addEventMember({ userId: user.id, eventId: h.event.id, source: "event_code" });
+  return { user, cookie: await cookieFor(h.db, user.id) };
+}
+
+/** A signed-in participant with no `event_members` row for the harness event. */
+async function strangerParticipant(
+  h: Harness,
+  email: string,
+): Promise<{ user: UserRow; cookie: string }> {
   const user = await h.db.createUser({ email, role: "participant" });
   return { user, cookie: await cookieFor(h.db, user.id) };
 }
@@ -1163,4 +1179,143 @@ test("a personal match gallery still works, and a withheld photo leaves it", asy
     after.items.map((row) => row.photoId),
     items.map((row) => row.photoId),
   );
+});
+
+// ---- integration fix 1: event membership actually bites ------------------------------------
+//
+// `assertEventMember` read `if (event.access !== "list") return;`, so on an `open` event it
+// authorised ANY signed-in participant. A person registered at event A could upload to, list
+// and report in event B's crowd album. These tests cover the three call sites named in agent
+// E's hand-over note, plus the cross-event case itself.
+
+/** Event B: its own crowd album, and nobody from the harness event is a member of it. */
+async function otherEvent(h: Harness): Promise<{ eventId: string; crowd: AlbumRow }> {
+  const other = await h.db.createEvent({ slug: "altro-evento", name: "Altro evento" });
+  const crowd = await h.db.createAlbum({
+    eventId: other.id,
+    slug: "di-tutti",
+    name: "Album di tutti",
+    kind: "crowd",
+  });
+  return { eventId: other.id, crowd };
+}
+
+test("a participant of another event cannot list a crowd album they do not belong to", async () => {
+  const h = await harness();
+  const other = await otherEvent(h);
+  // Anna belongs to the harness event, and to nothing else. Both events are `access = 'open'`,
+  // which is exactly the case the old check waved through.
+  const anna = await participant(h, "anna@example.com");
+  assert.equal(await h.db.isEventMember(anna.user.id, h.event.id), true);
+  assert.equal(await h.db.isEventMember(anna.user.id, other.eventId), false);
+
+  const refused = await h.app.request(
+    json("GET", `/v1/albums/${other.crowd.id}/photos`, undefined, anna.cookie),
+  );
+  assert.equal(refused.status, 403);
+  assert.deepEqual(await refused.json(), { error: MESSAGES.notEventMember });
+
+  // Her own event's crowd album is untouched by the fix.
+  const allowed = await h.app.request(
+    json("GET", `/v1/albums/${h.crowd.id}/photos`, undefined, anna.cookie),
+  );
+  assert.equal(allowed.status, 200);
+});
+
+test("a participant of another event cannot report a photo in a crowd album they do not belong to", async () => {
+  const h = await harness();
+  const other = await otherEvent(h);
+  // Bruno is a member of event B and puts a photo in its crowd album.
+  const bruno = await strangerParticipant(h, "bruno@example.com");
+  await h.db.addEventMember({
+    userId: bruno.user.id,
+    eventId: other.eventId,
+    source: "event_code",
+  });
+  const posted = await upload(h, other.crowd.id, bruno.cookie, "bruno-in-b");
+  assert.equal(posted.status, 201);
+  const photoId = posted.body.photoId as string;
+
+  // Anna, a member of the harness event only, must not be able to report it: a report is a
+  // takedown signal, and enough of them withhold the photo from everyone.
+  const anna = await participant(h, "anna@example.com");
+  const refused = await h.app.request(
+    json("POST", `/v1/photos/${photoId}/report`, { reason: "inappropriate" }, anna.cookie),
+  );
+  assert.equal(refused.status, 403);
+  assert.deepEqual(await refused.json(), { error: MESSAGES.notEventMember });
+  assert.equal(await h.db.countOpenReports(photoId), 0);
+
+  // Bruno, who does belong to event B, still can.
+  const ok = await h.app.request(
+    json("POST", `/v1/photos/${photoId}/report`, { reason: "inappropriate" }, bruno.cookie),
+  );
+  assert.equal(ok.status, 200);
+  assert.equal(((await ok.json()) as { status: string }).status, "recorded");
+  assert.equal(await h.db.countOpenReports(photoId), 1);
+});
+
+test("uploading into a crowd album records membership with source 'upload'", async () => {
+  const h = await harness();
+  // A share-link / QR arrival: signed in (Google knows nothing about any event), no event
+  // code, so no membership row. This path works today and must keep working — so the upload
+  // route enrols rather than refusing.
+  const link = await strangerParticipant(h, "link@example.com");
+  assert.equal(await h.db.isEventMember(link.user.id, h.event.id), false);
+
+  const posted = await upload(h, h.crowd.id, link.cookie, "arrived-by-link");
+  assert.equal(posted.status, 201);
+
+  const member = await h.db.findEventMember(link.user.id, h.event.id);
+  assert.ok(member, "the upload path writes the membership row");
+  assert.equal(member.source, "upload");
+  assert.equal(member.eventId, h.event.id);
+
+  // And having uploaded, they can now read the album they just contributed to.
+  const feed = await h.app.request(
+    json("GET", `/v1/albums/${h.crowd.id}/photos`, undefined, link.cookie),
+  );
+  assert.equal(feed.status, 200);
+});
+
+test("the upload path checks the allowlist BEFORE enrolling, so a gated event stays gated", async () => {
+  const h = await harness();
+  // `access = 'list'` is the gated event: the imported allowlist is the boundary, and it is
+  // checked first so no membership row is written for an event the person cannot use.
+  await h.db.updateEvent(h.event.id, { access: "list" });
+  const stranger = await strangerParticipant(h, "stranger@example.com");
+
+  const refused = await upload(h, h.crowd.id, stranger.cookie, "should-not-land");
+  assert.equal(refused.status, 403);
+  assert.deepEqual(refused.body, { error: MESSAGES.notOnList });
+  assert.equal(
+    await h.db.isEventMember(stranger.user.id, h.event.id),
+    false,
+    "a refused upload must not leave a membership row behind",
+  );
+
+  // On the allowlist, the same upload enrols and succeeds.
+  await h.db.upsertEventParticipants(h.event.id, ["stranger@example.com"]);
+  const ok = await upload(h, h.crowd.id, stranger.cookie, "should-land");
+  assert.equal(ok.status, 201);
+  assert.equal(await h.db.isEventMember(stranger.user.id, h.event.id), true);
+});
+
+test("accepting an invite records event membership", async () => {
+  const h = await harness();
+  const token = randomUUID();
+  await h.db.insertInvite({
+    email: "invitato@example.com",
+    eventId: h.event.id,
+    tokenHash: sha256Hex(token),
+    role: "participant",
+    expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+  });
+  const res = await h.app.request(json("POST", "/v1/auth/accept-invite", { token }));
+  assert.equal(res.status, 200);
+  const user = await h.db.findUserByEmailRole("invitato@example.com", "participant");
+  assert.ok(user);
+  const member = await h.db.findEventMember(user.id, h.event.id);
+  assert.ok(member, "invite acceptance is an entry path and records membership");
+  assert.equal(member.source, "invite");
 });

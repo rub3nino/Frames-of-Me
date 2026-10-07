@@ -184,6 +184,10 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     if (invite.role === "photographer") {
       await deps.db.addEventPhotographer(invite.eventId, user.id);
     }
+    // v6 (integration): accepting an invite is an entry path into the event, so it records
+    // membership like self-registration does. `source` already reserved `invite` for it.
+    // Idempotent, and provenance only — nothing reads `source` to decide anything.
+    await deps.db.addEventMember({ userId: user.id, eventId: invite.eventId, source: "invite" });
     await startSession(c, deps, user);
     return c.json({ user: publicUser(user) });
   });
