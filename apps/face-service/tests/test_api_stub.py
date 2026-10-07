@@ -10,20 +10,51 @@ from tests.conftest import make_image
 
 
 def test_health(client):
+    from app.main import MAX_FACES_CAP, SERVICE_VERSION
+
     r = client.get("/health")
     assert r.status_code == 200
-    assert r.json() == {"ok": True, "model": "stub", "providers": ["CPUExecutionProvider"]}
+    assert r.json() == {
+        "ok": True,
+        "model": "stub",
+        "providers": ["CPUExecutionProvider"],
+        # v6 hardening H2: the worker reads these before it claims any `index` job.
+        "version": SERVICE_VERSION,
+        "max_faces_cap": MAX_FACES_CAP,
+    }
+
+
+def test_health_reports_the_cap_actually_enforced_by_embed(client):
+    """The number in /health is the one the query validator uses, not a second constant."""
+    from app.main import MAX_FACES_CAP
+
+    cap = client.get("/health").json()["max_faces_cap"]
+    assert cap == MAX_FACES_CAP
+    ok = client.post(
+        f"/v1/embed?max_faces={cap}",
+        files={"image": ("photo.jpg", make_image(400, 400), "image/jpeg")},
+    )
+    assert ok.status_code == 200, ok.text
+    over = client.post(
+        f"/v1/embed?max_faces={cap + 1}",
+        files={"image": ("photo.jpg", make_image(400, 400), "image/jpeg")},
+    )
+    assert over.status_code == 422
 
 
 def test_health_503_when_model_missing():
     from fastapi.testclient import TestClient
 
-    from app.main import Settings, create_app
+    from app.main import MAX_FACES_CAP, SERVICE_VERSION, Settings, create_app
 
     app = create_app(analyzer=None, liveness=None, settings=Settings())
     # no lifespan -> nothing loaded
     r = TestClient(app).get("/health")
     assert r.status_code == 503 and r.json()["ok"] is False
+    # Still says which build it is, so a client can refuse incompatible work while the
+    # model is loading instead of waiting to find out with a 422.
+    assert r.json()["version"] == SERVICE_VERSION
+    assert r.json()["max_faces_cap"] == MAX_FACES_CAP
 
 
 def test_embed_shape_and_order(client, stub):

@@ -22,7 +22,7 @@ pnpm dev:web
 | API | http://localhost:8787 |
 | MinIO | http://localhost:9000 (console http://localhost:9001) |
 | Mailpit | http://localhost:8025 (SMTP `localhost:1025`) |
-| face-service | http://localhost:8090 (`GET /health` → `{ ok, model, providers }`) |
+| face-service | http://localhost:8090 (`GET /health` → `{ ok, model, providers, version, max_faces_cap }`) |
 
 Seeded data: event slug `demo` (`access = open`), admin `admin@rephoto.local`, photographer `photographer@rephoto.local` with the invite already accepted and the `event_photographers` row in place. `FACE_ENGINE=fake` is the default in `.env.example`. No real secrets are in the repo.
 
@@ -43,6 +43,20 @@ Thresholds (`INSIGHTFACE_MIN_COSINE=0.50`, `INSIGHTFACE_SURE_COSINE=0.70`, v5 de
 **`LIVENESS_CHECK=true`** (default `false`) makes the worker's `match` job call `POST /v1/liveness` on the selfie before searching; a selfie judged not live gets an empty gallery with reason `liveness` («Il selfie non è stato accettato»), the selfie is deleted and the worker log line carries `liveness: "rejected"`. The check only exists with `FACE_ENGINE=insightface`; the compose image includes the anti-spoofing weights (`method: "silent-face"`), a build with `--build-arg WITH_LIVENESS=0` answers `method: "none"` and never rejects.
 
 **Test-campaign switches** (all `false` by default, `.env.example` lists them): `MATCH_LOG=true` writes every `match` run and all its hits, down to cosine 0.25, into `match_runs` / `match_hits` (then `/admin#esporta` → «match-hits.csv», or `select cosine, kept from match_hits order by cosine desc`); `KEEP_SELFIES=true` keeps the selfie object and records its key in `galleries.selfie_key`, which enables «Rifai il confronto» on an admin gallery; `LOG_IDS=true` adds `photoId` / `userId` / `eventId` to the worker log lines. Restart `dev:worker` after changing them. With the face-service stopped (`docker compose stop face-service`) the worker now **requeues** `index` / `attach` / `match` without burning attempts and, after five in a row, prints one `{ breaker: "open", pauseMs: 30000 }` line and stops claiming those types for 30 s; `docker compose start face-service` and the queue resumes with nothing in `error`.
+
+### The worker checks the face-service build before it claims any `index` job (v6 hardening)
+
+`GET /health` reports `version` and `max_faces_cap` — the real cap its `/v1/embed?max_faces=` validator enforces — and with `FACE_ENGINE=insightface` the worker reads it once at start and compares it with `INSIGHTFACE_INDEX_MAX_FACES` (default 100, the `max_faces` of every embed call). If the service cannot serve that, the worker prints one line and **stops claiming `index`**:
+
+```json
+{"ts":"…","faceService":"incompatible","paused":["index"],"requiredMaxFaces":100,"maxFacesCap":50,"version":"1.0.0","error":"face service at http://face-service:8090 accepts max_faces<=50 but the worker asks for 100 …"}
+```
+
+The jobs stay `queued` with zero attempts and no photo reaches `error`: rebuild the image (`docker compose build face-service`, or `docker build -t rephoto-face-service apps/face-service`), restart the worker, and the queue drains. The check is a standing refusal, not the circuit breaker — only a restart clears it — and the two are independent, so an open breaker cannot hide it.
+
+Why it exists: during v6 a stale `rephoto-face-service` image enforced `max_faces <= 50` while the source said 150 and the worker asked for 100. FastAPI's query validator answered `422` before decoding any image, so every `index` job failed five times and its photo ended in `error` — while `/health` answered `{"ok": true}`, because `ok` only ever meant "the model object exists". A health check that cannot say which build answered it cannot catch a wrong build. A service that does **not** answer is deliberately not treated as incompatible: that is the breaker's job (it may simply be loading its model, and even that `503` now carries `version` and `max_faces_cap`).
+
+Also log-worthy: a build from before this change reports no `max_faces_cap` at all, and is refused for that reason alone — it cannot be verified, and it is the exact class of image that caused the incident. Bump `SERVICE_VERSION` in `apps/face-service/app/main.py` whenever the `/v1/embed` or `/v1/liveness` contract changes.
 
 Running the Python service outside Docker (venv, `MODEL_ROOT`, `uvicorn`) is described in `apps/face-service/README.md`.
 

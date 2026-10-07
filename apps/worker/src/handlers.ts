@@ -19,6 +19,7 @@ import type { Mailer } from "@rephoto/api/mailer";
 import type { ObjectStore } from "@rephoto/api/object-store";
 import type { JobQueue } from "@rephoto/api/queue";
 import type { FaceServiceBreaker } from "./breaker.js";
+import type { FaceServiceGate } from "./face-compat.js";
 
 /** Rekognition Bytes API rejects images over 5 MB. S3Object allows 15 MB; we send bytes. */
 const REKOGNITION_MAX_IMAGE_BYTES = 5 * 1024 * 1024;
@@ -121,6 +122,12 @@ export type WorkerDeps = {
   breaker?: FaceServiceBreaker;
   /** How often an in-flight job refreshes `claimed_at`. Default 2 minutes. */
   heartbeatMs?: number;
+  /**
+   * v6 hardening H2 (agent H): standing refusal to claim `index` when the face service's
+   * build cannot serve what the worker will ask of it (see src/face-compat.ts). Unlike the
+   * breaker this does not close by itself — only a new deploy clears it.
+   */
+  faceGate?: FaceServiceGate;
 };
 
 export type WorkerJob =

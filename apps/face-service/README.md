@@ -6,7 +6,7 @@ Motore facce self-hosted di RePhoto: [InsightFace](https://github.com/deepinsigh
 
 | Metodo | Path | Input | Risposta |
 | --- | --- | --- | --- |
-| `GET` | `/health` | | `200 { "ok": true, "model": "buffalo_l", "providers": ["CPUExecutionProvider"] }` (`503 { "ok": false }` se il modello non è caricato) |
+| `GET` | `/health` | | `200 { "ok": true, "model": "buffalo_l", "providers": ["CPUExecutionProvider"], "version": "1.1.0", "max_faces_cap": 150 }` (`503 { "ok": false, … }` se il modello non è caricato, con `version` e `max_faces_cap` comunque presenti) |
 | `GET` | `/metrics` | | `200` testo (`text/plain`): contatori e percentili, vedi sotto |
 | `POST` | `/v1/embed` | multipart `image` (JPEG/PNG, ≤ 8 MiB, ≤ 120 MP); query `max_faces` 1–150 (default 150), `min_size` px (default 20) | `200 { "width", "height", "faces": [{ "bbox": { "left", "top", "width", "height" }, "score", "quality", "embedding": number[512], "norm", "yaw" }] }` |
 | `POST` | `/v1/liveness` | multipart `image` | `200 { "live": boolean, "score": 0..1, "method": "silent-face" \| "none" }` |

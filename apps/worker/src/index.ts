@@ -5,6 +5,7 @@ import { createMailer } from "@rephoto/api/mailer";
 import { createS3ObjectStore } from "@rephoto/api/objects";
 import { createQueue } from "@rephoto/api/queue";
 import { FaceServiceBreaker } from "./breaker.js";
+import { checkFaceServiceCompat, FaceServiceGate } from "./face-compat.js";
 import type { WorkerDeps } from "./handlers.js";
 import { runHousekeeping, runWorkerLoop } from "./loop.js";
 import { createCloudWatchPublisher, publishQueueDepth } from "./metrics.js";
@@ -27,7 +28,23 @@ const deps: WorkerDeps = {
   queue: createQueue(db),
   faces: loadFaceEngine(env),
   breaker: new FaceServiceBreaker(),
+  faceGate: new FaceServiceGate(),
 };
+
+// v6 hardening H2: before claiming anything, ask the face service which build it is. A
+// service whose `max_faces_cap` is below what every `/v1/embed` call will ask for would
+// reject each `index` job with an HTTP 422 — five attempts and a photo in `error`, times
+// however many photos the event has — while `/health` answered `ok`. One probe, one loud
+// line, and `index` stays queued until the image is right. Only the insightface engine
+// talks to the service; `fake` and `rekognition` have nothing to check.
+if (env.FACE_ENGINE === "insightface") {
+  deps.faceGate?.apply(
+    await checkFaceServiceCompat({
+      serviceUrl: env.FACE_SERVICE_URL,
+      requiredMaxFaces: env.INSIGHTFACE_INDEX_MAX_FACES,
+    }),
+  );
+}
 
 let stopped = false;
 process.on("SIGINT", () => {
