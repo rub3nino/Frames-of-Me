@@ -1,0 +1,140 @@
+# RePhoto — override for the TEST CAMPAIGN box (docs/test-readiness.md, docs/v5-test-readiness-spec.md § E).
+#
+#   docker compose --env-file .env.production -f compose.yml -f compose.test.yml up -d
+#   (the scripts in scripts/ address the running containers by project name and need no -f)
+#
+# What it changes versus compose.yml:
+#   mailpit        SMTP sink + web UI (mail.${DOMAIN} behind Caddy basic auth, see the Caddyfile
+#                  "mail." block): every magic link lands here, no provider needed.
+#   api/worker     SMTP → mailpit; MATCH_LOG, KEEP_SELFIES, LOG_IDS on; rate limits off; recognition
+#                  and detection parameters from the "Test campaign" section of .env.production.
+#   face-service   workers / det size / long edge from env (defaults = the v5 test values).
+#   postgres       pg_stat_statements + log_min_duration_statement=500 (slow queries in the log).
+#   backup         moved to the `backup` profile: not started unless `--profile backup`.
+#   logging        250 MB × 10 per container instead of 50 × 5 (long runs, LOG_IDS lines).
+# Nothing here is for production.
+
+x-logging-test: &logging_test
+  driver: json-file
+  options:
+    max-size: "250m"
+    max-file: "10"
+
+x-test-env: &test_env
+  SMTP_HOST: mailpit
+  SMTP_PORT: "1025"
+  SMTP_SECURE: "false"
+  SMTP_STARTTLS: "false"
+  SMTP_USER: ""
+  SMTP_PASSWORD: ""
+  SEED_DEMO: "false"
+  # --- recognition (agent A, v5 defaults; override in .env.production)
+  INSIGHTFACE_MIN_COSINE: ${INSIGHTFACE_MIN_COSINE:-0.50}
+  INSIGHTFACE_SURE_COSINE: ${INSIGHTFACE_SURE_COSINE:-0.70}
+  INSIGHTFACE_ATTACH_MIN_COSINE: ${INSIGHTFACE_ATTACH_MIN_COSINE:-0.55}
+  INSIGHTFACE_MIN_FACE_QUALITY: ${INSIGHTFACE_MIN_FACE_QUALITY:-0.2}
+  INSIGHTFACE_MAX_FACES: ${INSIGHTFACE_MAX_FACES:-200}
+  FACE_INDEX_SOURCE: ${FACE_INDEX_SOURCE:-original}
+  FACE_DETECT_LONG_EDGE: ${FACE_DETECT_LONG_EDGE:-2560}
+  FACE_MODEL_CONCURRENCY: ${FACE_MODEL_CONCURRENCY:-2}
+  # --- observability
+  MATCH_LOG: ${MATCH_LOG:-true}
+  KEEP_SELFIES: ${KEEP_SELFIES:-true}
+  LOG_IDS: ${LOG_IDS:-true}
+  # --- rate limits (0 = off) and exemptions
+  MAGIC_LINK_PER_EMAIL: ${MAGIC_LINK_PER_EMAIL:-0}
+  MAGIC_LINK_PER_IP: ${MAGIC_LINK_PER_IP:-0}
+  SELFIE_MAX_PER_HOUR: ${SELFIE_MAX_PER_HOUR:-0}
+  RATE_LIMIT_EXEMPT_IPS: ${RATE_LIMIT_EXEMPT_IPS:-}
+  BOOTSTRAP_ADMINS: ${BOOTSTRAP_ADMINS:-}
+
+services:
+  mailpit:
+    image: axllent/mailpit:latest
+    restart: unless-stopped
+    environment:
+      MP_MAX_MESSAGES: "50000"
+      MP_DATABASE: /data/mailpit.db
+      # The UI sits behind Caddy basic auth (mail.${DOMAIN}); no auth of its own.
+      MP_SMTP_AUTH_ACCEPT_ANY: "1"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "1"
+    volumes:
+      - mailpit_data:/data
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    logging: *logging_test
+
+  caddy:
+    environment:
+      MAIL_BASIC_AUTH_USER: ${MAIL_BASIC_AUTH_USER:-${STATUS_BASIC_AUTH_USER:-admin}}
+      MAIL_BASIC_AUTH_HASH: ${MAIL_BASIC_AUTH_HASH:-${STATUS_BASIC_AUTH_HASH}}
+    depends_on:
+      - mailpit
+    logging: *logging_test
+
+  postgres:
+    command:
+      - postgres
+      - -c
+      - shared_buffers=${POSTGRES_SHARED_BUFFERS:-4GB}
+      - -c
+      - effective_cache_size=${POSTGRES_EFFECTIVE_CACHE_SIZE:-12GB}
+      - -c
+      - work_mem=32MB
+      - -c
+      - maintenance_work_mem=1GB
+      - -c
+      - max_connections=${POSTGRES_MAX_CONNECTIONS:-200}
+      - -c
+      - wal_compression=on
+      - -c
+      - checkpoint_completion_target=0.9
+      - -c
+      - max_wal_size=4GB
+      # --- test additions
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - pg_stat_statements.track=all
+      - -c
+      - log_min_duration_statement=500
+      - -c
+      - log_line_prefix=%m [%p] %u@%d
+    logging: *logging_test
+
+  face-service:
+    environment:
+      UVICORN_WORKERS: ${FACE_SERVICE_WORKERS:-2}
+      DET_SIZE: ${FACE_DET_SIZE:-1024}
+      DET_LONG_EDGE: ${FACE_DET_LONG_EDGE:-2560}
+      MODEL_CONCURRENCY: ${FACE_MODEL_CONCURRENCY:-2}
+    logging: *logging_test
+
+  api:
+    environment:
+      <<: *test_env
+    depends_on:
+      mailpit:
+        condition: service_healthy
+    logging: *logging_test
+
+  worker:
+    environment:
+      <<: *test_env
+    depends_on:
+      mailpit:
+        condition: service_healthy
+    logging: *logging_test
+
+  web:
+    logging: *logging_test
+
+  # Not started on the test box (same disk, nightly I/O): `--profile backup` brings it back.
+  backup:
+    profiles: ["backup"]
+
+volumes:
+  mailpit_data:

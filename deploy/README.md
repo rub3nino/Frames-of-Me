@@ -227,6 +227,83 @@ Dopo: backup finale (`scripts/backup.sh`), copia di `BACKUP_DIR` fuori dal VPS, 
 
 ---
 
+## 9 bis. Campagna di test
+
+Il server di test è lo stesso stack con un file di override: `compose.test.yml` aggiunge Mailpit
+(tutte le e-mail finiscono lì, UI su `mail.DOMAIN` dietro basic auth), accende il registro dei
+match (`MATCH_LOG`), i selfie conservati (`KEEP_SELFIES`), gli id nei log (`LOG_IDS`), spegne i
+rate limit, porta il face-service a 2 processi con rilevamento 2560/1024, abilita
+`pg_stat_statements` e il log delle query oltre 500 ms, allarga i log a 250 MB × 10 e **ferma il
+backup** (profilo `backup`). Analisi e motivazioni: `docs/test-readiness.md`; parametri:
+sezione «Test campaign» di `.env.production.example`.
+
+```sh
+cd /srv/rephoto/deploy
+docker compose --env-file .env.production -f compose.yml -f compose.test.yml up -d --build
+```
+
+**Dimensionamento.** Non usare gli 8 MB di `docs/infra.md`: misurare la media reale dei JPEG dei
+fotografi su un campione (`du -sh campione/ && ls campione | wc -l`); le reflex da 24 MP a qualità
+alta stanno a 10–25 MB, quindi 150k foto sono 1,5–3,75 TB. Disco dati = media × foto × 1,1, con
+`MINIO_DATA_DIR` sul disco grande. 16 vCPU / 32 GB restano il riferimento: con il rilevamento a
+2560/1024 il face-service fa ~12–17k foto/h su 16 vCPU (`FACE_SERVICE_WORKERS=2`,
+`FACE_SERVICE_THREADS=4`, `FACE_SERVICE_CPUS=8`), sufficienti per il picco di 12.000/h.
+
+**HTTPS.** La fotocamera del browser richiede un'origine sicura: serve un dominio vero con record
+`DOMAIN`, `media.DOMAIN`, `mail.DOMAIN` (e `status.DOMAIN` se si tiene uptime-kuma); Caddy fa il
+resto. Alternative: un sottodominio del dominio aziendale puntato al VPS, oppure
+`DOMAIN=test.example.com` con un wildcard; `localhost` è sicuro solo sulla macchina stessa.
+
+**Preparare gli utenti** (evento, admin, fotografi, partecipanti con consenso e cookie di sessione
+pronti per k6 ed `evaluate.py`), eseguito da una macchina che raggiunge Postgres oppure in un
+container una tantum come per l'ingest:
+
+```sh
+# in locale (DATABASE_URL in .env)
+npm run seed:test -- --event "$EVENT_SLUG" --name "Test 2026" --photographers 12 --participants 200 \
+  --admin ops@example.com --out ./seed
+# sul VPS
+docker compose --env-file .env.production run --rm --no-deps -v /srv/rephoto/scripts:/app/scripts:ro \
+  -v /srv/rephoto/seed:/seed --entrypoint node worker --import tsx /app/scripts/seed-test.ts \
+  --event "$EVENT_SLUG" --photographers 12 --participants 200 --admin ops@example.com --out /seed
+```
+
+Scrive `cookies-photographers.txt`, `cookies-participants.txt`, `cookies-admin.txt`,
+`users-<slug>.csv` (e-mail → token, permessi 0600) e `subjects.csv`. L'admin reale entra da
+`/staff` (link via Mailpit) o con `BOOTSTRAP_ADMINS`. `--purge-users` cancella gli utenti generati.
+
+**Caricare le foto** con l'importer (`scripts/ingest/README.md`): `--manifest` è obbligatorio se
+poi si vuole valutare, `--state` permette di riprendere, `--rate 3.3` simula i 12.000/h
+dell'evento, `--synth 10` moltiplica per dieci un set piccolo con volti veri.
+
+**Osservare**: `./scripts/status.sh -i 30 -o /srv/rephoto/status-<run>.csv` in uno `screen`/`tmux`
+per tutta la durata del run (coda per tipo ed età del job più vecchio, foto per stato, vettori e
+gallerie, job completati nell'intervallo, p50/p95 per tipo da `jobs.duration_ms`, p50/p95 del
+face-service da `/metrics`, `docker stats`, `df`, `iostat`, ultimi errori). Il CSV è la serie
+storica da mettere in un foglio dopo il run.
+
+**Ripartire da zero**: `./scripts/reset-event.sh <slug>` ferma worker e api, cancella in una
+transazione foto/volti/vettori/gallerie/job/upload/registro match dell'evento, rimuove gli
+oggetti da MinIO, `vacuum analyze`, riavvia. Gli utenti e l'evento restano. L'alternativa online è
+«Reset evento» nella pagina admin (job `reset`).
+
+**Protocollo** (fase D di `docs/test-readiness.md` § 7):
+
+1. Ingest di un set reale (anche 5–10k foto) e misura del throughput con `status.sh`.
+2. Null-selfie test (`scripts/eval/null-selfie.md`) ⇒ scelta di `INSIGHTFACE_MIN_COSINE` /
+   `INSIGHTFACE_SURE_COSINE`; cambiarle in `.env.production` e `up -d api worker`.
+3. 20 volontari × selfie (fotocamera e da file) + etichette su 300–500 foto ⇒
+   `scripts/eval/evaluate.py` (precision/recall, FN per dimensione del volto).
+4. Foto caricate *dopo* i selfie ⇒ verifica dell'`attach` (coppie `source = attach`).
+5. Ripetere con `FACE_DET_SIZE` 640 vs 1024 e `LIVENESS_CHECK` on/off (ogni volta
+   `reset-event.sh` + ingest, oppure un secondo evento).
+6. Riavvio del face-service con coda piena (`docker compose restart face-service`): la coda deve
+   riprendere senza job in `error`.
+
+Tutto con `status.sh` in registrazione e un `report.md` per configurazione.
+
+---
+
 ## 10. Costi (esempio Hetzner, prezzi indicativi 2026, IVA esclusa)
 
 | Voce | Scelta | €/mese |

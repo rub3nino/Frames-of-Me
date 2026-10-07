@@ -16,7 +16,17 @@ Due script [k6](https://k6.io) che esercitano i due percorsi caldi del contratto
   - Fotografi (`SESSION_COOKIES`): utenti con ruolo `photographer` membri dell'evento (`event_photographers`).
   - Partecipanti (`PARTICIPANT_COOKIES`): utenti con ruolo `participant`. L'API ammette **5 selfie per utente ogni ora**, quindi 1.000 selfie richiedono almeno 200 cookie; con meno cookie le iterazioni in eccesso ricevono `429` e finiscono in `selfie_errors`. Il consenso viene dato una volta per cookie in `setup()`.
 
-Come ottenere i cookie in locale: `POST /v1/auth/request-link` per ogni email, leggere il link in Mailpit (http://localhost:8025), chiamare `POST /v1/auth/verify` con il token e copiare `rephoto_session` dall'header `Set-Cookie`. Per molti utenti conviene uno script che ripete questi tre passi leggendo Mailpit via API (`GET /api/v1/messages`).
+Il modo rapido è `scripts/seed-test.ts`, che crea evento, fotografi (membri dell'evento) e partecipanti (con consenso) e scrive i cookie già nel formato atteso qui:
+
+```sh
+npm run seed:test -- --event demo --photographers 12 --participants 200 --out ./seed
+k6 run -e SESSION_COOKIES="$(cat seed/cookies-photographers.txt)" ... scripts/loadtest/upload.js
+k6 run -e PARTICIPANT_COOKIES="$(cat seed/cookies-participants.txt)" ... scripts/loadtest/selfie.js
+```
+
+A mano: `POST /v1/auth/request-link` per ogni email, leggere il link in Mailpit (http://localhost:8025), chiamare `POST /v1/auth/verify` con il token e copiare `rephoto_session` dall'header `Set-Cookie`. Per molti utenti conviene uno script che ripete questi tre passi leggendo Mailpit via API (`GET /api/v1/messages`).
+
+Per riempire il database di foto senza passare dall'API (150k file) c'è `scripts/ingest/` (`npm run ingest`); `upload.js` resta il test del percorso HTTP dei fotografi. Sul server di test i rate limit sono spenti da `deploy/compose.test.yml` (`SELFIE_MAX_PER_HOUR=0`), quindi il vincolo dei 200 cookie vale solo con i limiti di produzione.
 
 ## Locale
 

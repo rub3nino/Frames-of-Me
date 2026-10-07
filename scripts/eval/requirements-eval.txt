@@ -1,0 +1,8 @@
+# scripts/eval — Python 3.11+
+#   python -m venv .venv-eval && . .venv-eval/bin/activate && pip install -r scripts/eval/requirements-eval.txt
+numpy>=1.26
+Pillow>=10
+psycopg[binary]>=3.1      # offline-search.py (pgvector query)
+httpx>=0.27               # offline-search.py (face-service HTTP); falls back to urllib when missing
+matplotlib>=3.8           # evaluate.py PNG histograms (optional: text histograms without it)
+pandas>=2.2               # optional, for ad-hoc analysis of the CSVs

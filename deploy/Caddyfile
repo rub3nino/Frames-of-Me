@@ -127,3 +127,20 @@ status.{$DOMAIN} {
 	}
 	reverse_proxy uptime-kuma:3001
 }
+
+# ------------------------------------------------------------------ mail (TEST ONLY, optional)
+# Mailpit web UI for the test campaign: started by compose.test.yml, which also sets
+# MAIL_BASIC_AUTH_USER / MAIL_BASIC_AUTH_HASH on the caddy container (they default to the
+# status.* credentials). Needs a DNS record for mail.{$DOMAIN}. In production, where mailpit
+# does not exist, Caddy would log "dial tcp: lookup mailpit" on each hit of this host and
+# nothing else: delete the block if you do not want that noise, or keep it — it is harmless
+# because no record points here. Credentials: `caddy hash-password`, `$` doubled in the env file.
+mail.{$DOMAIN} {
+	import security_headers
+	import access_log
+	encode zstd gzip
+	basic_auth {
+		{$MAIL_BASIC_AUTH_USER:admin} {$MAIL_BASIC_AUTH_HASH:$2a$14$placeholder.hash.when.mailpit.is.not.deployed}
+	}
+	reverse_proxy mailpit:8025
+}

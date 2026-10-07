@@ -1,0 +1,9 @@
+email,photo_id,external_face_id,cosine,similarity,kept
+participant-1@test.rephoto.local,11111111-1111-1111-1111-111111111111,f1,0.82,97,true
+participant-1@test.rephoto.local,22222222-2222-2222-2222-222222222222,f2,0.54,84,true
+participant-1@test.rephoto.local,33333333-3333-3333-3333-333333333333,f3,0.51,81,true
+participant-1@test.rephoto.local,44444444-4444-4444-4444-444444444444,f4,0.31,0,false
+participant-2@test.rephoto.local,22222222-2222-2222-2222-222222222222,f5,0.78,95,true
+participant-2@test.rephoto.local,33333333-3333-3333-3333-333333333333,f6,0.44,0,false
+participant-2@test.rephoto.local,55555555-5555-5555-5555-555555555555,f7,0.58,88,true
+participant-3@test.rephoto.local,44444444-4444-4444-4444-444444444444,f8,0.41,0,false
