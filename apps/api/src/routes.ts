@@ -36,6 +36,8 @@ import {
   objectKeys,
   participantsImportBodySchema,
   publicGalleryQuerySchema,
+  publicPhotoReportSchema,
+  photoModerationSchema,
   requestLinkBodySchema,
   retentionBodySchema,
   SELFIE_FIELD_NAME,
@@ -76,6 +78,7 @@ import {
 } from "./http.js";
 import { ipMatches, parseIpList } from "./net.js";
 import { purgePhoto } from "./purge.js";
+import { incrementSharedLimit } from "./distributed-rate-limit.js";
 
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -339,6 +342,20 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     return c.json({ urls });
   });
 
+  app.post("/v1/events/:slug/public-gallery/:photoId/report", async (c) => {
+    const user = requireUser(c);
+    requireRole(user, ["participant"]);
+    const event = await loadEvent(deps, c.req.param("slug"));
+    await requireParticipantAccess(deps, user, event);
+    const body = publicPhotoReportSchema.safeParse(await readJson(c));
+    if (!body.success) throw new ApiError(400, MESSAGES.validation);
+    const photos = await deps.db.listPublicPhotosByIds(event.id, [parseUuid(c.req.param("photoId"))]);
+    if (photos.length === 0) throw new ApiError(404, MESSAGES.notFound);
+    await deps.db.reportPhoto({ photoId: photos[0]!.id, reporterId: user.id, reason: body.data.reason });
+    await deps.db.insertAudit({ actorId: user.id, action: "photo.reported", target: `photo:${photos[0]!.id}`, meta: { eventId: event.id, reason: body.data.reason } });
+    return c.json({ status: "received" as const }, 202);
+  });
+
   app.post("/v1/events/:slug/gallery/zip", async (c) => {
     const user = requireUser(c);
     requireRole(user, ["participant"]);
@@ -421,8 +438,21 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       requireRole(user, ["participant"]);
       await requireParticipantAccess(deps, user, event);
       if (!rateLimitExempt(deps, c.get("ip"))) {
-        const recent = await deps.db.countUploadsSince(user.id, event.id, since(PUBLIC_UPLOAD_RATE_LIMIT.windowSeconds));
-        if (recent >= PUBLIC_UPLOAD_RATE_LIMIT.max) throw new ApiError(429, MESSAGES.rateLimited);
+        let recent: number | null = null;
+        try {
+          recent = await incrementSharedLimit({
+            url: deps.env.UPSTASH_REDIS_REST_URL,
+            token: deps.env.UPSTASH_REDIS_REST_TOKEN,
+            key: `rephoto:public-upload:${event.id}:${user.id}`,
+            windowSeconds: PUBLIC_UPLOAD_RATE_LIMIT.windowSeconds,
+          });
+        } catch (error) {
+          console.error(`shared upload limiter unavailable: ${String(error)}`);
+        }
+        if (recent === null) {
+          recent = (await deps.db.countUploadsSince(user.id, event.id, since(PUBLIC_UPLOAD_RATE_LIMIT.windowSeconds))) + 1;
+        }
+        if (recent > PUBLIC_UPLOAD_RATE_LIMIT.max) throw new ApiError(429, MESSAGES.rateLimited);
       }
     }
     const uploadId = randomUUID();
@@ -436,7 +466,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       await deps.db.insertUploadSession({
         id: uploadId,
         eventId: event.id,
-        photographerId: user.id,
+        photographerId: input.collection === "official" ? user.id : null,
         uploaderId: user.id,
         collection: input.collection,
         s3UploadId: null,
@@ -465,7 +495,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     if (input.photoId) {
       // Original stage of a web-first photo: the row exists and still waits for its bytes.
       const photo = await deps.db.findPhoto(input.photoId);
-      if (!photo || photo.photographerId !== user.id || photo.eventId !== event.id) {
+      if (!photo || photo.uploaderId !== user.id || photo.eventId !== event.id) {
         throw new ApiError(404, MESSAGES.notFound);
       }
       // An original that already arrived is a conflict, not a validation error: the client treats it as sent.
@@ -487,7 +517,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     await deps.db.insertUploadSession({
       id: uploadId,
       eventId: event.id,
-      photographerId: user.id,
+      photographerId: input.collection === "official" ? user.id : null,
       uploaderId: user.id,
       collection: input.collection,
       s3UploadId,
@@ -571,7 +601,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       // The row is read right before the flip so a repeated complete (same session retried,
       // or a second session for the same photo) sees the status the earlier one left.
       const photo = await deps.db.findPhoto(session.photoId);
-      if (!photo || photo.photographerId !== user.id) await discard(404, MESSAGES.notFound);
+      if (!photo || photo.uploaderId !== user.id) await discard(404, MESSAGES.notFound);
       else if (stored.bytes !== photo.bytes) await discard(400, MESSAGES.sizeMismatch);
       else if (photo.originalStatus !== "pending") {
         // Already received: same answer, no second verify (the object key is the same one).
@@ -608,7 +638,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       await deps.db.insertPhoto({
         id: photoId,
         eventId: session.eventId,
-        photographerId: user.id,
+        photographerId: session.collection === "official" ? user.id : null,
         uploaderId: user.id,
         collection: session.collection,
         sha256: session.sha256,
@@ -773,6 +803,18 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       meta: { eventId: photo.eventId },
     });
     return c.body(null, 204);
+  });
+
+  app.patch("/v1/admin/photos/:id/moderation", async (c) => {
+    const user = requireUser(c);
+    requireRole(user, ["admin"]);
+    const body = photoModerationSchema.safeParse(await readJson(c));
+    if (!body.success) throw new ApiError(400, MESSAGES.validation);
+    const photo = await deps.db.findPhoto(parseUuid(c.req.param("id")));
+    if (!photo) throw new ApiError(404, MESSAGES.notFound);
+    await deps.db.setPhotoModeration({ photoId: photo.id, status: body.data.status, reason: body.data.reason, actorId: user.id });
+    await deps.db.insertAudit({ actorId: user.id, action: "photo.moderation_changed", target: `photo:${photo.id}`, meta: { status: body.data.status, reason: body.data.reason } });
+    return c.json({ status: body.data.status });
   });
 
   app.delete("/v1/admin/participants/:id", async (c) => {

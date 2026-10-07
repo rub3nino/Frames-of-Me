@@ -46,6 +46,7 @@ import type {
   PhotoDetail,
   PublicGalleryItem,
   PublicGalleryCursor,
+  ModerationStatus,
   BBox,
   ClaimOptions,
   GalleryMatchPatch,
@@ -312,7 +313,7 @@ export class PostgresDatabase implements Database {
   async insertUploadSession(input: {
     id: string;
     eventId: string;
-    photographerId: string;
+    photographerId: string | null;
     uploaderId?: string;
     collection?: PhotoCollection;
     s3UploadId: string | null;
@@ -443,7 +444,7 @@ export class PostgresDatabase implements Database {
   async insertPhoto(input: {
     id: string;
     eventId: string;
-    photographerId: string;
+    photographerId: string | null;
     uploaderId?: string;
     collection?: PhotoCollection;
     sha256: string;
@@ -556,6 +557,24 @@ export class PostgresDatabase implements Database {
     return rows.map(mapPhoto);
   }
 
+  async reportPhoto(input: { photoId: string; reporterId: string; reason: string }): Promise<boolean> {
+    const rows = await this.sql<{ id: string }[]>`
+      insert into photo_reports (photo_id, reporter_id, reason)
+      values (${input.photoId}, ${input.reporterId}, ${input.reason})
+      on conflict (photo_id, reporter_id) do nothing returning id
+    `;
+    return rows.length > 0;
+  }
+
+  async setPhotoModeration(input: { photoId: string; status: ModerationStatus; reason: string | null; actorId: string }): Promise<void> {
+    await this.sql`
+      insert into photo_moderation (photo_id, status, reason, updated_by)
+      values (${input.photoId}, ${input.status}, ${input.reason}, ${input.actorId})
+      on conflict (photo_id) do update set status = excluded.status, reason = excluded.reason,
+        updated_by = excluded.updated_by, updated_at = now()
+    `;
+  }
+
   async listPublicGallery(
     eventId: string,
     input: { limit: number; cursor?: PublicGalleryCursor },
@@ -572,7 +591,9 @@ export class PostgresDatabase implements Database {
       from photos p
       join derivatives t on t.photo_id = p.id and t.kind = 'thumb'
       join derivatives w on w.photo_id = p.id and w.kind = 'web'
+      left join photo_moderation m on m.photo_id = p.id
       where p.event_id = ${eventId} and p.collection = 'public' and p.status = 'indexed'
+        and coalesce(m.status, 'approved') = 'approved'
         ${input.cursor ? this.sql`and (date_trunc('milliseconds', p.created_at), p.id) < (${input.cursor.createdAt}, ${input.cursor.photoId}::uuid)` : this.sql``}
       order by date_trunc('milliseconds', p.created_at) desc, p.id desc
       limit ${input.limit}
@@ -1914,7 +1935,7 @@ type EventSql = {
 type PhotoSql = {
   id: string;
   event_id: string;
-  photographer_id: string;
+  photographer_id: string | null;
   uploader_id: string | null;
   collection: PhotoCollection;
   sha256: string;
@@ -1930,7 +1951,7 @@ type PhotoSql = {
 type UploadSql = {
   id: string;
   event_id: string;
-  photographer_id: string;
+  photographer_id: string | null;
   uploader_id: string | null;
   collection: PhotoCollection;
   s3_upload_id: string | null;

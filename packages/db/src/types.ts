@@ -37,7 +37,7 @@ export type EventRow = {
 export type PhotoRow = {
   id: string;
   eventId: string;
-  photographerId: string;
+  photographerId: string | null;
   uploaderId: string | null;
   collection: PhotoCollection;
   sha256: string;
@@ -54,7 +54,7 @@ export type PhotoRow = {
 export type UploadSessionRow = {
   id: string;
   eventId: string;
-  photographerId: string;
+  photographerId: string | null;
   uploaderId: string | null;
   collection: PhotoCollection;
   s3UploadId: string | null;
@@ -104,6 +104,7 @@ export type PublicGalleryItem = {
   originalReady: boolean;
 };
 export type PublicGalleryCursor = { createdAt: Date; photoId: string };
+export type ModerationStatus = "approved" | "pending" | "blocked";
 
 export type AnchoredGallery = {
   id: string;
@@ -210,7 +211,7 @@ export interface Database {
   insertUploadSession(input: {
     id: string;
     eventId: string;
-    photographerId: string;
+    photographerId: string | null;
     uploaderId?: string;
     collection?: PhotoCollection;
     s3UploadId: string | null;
@@ -242,7 +243,7 @@ export interface Database {
   insertPhoto(input: {
     id: string;
     eventId: string;
-    photographerId: string;
+    photographerId: string | null;
     uploaderId?: string;
     collection?: PhotoCollection;
     sha256: string;
@@ -269,6 +270,8 @@ export interface Database {
   countPhotos(eventId: string): Promise<number>;
   listPhotosByIds(ids: string[]): Promise<PhotoRow[]>;
   listPublicPhotosByIds(eventId: string, photoIds: string[]): Promise<PhotoRow[]>;
+  reportPhoto(input: { photoId: string; reporterId: string; reason: string }): Promise<boolean>;
+  setPhotoModeration(input: { photoId: string; status: ModerationStatus; reason: string | null; actorId: string }): Promise<void>;
   listPublicGallery(eventId: string, input: { limit: number; cursor?: PublicGalleryCursor }): Promise<PublicGalleryItem[]>;
   /** Photos among `photoIds` that are in the caller's gallery for the event. One query. */
   listOwnedPhotos(userId: string, eventId: string, photoIds: string[]): Promise<PhotoRow[]>;

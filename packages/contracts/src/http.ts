@@ -162,6 +162,12 @@ export const publicGalleryQuerySchema = z
   })
   .strict();
 
+export const publicPhotoReportSchema = z.object({ reason: z.string().trim().min(3).max(500) }).strict();
+export const photoModerationSchema = z.object({
+  status: z.enum(["approved", "pending", "blocked"]),
+  reason: z.string().trim().max(500).nullable().default(null),
+}).strict();
+
 export function encodePublicGalleryCursor(input: { createdAt: Date; photoId: string }): string {
   return Buffer.from(`${input.createdAt.toISOString()}|${input.photoId}`, "utf8").toString("base64url");
 }

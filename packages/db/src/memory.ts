@@ -130,6 +130,8 @@ export class MemoryDatabase implements Database {
   private readonly invites: Invite[] = [];
   private readonly eventPhotographers = new Set<string>();
   private readonly eventParticipants = new Set<string>();
+  private readonly moderation = new Map<string, { status: "approved" | "pending" | "blocked"; reason: string | null; updatedBy: string }>();
+  private readonly reports = new Set<string>();
   // v5 (agent D): photos.filename/tags, gallery_feedback, and a read model of match_runs/match_hits.
   private readonly photoMeta = new Map<string, { filename: string | null; tags: string[] }>();
   private readonly feedback: FeedbackRow[] = [];
@@ -337,7 +339,7 @@ export class MemoryDatabase implements Database {
   async insertUploadSession(input: {
     id: string;
     eventId: string;
-    photographerId: string;
+    photographerId: string | null;
     uploaderId?: string;
     collection?: PhotoCollection;
     s3UploadId: string | null;
@@ -439,7 +441,7 @@ export class MemoryDatabase implements Database {
   async insertPhoto(input: {
     id: string;
     eventId: string;
-    photographerId: string;
+    photographerId: string | null;
     uploaderId?: string;
     collection?: PhotoCollection;
     sha256: string;
@@ -543,12 +545,23 @@ export class MemoryDatabase implements Database {
     );
   }
 
+  async reportPhoto(input: { photoId: string; reporterId: string; reason: string }): Promise<boolean> {
+    const key = `${input.photoId}:${input.reporterId}`;
+    if (this.reports.has(key)) return false;
+    this.reports.add(key);
+    return true;
+  }
+
+  async setPhotoModeration(input: { photoId: string; status: "approved" | "pending" | "blocked"; reason: string | null; actorId: string }): Promise<void> {
+    this.moderation.set(input.photoId, { status: input.status, reason: input.reason, updatedBy: input.actorId });
+  }
+
   async listPublicGallery(
     eventId: string,
     input: { limit: number; cursor?: PublicGalleryCursor },
   ): Promise<PublicGalleryItem[]> {
     return [...this.photos.values()]
-      .filter((photo) => photo.eventId === eventId && photo.collection === "public" && photo.status === "indexed")
+      .filter((photo) => photo.eventId === eventId && photo.collection === "public" && photo.status === "indexed" && (this.moderation.get(photo.id)?.status ?? "approved") === "approved")
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id))
       .filter((photo) => !input.cursor || photo.createdAt < input.cursor.createdAt || (photo.createdAt.getTime() === input.cursor.createdAt.getTime() && photo.id < input.cursor.photoId))
       // Mirror the postgres JOIN: drop photos without both derivatives BEFORE limiting, so a
