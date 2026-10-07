@@ -50,4 +50,12 @@ export type {
   PhotoAdminFilters,
   PhotoAdminRow,
   PhotoDetail,
+  // v6 (agent A): albums
+  AlbumInsert,
+  AlbumKind,
+  AlbumModeration,
+  AlbumPatch,
+  AlbumRow,
+  AlbumVisibility,
 } from "./types.js";
+export { AlbumRecognitionLockedError, AlbumRecognitionNotAllowedError } from "./types.js";

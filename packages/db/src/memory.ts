@@ -6,7 +6,11 @@ import {
   STALE_RUNNING_MS,
   THROTTLE_REQUEUE_SECONDS,
 } from "@rephoto/contracts";
-import { DuplicateKeyError } from "./types.js";
+import {
+  AlbumRecognitionLockedError,
+  AlbumRecognitionNotAllowedError,
+  DuplicateKeyError,
+} from "./types.js";
 import type {
   AnchoredGallery,
   ClaimedJob,
@@ -47,6 +51,9 @@ import type {
   MatchHitInsert,
   MatchRunInsert,
   QueryVectorGallery,
+  AlbumInsert,
+  AlbumPatch,
+  AlbumRow,
 } from "./types.js";
 
 /** Same cap as PostgresDatabase.findGalleriesByQueryVector. */
@@ -55,6 +62,8 @@ const EVENT_ID = "00000000-0000-4000-8000-000000000001";
 const ADMIN_ID = "00000000-0000-4000-8000-000000000002";
 const PHOTOGRAPHER_ID = "00000000-0000-4000-8000-000000000003";
 const INVITE_ID = "00000000-0000-4000-8000-000000000004";
+/** v6: slug of the official album every event gets (migration 009). */
+const DEFAULT_ALBUM_SLUG = "ufficiale";
 
 type MagicLink = {
   email: string;
@@ -133,6 +142,9 @@ export class MemoryDatabase implements Database {
   private readonly feedback: FeedbackRow[] = [];
   private readonly matchRunRows: MatchRunStored[] = [];
   private readonly matchHitRows: MatchHitStored[] = [];
+  // v6 (agent A): albums. Migration 009 gives every event an official album and a
+  // trigger adds one to each new event; `ensureDefaultAlbum` is that trigger here.
+  private readonly albums = new Map<string, AlbumRow>();
 
   async seedDemo(): Promise<void> {
     if (!(await this.findEventBySlug("demo"))) {
@@ -171,6 +183,7 @@ export class MemoryDatabase implements Database {
       usedAt: new Date(),
     });
     await this.addEventPhotographer(EVENT_ID, PHOTOGRAPHER_ID);
+    this.ensureDefaultAlbum(EVENT_ID);
   }
 
   async ping(): Promise<void> {
@@ -432,8 +445,12 @@ export class MemoryDatabase implements Database {
     originalStatus?: OriginalStatus;
     filename?: string | null;
     tags?: string[];
+    albumId?: string;
   }): Promise<PhotoRow> {
-    if (await this.findPhotoBySha(input.eventId, input.sha256)) throw new DuplicateKeyError();
+    // v6: dedup is per album (`photos unique (album_id, sha256)`), so the same bytes may
+    // exist once in the official album and once in a crowd album.
+    const albumId = input.albumId ?? this.ensureDefaultAlbum(input.eventId).id;
+    if (await this.findPhotoByAlbumSha(albumId, input.sha256)) throw new DuplicateKeyError();
     this.photoMeta.set(input.id, { filename: input.filename ?? null, tags: [...(input.tags ?? [])] });
     const photo: PhotoRow = {
       id: input.id,
@@ -448,8 +465,11 @@ export class MemoryDatabase implements Database {
       indexedAt: null,
       error: null,
       createdAt: new Date(),
+      albumId,
     };
     this.photos.set(photo.id, photo);
+    // The `photos_album_first_upload` trigger of migration 009.
+    await this.markAlbumFirstUpload(albumId);
     return photo;
   }
 
@@ -1238,6 +1258,7 @@ export class MemoryDatabase implements Database {
       createdAt: new Date(),
     };
     this.events.set(event.id, event);
+    this.ensureDefaultAlbum(event.id);
     return event;
   }
 
@@ -1627,6 +1648,115 @@ export class MemoryDatabase implements Database {
   private adminPhoto(photo: PhotoRow): PhotoAdminRow {
     const meta = this.photoMeta.get(photo.id);
     return { ...photo, filename: meta?.filename ?? null, tags: [...(meta?.tags ?? [])] };
+  }
+
+  // ---- albums and vector isolation v6 (agent A) -------------------------------------------
+
+  async createAlbum(input: AlbumInsert): Promise<AlbumRow> {
+    if (input.kind === "crowd" && input.recognition === true) {
+      throw new AlbumRecognitionNotAllowedError();
+    }
+    if (await this.findAlbumBySlug(input.eventId, input.slug)) throw new DuplicateKeyError();
+    const album: AlbumRow = {
+      id: input.id ?? randomUUID(),
+      eventId: input.eventId,
+      slug: input.slug,
+      name: input.name,
+      kind: input.kind,
+      recognition: input.recognition ?? false,
+      moderation: input.moderation ?? "post",
+      visibility: input.visibility ?? "participants",
+      maxPhotosPerUser: input.maxPhotosPerUser ?? null,
+      uploadsOpen: input.uploadsOpen ?? true,
+      retentionDays: input.retentionDays ?? null,
+      firstUploadAt: null,
+      createdAt: new Date(),
+    };
+    this.albums.set(album.id, album);
+    return album;
+  }
+
+  async findAlbum(id: string): Promise<AlbumRow | null> {
+    return this.albums.get(id) ?? null;
+  }
+
+  async findAlbumBySlug(eventId: string, slug: string): Promise<AlbumRow | null> {
+    for (const album of this.albums.values()) {
+      if (album.eventId === eventId && album.slug === slug) return album;
+    }
+    return null;
+  }
+
+  async listAlbums(eventId: string): Promise<AlbumRow[]> {
+    return [...this.albums.values()]
+      .filter((album) => album.eventId === eventId)
+      .sort(
+        (a, b) => a.createdAt.getTime() - b.createdAt.getTime() || compareText(a.id, b.id),
+      );
+  }
+
+  async findDefaultAlbum(eventId: string): Promise<AlbumRow | null> {
+    return this.findAlbumBySlug(eventId, DEFAULT_ALBUM_SLUG);
+  }
+
+  async listRecognitionAlbumIds(eventId: string): Promise<string[]> {
+    return (await this.listAlbums(eventId))
+      .filter((album) => album.recognition)
+      .map((album) => album.id);
+  }
+
+  async updateAlbum(id: string, patch: AlbumPatch): Promise<AlbumRow | null> {
+    const album = this.albums.get(id);
+    if (!album) return null;
+    if (patch.recognition !== undefined && patch.recognition !== album.recognition) {
+      // Decision 3 (frozen): the trigger of migration 009 refuses this in Postgres.
+      if (album.firstUploadAt !== null) throw new AlbumRecognitionLockedError();
+      if (album.kind === "crowd" && patch.recognition) throw new AlbumRecognitionNotAllowedError();
+      album.recognition = patch.recognition;
+    }
+    if (patch.name !== undefined) album.name = patch.name;
+    if (patch.moderation !== undefined) album.moderation = patch.moderation;
+    if (patch.visibility !== undefined) album.visibility = patch.visibility;
+    if (patch.maxPhotosPerUser !== undefined) album.maxPhotosPerUser = patch.maxPhotosPerUser;
+    if (patch.uploadsOpen !== undefined) album.uploadsOpen = patch.uploadsOpen;
+    if (patch.retentionDays !== undefined) album.retentionDays = patch.retentionDays;
+    return album;
+  }
+
+  async markAlbumFirstUpload(albumId: string, at: Date = new Date()): Promise<void> {
+    const album = this.albums.get(albumId);
+    if (album && album.firstUploadAt === null) album.firstUploadAt = at;
+  }
+
+  async findPhotoByAlbumSha(albumId: string, sha256: string): Promise<PhotoRow | null> {
+    for (const photo of this.photos.values()) {
+      if (photo.albumId === albumId && photo.sha256 === sha256) return photo;
+    }
+    return null;
+  }
+
+  /** The `events_default_album` trigger of migration 009: every event has one. */
+  private ensureDefaultAlbum(eventId: string): AlbumRow {
+    for (const album of this.albums.values()) {
+      if (album.eventId === eventId && album.slug === DEFAULT_ALBUM_SLUG) return album;
+    }
+    const album: AlbumRow = {
+      id: randomUUID(),
+      eventId,
+      slug: DEFAULT_ALBUM_SLUG,
+      name: "Album ufficiale",
+      kind: "official",
+      recognition: true,
+      moderation: "off",
+      visibility: "participants",
+      maxPhotosPerUser: null,
+      uploadsOpen: true,
+      retentionDays: null,
+      firstUploadAt: null,
+      createdAt: new Date(),
+    };
+    this.albums.set(album.id, album);
+    return album;
   }
 
   private galleryOf(userId: string, eventId: string): Gallery | undefined {
