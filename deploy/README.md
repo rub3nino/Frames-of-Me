@@ -54,7 +54,7 @@ Internet ──443──▶ caddy ──┬── /v1/*          ──▶ api:8
 | --- | --- | --- | --- | --- |
 | `caddy` | `caddy:2-alpine` | 80, 443 (tcp+udp) | `caddy_data` (certificati), `caddy_config`, `caddy_logs` | `Caddyfile` montato in sola lettura |
 | `postgres` | `pgvector/pgvector:pg16` | — | `postgres_data` | `shm_size: 1g`, parametri da env |
-| `minio` + `minio-init` | `cgr.dev/chainguard/minio` | — | `MINIO_DATA_DIR` (volume o percorso sul disco grande) | `minio-init` crea il bucket e termina |
+| `minio` + `minio-init` | `cgr.dev/chainguard/minio` | — | `MINIO_DATA_DIR` (volume o percorso sul disco grande) | `minio-init` crea bucket, policy e utente applicativo, poi termina (§ 6 bis) |
 | `face-service` | build `apps/face-service` | — | — | limiti CPU/RAM da env; il modello è nell'immagine |
 | `api` ×2 | build `apps/api` | — | — | `/health` |
 | `worker` ×2 | build `apps/worker` | — | — | nessuna porta |
@@ -68,7 +68,7 @@ Tutti i servizi hanno `restart: unless-stopped`, healthcheck e log `json-file` (
 
 **Immagine web e `NEXT_PUBLIC_*`.** Next.js inlina `NEXT_PUBLIC_EVENT_SLUG`, `NEXT_PUBLIC_MEDIA_ORIGINS` (`https://media.DOMAIN`, finisce nella CSP `img-src`/`connect-src`) e `NEXT_PUBLIC_WEB_ORIGIN` **al build**: `compose.yml` li passa come `build.args` da `.env.production`. Cambiare `DOMAIN` o `EVENT_SLUG` significa `docker compose build web && docker compose up -d web`; riavviare non basta.
 
-**Variabili che arrivano ad api e worker** (tutte da `compose.yml`, `x-app-env`): `NODE_ENV=production`, `DATABASE_URL`, `DATABASE_POOL_MAX`, `S3_ENDPOINT=http://minio:9000`, `S3_PUBLIC_ENDPOINT=https://media.DOMAIN`, `S3_BUCKET`, `S3_ACCESS_KEY`/`S3_SECRET_KEY` (= root MinIO), `S3_REGION=eu-central-1`, `S3_FORCE_PATH_STYLE=true`, `SESSION_SECRET`, `FACE_ENGINE=insightface`, `FACE_SERVICE_URL=http://face-service:8090`, `INSIGHTFACE_MIN_COSINE`, `INSIGHTFACE_SURE_COSINE`, `INSIGHTFACE_MAX_FACES`, `INSIGHTFACE_MIN_FACE_QUALITY`, `FACE_INDEX_TPS`, `FACE_SEARCH_TPS`, `LIVENESS_CHECK`, `AWS_REGION`, `REKOGNITION_COLLECTION_PREFIX`, `MAIL_TRANSPORT=smtp`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_SECURE`, `SMTP_STARTTLS`, `SMTP_FROM`, `WEB_ORIGIN`/`API_ORIGIN=https://DOMAIN`, `SEED_DEMO=false`, `TRUSTED_PROXY_HOPS=1`, `WORKER_CONCURRENCY`, `WORKER_PUBLISH_METRICS=false`.
+**Variabili che arrivano ad api e worker** (tutte da `compose.yml`, `x-app-env`): `NODE_ENV=production`, `DATABASE_URL`, `DATABASE_POOL_MAX`, `S3_ENDPOINT=http://minio:9000`, `S3_PUBLIC_ENDPOINT=https://media.DOMAIN`, `S3_BUCKET`, `S3_ACCESS_KEY`/`S3_SECRET_KEY` (= utente applicativo MinIO, **non** root: § 6 bis), `S3_REGION=eu-central-1`, `S3_FORCE_PATH_STYLE=true`, `SESSION_SECRET`, `FACE_ENGINE=insightface`, `FACE_SERVICE_URL=http://face-service:8090`, `INSIGHTFACE_MIN_COSINE`, `INSIGHTFACE_SURE_COSINE`, `INSIGHTFACE_MAX_FACES`, `INSIGHTFACE_MIN_FACE_QUALITY`, `FACE_INDEX_TPS`, `FACE_SEARCH_TPS`, `LIVENESS_CHECK`, `AWS_REGION`, `REKOGNITION_COLLECTION_PREFIX`, `MAIL_TRANSPORT=smtp`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_SECURE`, `SMTP_STARTTLS`, `SMTP_FROM`, `WEB_ORIGIN`/`API_ORIGIN=https://DOMAIN`, `SEED_DEMO=false`, `TRUSTED_PROXY_HOPS=1`, `WORKER_CONCURRENCY`, `WORKER_PUBLISH_METRICS=false`.
 
 ---
 
@@ -140,9 +140,152 @@ Il servizio `backup` ogni giorno alle `BACKUP_AT` (UTC) fa `pg_dump -Fc` in `BAC
 
 - Backup subito: `scripts/backup.sh`.
 - Ripristino: `scripts/restore.sh [nome-dump]` (default: l'ultimo). Ferma api e worker, `pg_restore --clean` nel database esistente, rimanda gli oggetti nel bucket (additivo), riavvia.
-- **Prova di ripristino** (da fare prima dell'evento, non dopo): su un secondo VPS o in locale, stesso `.env.production`, `docker compose up -d postgres minio minio-init backup`, copiare `BACKUP_DIR`, `scripts/restore.sh --yes`, poi `up -d` del resto e controllare che una galleria si apra con le miniature.
 
 Il disco di backup deve essere **fisico/logico diverso** da quello dei dati (volume aggiuntivo, Storage Box via CIFS/SSHFS, o `rclone` verso un bucket esterno subito dopo `last-ok`). `BACKUP_DIR` sullo stesso disco protegge solo dagli errori umani, non dai guasti.
+
+### Prova di ripristino (restore drill)
+
+**Da fare prima dell'evento, non dopo. Un backup che non è mai stato ripristinato non è un backup.**
+La prova va fatta su un **host o progetto compose separato**, mai contro la produzione: `restore.sh`
+fa `pg_restore --clean`, cioè *droppa e ricrea ogni tabella* del database di destinazione.
+
+Preparazione: un secondo VPS (o la stessa macchina con `name:` diverso in un compose a parte), una
+copia di `.env.production` con `DOMAIN` finto, e una copia di `BACKUP_DIR` (`rsync -a` dal disco di
+backup, oppure il disco rimontato in sola lettura e copiato).
+
+```sh
+# 1. solo i servizi di dato sull'host di prova
+cd /srv/rephoto-drill/app/deploy
+docker compose --env-file .env.drill up -d postgres minio minio-init
+docker compose --env-file .env.drill ps          # postgres e minio `healthy`
+
+# 2. il database di destinazione deve essere VUOTO (è la prova che il dump basta da solo)
+docker compose --env-file .env.drill exec -T postgres \
+  psql -U rephoto -d rephoto -tAc \
+  "select count(*) from pg_tables where schemaname='public'"      # atteso: 0
+
+# 3. ripristino: dump Postgres + mirror degli oggetti nel bucket
+docker compose --env-file .env.drill up -d backup
+./scripts/restore.sh --yes                        # oppure --yes rephoto-20261007-033000.dump
+```
+
+Controlli, nell'ordine (se uno fallisce il backup non è utilizzabile e va sistemato subito):
+
+```sh
+D="docker compose --env-file .env.drill exec -T postgres psql -U rephoto -d rephoto -tAc"
+
+# a. le righe ci sono tutte: confrontare con gli stessi conteggi presi in produzione
+$D "select (select count(*) from photos) || ' foto, '
+        || (select count(*) from galleries) || ' gallerie, '
+        || (select count(*) from gallery_items) || ' item, '
+        || (select count(*) from users) || ' utenti'"
+
+# b. le migrazioni sono nel dump (api/worker non devono riapplicarne nessuna)
+$D "select count(*) || ' migrazioni, ultima=' || max(id) from schema_migrations"
+
+# c. pgvector e gli indici HNSW sono sopravvissuti (sono nel dump, non si ricreano da soli)
+$D "select extname || ' ' || extversion from pg_extension where extname='vector'"
+$D "select indexname from pg_indexes where indexdef like '%hnsw%' order by indexname"
+
+# d. gli indici di paginazione della 014 ci sono (altrimenti l'admin va in seq scan)
+$D "select indexname from pg_indexes where indexname like '%_ms_idx' order by indexname"
+
+# e. una pagina keyset usa ancora l'indice
+docker compose --env-file .env.drill exec -T postgres psql -U rephoto -d rephoto -c \
+  "explain (costs off) select id from photos
+     order by date_trunc('milliseconds', created_at, 'UTC') desc, id desc limit 51"
+
+# f. gli oggetti: numero e dimensione totale uguali alla copia di backup
+docker compose --env-file .env.drill exec -T minio \
+  /usr/bin/mc du local/rephoto
+
+# g. l'applicazione: avviare il resto e aprire una galleria con le miniature
+docker compose --env-file .env.drill up -d api worker web
+curl -fsS http://localhost:8787/health
+#    poi, da browser, login di un partecipante noto e verifica che le foto si vedano
+#    (le miniature sono URL firmate: se compaiono, api, MinIO e il database concordano)
+```
+
+Alla fine: `docker compose --env-file .env.drill down -v` sull'host di prova.
+
+**Tempi misurati** (prova eseguita il 2026-10-07 su un Mac arm64 con Docker Desktop, non sull'host
+di produzione — servono come ordine di grandezza della parte *database*, non come SLA):
+
+| Passo | Dato | Tempo (3 ripetizioni) |
+| --- | --- | --- |
+| `pg_dump -Fc --compress=6` | 170.000 righe `photos` + 60.000 `upload_sessions` + 40.000 `match_runs`, database 152 MB | 0,69 / 0,72 / 0,73 s → dump da **19 MB** |
+| `pg_restore --clean --if-exists` in un database vuoto | lo stesso dump da 19 MB | 1,02 / 1,04 / 1,06 s |
+| `mc mirror` bucket → disco | 600 oggetti, 64 MiB | 0,06–0,39 s (≈ 195 MiB/s) |
+| `mc mirror` disco → bucket | 600 oggetti, 64 MiB | ≈ 108 MiB/s |
+
+Esito: conteggi identici, 9 migrazioni presenti (ultima `014_keyset_indexes.sql`), `vector 0.8.7`
+con entrambi gli indici HNSW, i quattro indici `*_ms_idx` presenti e la pagina keyset ancora servita
+da `photos_event_created_ms_idx`.
+
+**Come estrapolare.** Il tempo del *database* scala con le righe e resta nell'ordine dei minuti:
+150.000 foto reali hanno lo stesso ordine di grandezza di metadati di questa prova, ma `face_vectors`
+no — un embedding da 512 float per volto è ~2 KB, quindi 150.000 foto × ~3 volti ≈ 900 MB di soli
+vettori, e la **ricostruzione degli indici HNSW** durante `pg_restore` è la voce dominante (decine di
+minuti, con `maintenance_work_mem=1GB`). Il tempo dell'*object store* è invece una pura copia di
+disco: 1,2 TB a 100 MiB/s sono ~3,5 ore, ed è questo a dettare il tempo di ripristino reale. Chi fa
+la prova prima dell'evento deve rimisurare **sull'host di produzione e con i dati veri**: i numeri
+qui sopra non sostituiscono quella misura.
+
+---
+
+## 6 bis. Credenziali MinIO e privilegio minimo
+
+api e worker **non** hanno le credenziali di root di MinIO. Fino alla v5 `compose.yml` passava
+`MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD` come `S3_ACCESS_KEY`/`S3_SECRET_KEY`: le chiavi che stanno
+nell'ambiente di quattro processi Node e che firmano ogni URL presigned consegnata a un browser
+erano quelle del superutente dell'object store (creare e cancellare bucket, leggere la copia di
+backup, aggiungere utenti, cambiare le policy).
+
+Ora `minio-init` esegue `scripts/minio-provision.sh`, che a ogni `up`:
+
+1. crea il bucket se manca;
+2. installa la policy `rephoto-app` — solo oggetti **di quel bucket**;
+3. crea (o ri-chiavizza) l'utente applicativo `S3_APP_ACCESS_KEY` e gli attacca la policy.
+
+| Variabile | Chi la usa | Perché |
+| --- | --- | --- |
+| `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` | `minio` (server), `minio-init`, `backup`, `scripts/reset-event.sh` | amministrazione e backup: `mc mirror` deve elencare tutto il bucket e un ripristino deve riscriverlo |
+| `S3_APP_ACCESS_KEY` / `S3_APP_SECRET_KEY` | `api`, `worker` (come `S3_ACCESS_KEY`/`S3_SECRET_KEY`) | leggere, scrivere e cancellare oggetti dentro `S3_BUCKET`, niente altro |
+
+La policy concede `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject`, `s3:AbortMultipartUpload`,
+`s3:ListMultipartUploadParts` su `arn:aws:s3:::<bucket>/*` e `s3:ListBucketMultipartUploads`,
+`s3:GetBucketLocation` sul bucket. **Non** concede `s3:ListBucket`: api e worker indirizzano ogni
+oggetto per chiave (`apps/api/src/objects.ts` usa Get/Put/Delete/Head e i comandi multipart, mai un
+listing), quindi una chiave applicativa rubata non permette di enumerare il bucket. Niente azione
+`admin:*`, niente creazione o cancellazione di bucket, nessun altro bucket.
+
+Verificato il 2026-10-07 contro un MinIO di prova, eseguendo il vero `createS3ObjectStore`: tutte e
+16 le operazioni dell'applicazione funzionano con l'utente ristretto (`put`, `head`, `get`,
+`stream`, `head`/`get` di una chiave assente che tornano `null`, `presignPut` + PUT dal browser,
+`presignGet` + GET dal browser, `createMultipartUpload`, `presignUploadPart` + PUT della parte,
+`completeMultipartUpload`, `abortMultipartUpload`, `delete`). Negate come previsto: `MakeBucket`,
+`RemoveBucket`, scrittura in un altro bucket, `ListBucket`, `admin user list/add`,
+`admin policy ls`, `admin info`, `anonymous set public`. Due dettagli da sapere:
+
+- `mc ls` e `mc stat` **falliscono** con l'utente applicativo perché elencano il prefisso prima di
+  leggere: non è un problema (l'applicazione non elenca mai), ma per ispezionare il bucket a mano
+  si usa l'alias root.
+- MinIO lascia comunque vedere il **nome** del bucket in `ListBuckets` (filtra la lista a quelli
+  raggiungibili). Non espone nulla: il nome è già in `S3_BUCKET` nello stesso ambiente.
+
+**Rotazione della chiave applicativa** (nessun fermo del database, ~10 s di 5xx sugli upload):
+
+```sh
+# nuovo segreto in .env.production
+sed -i "s|^S3_APP_SECRET_KEY=.*|S3_APP_SECRET_KEY=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=')|" .env.production
+docker compose --env-file .env.production up -d --force-recreate minio-init
+docker compose --env-file .env.production up -d --force-recreate api worker
+docker compose --env-file .env.production logs --tail 20 minio-init   # "done"
+```
+
+`minio-provision.sh` si rifiuta di partire se `S3_APP_ACCESS_KEY` è uguale a `MINIO_ROOT_USER` o se
+il segreto è più corto di 8 caratteri, e fallisce il servizio (quindi blocca api e worker, che
+dipendono da `minio-init: service_completed_successfully`) se la policy non è stata attaccata.
 
 ---
 

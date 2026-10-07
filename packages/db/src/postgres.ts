@@ -380,16 +380,21 @@ export class PostgresDatabase implements Database {
     // The cursor round-trips through a JS Date (millisecond precision) while created_at keeps
     // microseconds: order and compare on the truncated value so rows sharing a millisecond
     // are neither skipped nor repeated.
+    // The explicit 'UTC' third argument is what makes the expression indexable: the two-argument
+    // date_trunc(text, timestamptz) is STABLE (it reads the session TimeZone), so Postgres refuses
+    // it in an index expression; the three-argument form is IMMUTABLE. For a sub-second unit the
+    // value is identical in every real zone (all offsets are whole minutes). The matching indexes
+    // are in migration 014; without them this ordering could not use any index (v6 F3).
     const rows = await this.sql<UploadSql[]>`
       select ${this.sql.unsafe(UPLOAD_COLUMNS)}
       from upload_sessions
       where photographer_id = ${photographerId} and event_id = ${eventId}
         ${
           cursor
-            ? this.sql`and (date_trunc('milliseconds', created_at), id) < (${cursor.createdAt}, ${cursor.id}::uuid)`
+            ? this.sql`and (date_trunc('milliseconds', created_at, 'UTC'), id) < (${cursor.createdAt}, ${cursor.id}::uuid)`
             : this.sql``
         }
-      order by date_trunc('milliseconds', created_at) desc, id desc
+      order by date_trunc('milliseconds', created_at, 'UTC') desc, id desc
       limit ${input.limit + 1}
     `;
     const items = rows.slice(0, input.limit).map(mapUpload);
@@ -1433,15 +1438,15 @@ export class PostgresDatabase implements Database {
       sort_at: Date;
     }[]>`
       select g.user_id, u.email, g.matched_at, g.last_match_reason as reason,
-             date_trunc('milliseconds', coalesce(g.matched_at, 'epoch'::timestamptz)) as sort_at,
+             date_trunc('milliseconds', coalesce(g.matched_at, 'epoch'::timestamptz), 'UTC') as sort_at,
              (select count(*)::int from gallery_items gi where gi.gallery_id = g.id) as total
       from galleries g
       join users u on u.id = g.user_id
       where g.event_id = ${eventId}
         ${
           cursor
-            ? this.sql`and (date_trunc('milliseconds', coalesce(g.matched_at, 'epoch'::timestamptz)) < ${cursor.matchedAt}
-                 or (date_trunc('milliseconds', coalesce(g.matched_at, 'epoch'::timestamptz)) = ${cursor.matchedAt} and g.user_id > ${cursor.userId}::uuid))`
+            ? this.sql`and (date_trunc('milliseconds', coalesce(g.matched_at, 'epoch'::timestamptz), 'UTC') < ${cursor.matchedAt}
+                 or (date_trunc('milliseconds', coalesce(g.matched_at, 'epoch'::timestamptz), 'UTC') = ${cursor.matchedAt} and g.user_id > ${cursor.userId}::uuid))`
             : this.sql``
         }
       order by sort_at desc, g.user_id asc
@@ -1590,10 +1595,10 @@ export class PostgresDatabase implements Database {
         ${filters.tag ? sql`and ${filters.tag} = any(tags)` : sql``}
         ${
           cursor
-            ? sql`and (date_trunc('milliseconds', created_at), id) < (${cursor.createdAt}, ${cursor.id}::uuid)`
+            ? sql`and (date_trunc('milliseconds', created_at, 'UTC'), id) < (${cursor.createdAt}, ${cursor.id}::uuid)`
             : sql``
         }
-      order by date_trunc('milliseconds', created_at) desc, id desc
+      order by date_trunc('milliseconds', created_at, 'UTC') desc, id desc
       limit ${input.limit + 1}
     `;
     const items = rows.slice(0, input.limit).map(mapPhotoAdmin);
@@ -1638,9 +1643,13 @@ export class PostgresDatabase implements Database {
   async listFeedback(
     userId: string,
     eventId: string,
+    photoIds?: readonly string[],
   ): Promise<Array<{ photoId: string; verdict: FeedbackVerdict }>> {
+    // An empty id list is "this page has no photos": answer without a round trip (v6 F4).
+    if (photoIds && photoIds.length === 0) return [];
     const rows = await this.sql<{ photo_id: string; verdict: FeedbackVerdict }[]>`
       select photo_id, verdict from gallery_feedback where user_id = ${userId} and event_id = ${eventId}
+        ${photoIds ? this.sql`and photo_id = any(${[...photoIds]}::uuid[])` : this.sql``}
     `;
     return rows.map((row) => ({ photoId: row.photo_id, verdict: row.verdict }));
   }
@@ -1675,10 +1684,10 @@ export class PostgresDatabase implements Database {
         ${input.email ? sql`and u.email = ${input.email}` : sql``}
         ${
           cursor
-            ? sql`and (date_trunc('milliseconds', r.created_at), r.id) < (${cursor.createdAt}, ${cursor.id}::uuid)`
+            ? sql`and (date_trunc('milliseconds', r.created_at, 'UTC'), r.id) < (${cursor.createdAt}, ${cursor.id}::uuid)`
             : sql``
         }
-      order by date_trunc('milliseconds', r.created_at) desc, r.id desc
+      order by date_trunc('milliseconds', r.created_at, 'UTC') desc, r.id desc
       limit ${input.limit + 1}
     `;
     const page = rows.slice(0, input.limit);

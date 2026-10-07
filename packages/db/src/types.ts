@@ -439,7 +439,16 @@ export interface Database {
     verdict: FeedbackVerdict;
     scoreAtTime: number | null;
   }): Promise<void>;
-  listFeedback(userId: string, eventId: string): Promise<Array<{ photoId: string; verdict: FeedbackVerdict }>>;
+  /**
+   * `photoIds` restricts the read to the photos of one gallery page; without it the whole
+   * event's feedback for that user is returned. Callers rendering a page must pass the ids —
+   * the gallery route reads this on every request (v6 F4).
+   */
+  listFeedback(
+    userId: string,
+    eventId: string,
+    photoIds?: readonly string[],
+  ): Promise<Array<{ photoId: string; verdict: FeedbackVerdict }>>;
   /** Newest first; `email` narrows to one participant. Reads agent A's match_runs/match_hits (006). */
   listMatchRuns(
     eventId: string,
