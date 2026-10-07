@@ -3,8 +3,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   DownloadVariant,
+  FeedbackVerdict,
   GalleryDownloadResponse,
   GalleryItem,
+  GalleryReason,
   GalleryResponse,
   GalleryStatus,
 } from "@/lib/types";
@@ -19,12 +21,40 @@ const SURE_THRESHOLD = 0.9;
 const ZIP_MAX = 500;
 const QUEUED_POLL_MS = 5_000;
 
-type GroupKey = "sure" | "maybe";
+type GroupKey = "sure" | "maybe" | "hidden";
 
 const groupTitle: Record<GroupKey, string> = {
   sure: "Le tue foto",
   maybe: "Forse sei tu",
+  hidden: "Nascoste",
 };
+
+/** Why the last selfie produced no gallery (v5), in the participant's words. */
+const reasonText: Record<GalleryReason, string> = {
+  no_face: "Nel selfie non si vede un volto",
+  face_too_small: "Avvicinati alla camera",
+  low_quality: "Il selfie è sfocato o troppo scuro",
+  multiple_faces: "Nel selfie ci sono più persone",
+  no_photos_yet: "Non ci sono ancora foto: ti avviseremo",
+  liveness: "Il selfie non è stato accettato",
+};
+
+/** `?debug=1` or `localStorage rephoto.debug = 1`: score and source on every cell (v5). */
+function useDebug(): boolean {
+  const [debug, setDebug] = useState(false);
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const flag = params.get("debug");
+      if (flag === "1") localStorage.setItem("rephoto.debug", "1");
+      if (flag === "0") localStorage.removeItem("rephoto.debug");
+      setDebug(flag === "1" || localStorage.getItem("rephoto.debug") === "1");
+    } catch {
+      setDebug(false);
+    }
+  }, []);
+  return debug;
+}
 
 export function Gallery({ slug }: { slug: string }) {
   return (
@@ -40,9 +70,12 @@ function visitKey(slug: string): string {
 
 function GalleryBody({ slug }: { slug: string }) {
   const toast = useToast();
+  const debug = useDebug();
   const [items, setItems] = useState<GalleryItem[] | null>(null);
   const [total, setTotal] = useState(0);
   const [status, setStatus] = useState<GalleryStatus | null>(null);
+  const [reason, setReason] = useState<GalleryReason | null>(null);
+  const [judging, setJudging] = useState(false);
   const [cursor, setCursor] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -50,7 +83,7 @@ function GalleryBody({ slug }: { slug: string }) {
   const [gate, setGate] = useState<"anon" | "wrong" | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [variant, setVariant] = useState<DownloadVariant>("original");
-  const [collapsed, setCollapsed] = useState<Record<GroupKey, boolean>>({ sure: false, maybe: false });
+  const [collapsed, setCollapsed] = useState<Record<GroupKey, boolean>>({ sure: false, maybe: false, hidden: true });
   const [open, setOpen] = useState<number | null>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
@@ -85,6 +118,7 @@ function GalleryBody({ slug }: { slug: string }) {
       .then((data) => {
         if (cancel) return;
         setStatus(data.status);
+        setReason(data.reason ?? null);
         setTotal(data.total);
         setItems(data.items);
         setCursor(data.nextCursor);
@@ -107,6 +141,7 @@ function GalleryBody({ slug }: { slug: string }) {
           if (stop) return;
           setStatus(data.status);
           if (data.status === "ready") {
+            setReason(data.reason ?? null);
             setTotal(data.total);
             setItems(data.items);
             setCursor(data.nextCursor);
@@ -161,11 +196,45 @@ function GalleryBody({ slug }: { slug: string }) {
   const groups = useMemo(() => {
     const sure: { item: GalleryItem; index: number }[] = [];
     const maybe: { item: GalleryItem; index: number }[] = [];
+    const hidden: { item: GalleryItem; index: number }[] = [];
     (items ?? []).forEach((item, index) => {
-      (item.score >= SURE_THRESHOLD ? sure : maybe).push({ item, index });
+      if (item.feedback === "not_me") hidden.push({ item, index });
+      else (item.score >= SURE_THRESHOLD ? sure : maybe).push({ item, index });
     });
-    return { sure, maybe };
+    return { sure, maybe, hidden };
   }, [items]);
+
+  /** "Non sono io" / "Sono io": one POST per photo; the verdict is kept across re-scans by the server. */
+  const judge = useCallback(
+    async (photoIds: string[], verdict: FeedbackVerdict) => {
+      if (photoIds.length === 0 || judging) return;
+      setJudging(true);
+      let failed = 0;
+      for (const photoId of photoIds) {
+        try {
+          await api(`/v1/events/${slug}/gallery/feedback`, {
+            method: "POST",
+            body: JSON.stringify({ photoId, verdict }),
+          });
+          setItems((current) =>
+            (current ?? []).map((item) => (item.photoId === photoId ? { ...item, feedback: verdict } : item)),
+          );
+        } catch {
+          failed += 1;
+        }
+      }
+      setJudging(false);
+      setSelected((current) => {
+        const next = new Set(current);
+        for (const id of photoIds) next.delete(id);
+        return next;
+      });
+      if (failed > 0) toast("Non siamo riusciti a salvare tutto");
+      else if (verdict === "not_me") toast(photoIds.length === 1 ? "Foto nascosta" : `${photoIds.length} foto nascoste`);
+      else toast("Foto ripristinata");
+    },
+    [judging, slug, toast],
+  );
 
   function toggle(photoId: string) {
     setSelected((current) => {
@@ -241,6 +310,12 @@ function GalleryBody({ slug }: { slug: string }) {
       {items && items.length === 0 ? (
         <div className="empty">
           <h1>{indexingOpen ? "L'indicizzazione è ancora aperta." : "Nessuna corrispondenza."}</h1>
+          {reason && status !== "queued" ? (
+            <p className="reason" role="status">
+              {reasonText[reason]}
+              {reason !== "no_photos_yet" ? " · prova un altro selfie" : ""}
+            </p>
+          ) : null}
         </div>
       ) : null}
 
@@ -249,7 +324,7 @@ function GalleryBody({ slug }: { slug: string }) {
           <h1>Le tue foto</h1>
           <p className="meta">{total === 1 ? "1 foto" : `${total} foto`}</p>
           <div className={count > 0 ? "grid-wrap has-bar" : "grid-wrap"}>
-            {(["sure", "maybe"] as GroupKey[]).map((key) => {
+            {(["sure", "maybe", "hidden"] as GroupKey[]).map((key) => {
               const entries = groups[key];
               if (entries.length === 0) return null;
               const hidden = collapsed[key];
@@ -281,6 +356,7 @@ function GalleryBody({ slug }: { slug: string }) {
                           index={index}
                           fresh={item.source === "attach" && Date.parse(item.createdAt) > lastVisit.current}
                           selected={selected.has(item.photoId)}
+                          debug={debug}
                           onOpen={() => setOpen(index)}
                           onToggle={() => toggle(item.photoId)}
                         />
@@ -340,6 +416,15 @@ function GalleryBody({ slug }: { slug: string }) {
             <button type="button" className="linkish" onClick={() => setSelected(new Set())}>
               Annulla
             </button>
+            <button
+              type="button"
+              className="linkish"
+              disabled={judging}
+              onClick={() => void judge([...selected], "not_me")}
+              title="Nasconde le foto e lo segnala: non verranno riproposte"
+            >
+              {judging ? "Salvo…" : "Non sono io"}
+            </button>
             <button className="button primary" type="button" onClick={downloadZip} disabled={tooMany}>
               Scarica ZIP
             </button>
@@ -366,6 +451,8 @@ function GalleryBody({ slug }: { slug: string }) {
           onIndex={setOpen}
           onClose={() => setOpen(null)}
           onDownload={(item) => downloadOne(slug, item, toast)}
+          onFeedback={(item, verdict) => void judge([item.photoId], verdict)}
+          debug={debug}
         />
       ) : null}
     </>
@@ -399,6 +486,7 @@ function Cell({
   index,
   fresh,
   selected,
+  debug,
   onOpen,
   onToggle,
 }: {
@@ -406,12 +494,13 @@ function Cell({
   index: number;
   fresh: boolean;
   selected: boolean;
+  debug: boolean;
   onOpen: () => void;
   onToggle: () => void;
 }) {
   const [loaded, setLoaded] = useState(false);
   return (
-    <div className="cell" data-selected={selected ? "true" : "false"}>
+    <div className="cell" data-selected={selected ? "true" : "false"} data-feedback={item.feedback ?? "none"}>
       <button type="button" className="cell-hit" onClick={onOpen} aria-label={`Apri foto dell'evento ${index + 1}`}>
         <img
           className={loaded ? "thumb is-in" : "thumb"}
@@ -426,6 +515,11 @@ function Cell({
         />
       </button>
       {fresh ? <span className="badge">Nuova</span> : null}
+      {debug ? (
+        <span className="debug-tag" title={item.photoId}>
+          {item.score.toFixed(2)} · {item.source}
+        </span>
+      ) : null}
       {item.originalReady === false ? (
         <span className="tag-web" title="L'originale non è ancora stato caricato">
           solo web

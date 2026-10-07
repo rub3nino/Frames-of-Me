@@ -1280,3 +1280,720 @@ test("selfie records the liveness field in the audit log and defaults it to file
     ],
   );
 });
+
+// ---- v5 (agent A): gallery reason, admin requeue --------------------------------------------
+
+test("gallery reports the last match reason and null after a successful match", async () => {
+  const h = await harness();
+  const participant = await h.db.createUser({ email: "reason@example.com", role: "participant" });
+  const cookie = await sessionCookie(h.db, participant.id);
+  const read = async () =>
+    galleryResponseSchema.parse(
+      await (
+        await h.app.request(
+          new Request(`http://api.local/v1/events/${h.event.slug}/gallery`, { headers: { cookie } }),
+        )
+      ).json(),
+    );
+  assert.equal((await read()).reason, null, "no gallery yet");
+
+  await h.db.replaceGallery(participant.id, h.event.id, [], []);
+  await h.db.updateGalleryMatch(participant.id, h.event.id, { lastMatchReason: "face_too_small" });
+  let body = await read();
+  assert.equal(body.status, "ready");
+  assert.equal(body.total, 0);
+  assert.equal(body.reason, "face_too_small");
+
+  await h.db.updateGalleryMatch(participant.id, h.event.id, { lastMatchReason: "no_photos_yet", queryEmbedding: [1, 0] });
+  assert.equal((await read()).reason, "no_photos_yet");
+
+  await seedGallery(h, participant.id, 1);
+  await h.db.updateGalleryMatch(participant.id, h.event.id, { lastMatchReason: null });
+  body = await read();
+  assert.equal(body.total, 1);
+  assert.equal(body.reason, null);
+
+  // An unknown value in the column never leaks: it is reported as null.
+  await h.db.updateGalleryMatch(participant.id, h.event.id, { lastMatchReason: "something_else" });
+  assert.equal((await read()).reason, null);
+});
+
+test("admin requeue resets error photos and enqueues derive or index depending on the web derivative", async () => {
+  const h = await harness();
+  const admin = await h.db.findUserByEmailRole("admin@rephoto.local", "admin");
+  assert.ok(admin);
+  const cookie = await sessionCookie(h.db, admin.id);
+  const photographer = await h.db.findUserByEmailRole("photographer@rephoto.local", "photographer");
+  assert.ok(photographer);
+  const audits: Array<{ action: string; meta: Record<string, unknown> }> = [];
+  h.db.insertAudit = async (input) => {
+    audits.push({ action: input.action, meta: input.meta });
+  };
+  const photo = async (status: "error" | "indexed", error: string | null, withWeb: boolean) => {
+    const id = randomUUID();
+    await h.db.insertPhoto({
+      id,
+      eventId: h.event.id,
+      photographerId: photographer.id,
+      sha256: `sha-${id}`,
+      originalKey: objectKeys.original(h.event.id, id),
+      contentType: "image/jpeg",
+      bytes: 10,
+    });
+    if (status === "error") await h.db.setPhotoError(id, error ?? "");
+    else await h.db.setPhotoIndexed(id);
+    if (withWeb) {
+      await h.db.upsertDerivative({ photoId: id, kind: "web", s3Key: objectKeys.web(id) });
+      await h.db.upsertDerivative({ photoId: id, kind: "thumb", s3Key: objectKeys.thumb(id) });
+    }
+    return id;
+  };
+  const noWeb = await photo("error", "Face service answered 503", false);
+  const withWeb = await photo("error", "Face service at http://face unreachable", true);
+  const other = await photo("error", "sha256 mismatch", true);
+  const fine = await photo("indexed", null, true);
+
+  // Only photos whose error matches `errorLike`.
+  const filtered = await h.app.request(
+    json("POST", "/v1/admin/photos/requeue", { eventId: h.event.id, errorLike: "face service" }, { cookie }),
+  );
+  assert.equal(filtered.status, 200);
+  assert.deepEqual(await filtered.json(), { requeued: 2 });
+  assert.equal((await h.db.findPhoto(noWeb))?.status, "uploaded");
+  assert.equal((await h.db.findPhoto(noWeb))?.error, null);
+  assert.equal((await h.db.findPhoto(withWeb))?.status, "processing");
+  assert.equal((await h.db.findPhoto(other))?.status, "error", "not matched by errorLike");
+  assert.equal((await h.db.findPhoto(fine))?.status, "indexed");
+  const claimedTypes: string[] = [];
+  for (;;) {
+    const claimed = await h.db.claimJob();
+    if (!claimed) break;
+    claimedTypes.push(`${claimed.type}:${(claimed.payload as { photoId: string }).photoId}`);
+    await h.db.completeJob(claimed.id);
+  }
+  assert.deepEqual(claimedTypes.sort(), [`derive:${noWeb}`, `index:${withWeb}`].sort());
+  assert.deepEqual(audits, [
+    { action: "photos.requeued", meta: { status: "error", errorLike: "face service", requeued: 2 } },
+  ]);
+
+  // Without a filter every remaining error photo goes back.
+  const all = await h.app.request(json("POST", "/v1/admin/photos/requeue", { eventId: h.event.id }, { cookie }));
+  assert.deepEqual(await all.json(), { requeued: 1 });
+  assert.equal((await h.db.findPhoto(other))?.status, "processing");
+
+  // Validation and authorization.
+  assert.equal((await h.app.request(json("POST", "/v1/admin/photos/requeue", { eventId: "nope" }, { cookie }))).status, 400);
+  assert.equal(
+    (await h.app.request(json("POST", "/v1/admin/photos/requeue", { eventId: h.event.id, status: "indexed" }, { cookie }))).status,
+    400,
+  );
+  assert.equal(
+    (await h.app.request(json("POST", "/v1/admin/photos/requeue", { eventId: h.event.id, extra: 1 }, { cookie }))).status,
+    400,
+  );
+  assert.equal(
+    (await h.app.request(json("POST", "/v1/admin/photos/requeue", { eventId: randomUUID() }, { cookie }))).status,
+    404,
+  );
+  const participant = await h.db.createUser({ email: "p@example.com", role: "participant" });
+  const forbidden = await h.app.request(
+    json("POST", "/v1/admin/photos/requeue", { eventId: h.event.id }, { cookie: await sessionCookie(h.db, participant.id) }),
+  );
+  assert.equal(forbidden.status, 403);
+  assert.equal((await h.app.request(json("POST", "/v1/admin/photos/requeue", { eventId: h.event.id }))).status, 401);
+});
+
+test("deleting a photo drops it from the anchors of every gallery", async () => {
+  const h = await harness();
+  const admin = await h.db.findUserByEmailRole("admin@rephoto.local", "admin");
+  assert.ok(admin);
+  const participant = await h.db.createUser({ email: "anchored@example.com", role: "participant" });
+  const seeded = await seedGallery(h, participant.id, 1);
+  const photoId = seeded[0]!.photoId;
+  await h.db.replaceFaces(photoId, h.event.id, [
+    { externalId: "ext-anchor", bbox: { x: 0, y: 0, width: 1, height: 1 }, confidence: 0.9 },
+  ]);
+  await h.db.replaceGallery(participant.id, h.event.id, [], ["ext-anchor", "ext-other"]);
+  const res = await h.app.request(
+    new Request(`http://api.local/v1/admin/photos/${photoId}`, {
+      method: "DELETE",
+      headers: { cookie: await sessionCookie(h.db, admin.id) },
+    }),
+  );
+  assert.equal(res.status, 204);
+  assert.deepEqual((await h.db.findGalleryByUser(participant.id, h.event.id))?.anchorFaceIds, ["ext-other"]);
+});
+
+// ---- admin and participant tooling v5 (agent D) ------------------------------------------
+
+import {
+  adminEventsResponseSchema,
+  adminGalleriesListResponseSchema,
+  adminGalleryByEmailResponseSchema,
+  adminMagicLinkResponseSchema,
+  adminMatchRunsResponseSchema,
+  adminMetricsResponseSchema,
+  adminNeighboursResponseSchema,
+  adminPhotoDetailResponseSchema,
+  adminPhotosResponseSchema,
+  eventResponseSchema,
+} from "@rephoto/contracts";
+import type { FaceEngine } from "@rephoto/face-engine/types";
+import { bootstrapAdmins } from "../src/bootstrap.ts";
+import { ipMatches, parseIpList } from "../src/net.ts";
+
+async function adminCookie(h: Harness): Promise<string> {
+  const admin = await h.db.findUserByEmailRole("admin@rephoto.local", "admin");
+  assert.ok(admin);
+  return sessionCookie(h.db, admin.id);
+}
+
+async function participantCookie(h: Harness, email: string): Promise<{ id: string; cookie: string }> {
+  const user = await h.db.createUser({ email, role: "participant" });
+  return { id: user.id, cookie: await sessionCookie(h.db, user.id) };
+}
+
+function get(path: string, cookie?: string): Request {
+  return new Request(`http://api.local${path}`, { headers: cookie ? { cookie } : {} });
+}
+
+/** Every admin route answers 401 without a session and 403 to a participant. */
+test("v5 admin routes require an admin session", async () => {
+  const h = await harness();
+  const { cookie } = await participantCookie(h, "p@example.com");
+  const id = randomUUID();
+  const calls: Array<[string, string, unknown?]> = [
+    ["POST", "/v1/admin/events", { slug: "x", name: "X" }],
+    ["GET", "/v1/admin/events"],
+    ["POST", "/v1/admin/magic-links", { email: "a@example.com", role: "participant" }],
+    ["GET", `/v1/admin/galleries?eventId=${h.event.id}`],
+    ["GET", `/v1/admin/photos?eventId=${h.event.id}`],
+    ["GET", `/v1/admin/photos/${id}`],
+    ["GET", `/v1/admin/faces/f/neighbours?eventId=${h.event.id}`],
+    ["POST", `/v1/admin/galleries/${id}/${h.event.id}/rematch`, {}],
+    ["DELETE", `/v1/admin/galleries/${id}/${h.event.id}`],
+    ["POST", `/v1/admin/events/${h.event.id}/reset`, { confirm: "demo" }],
+    ["GET", `/v1/admin/export/galleries.csv?eventId=${h.event.id}`],
+    ["GET", `/v1/admin/export/match-hits.csv?eventId=${h.event.id}`],
+    ["GET", `/v1/admin/export/feedback.csv?eventId=${h.event.id}`],
+    ["GET", `/v1/admin/match-runs?eventId=${h.event.id}`],
+  ];
+  for (const [method, path, body] of calls) {
+    const make = (headers: Record<string, string>) =>
+      body === undefined
+        ? new Request(`http://api.local${path}`, { method, headers })
+        : json(method, path, body, headers);
+    assert.equal((await h.app.request(make({}))).status, 401, `${method} ${path} anon`);
+    assert.equal((await h.app.request(make({ cookie }))).status, 403, `${method} ${path} participant`);
+  }
+});
+
+test("admin creates and lists events with counts", async () => {
+  const h = await harness();
+  const cookie = await adminCookie(h);
+  const created = await h.app.request(
+    json("POST", "/v1/admin/events", { slug: "gara-2026", name: "Gara 2026", retentionDays: 30, access: "list" }, { cookie }),
+  );
+  assert.equal(created.status, 201);
+  const event = eventResponseSchema.parse(await created.json());
+  assert.equal(event.slug, "gara-2026");
+  assert.equal(event.access, "list");
+  assert.equal(event.retentionDays, 30);
+  const duplicate = await h.app.request(
+    json("POST", "/v1/admin/events", { slug: "gara-2026", name: "Again" }, { cookie }),
+  );
+  assert.equal(duplicate.status, 409);
+  const badSlug = await h.app.request(json("POST", "/v1/admin/events", { slug: "Bad Slug", name: "x" }, { cookie }));
+  assert.equal(badSlug.status, 400);
+
+  const { id: participantId } = await participantCookie(h, "p@example.com");
+  await seedGallery(h, participantId, 2);
+  const list = await h.app.request(get("/v1/admin/events", cookie));
+  assert.equal(list.status, 200);
+  const body = adminEventsResponseSchema.parse(await list.json());
+  const demo = body.events.find((row) => row.slug === "demo");
+  assert.ok(demo);
+  assert.equal(demo.photos, 2);
+  assert.equal(demo.galleries, 1);
+  assert.equal(demo.photographers, 1);
+  assert.ok(body.events.some((row) => row.slug === "gara-2026"));
+});
+
+test("admin issues raw magic links, creating staff users and memberships", async () => {
+  const h = await harness();
+  const cookie = await adminCookie(h);
+  const audits: string[] = [];
+  const db: Database = h.db;
+  db.insertAudit = async (input) => {
+    audits.push(input.action);
+  };
+  const res = await h.app.request(
+    json("POST", "/v1/admin/magic-links", { email: "Shooter@example.com", role: "photographer", eventId: h.event.id }, { cookie }),
+  );
+  assert.equal(res.status, 200);
+  const { url } = adminMagicLinkResponseSchema.parse(await res.json());
+  assert.ok(url.startsWith("http://localhost:3000/verifica?token="));
+  assert.equal(h.mailer.sent.length, 0);
+  const shooter = await h.db.findUserByEmailRole("shooter@example.com", "photographer");
+  assert.ok(shooter);
+  assert.equal(await h.db.isEventPhotographer(h.event.id, shooter.id), true);
+  assert.deepEqual(audits, ["magic_link.issued"]);
+
+  // The link works like a mailed one.
+  const verified = await h.app.request(json("POST", "/v1/auth/verify", { token: tokenFromMail(url) }));
+  assert.equal(verified.status, 200);
+
+  // Participants are not pre-created; they appear at verify.
+  const participant = await h.app.request(
+    json("POST", "/v1/admin/magic-links", { email: "guest@example.com", role: "participant" }, { cookie }),
+  );
+  assert.equal(participant.status, 200);
+  assert.equal(await h.db.findUserByEmailRole("guest@example.com", "participant"), null);
+
+  const unknownEvent = await h.app.request(
+    json("POST", "/v1/admin/magic-links", { email: "x@example.com", role: "photographer", eventId: randomUUID() }, { cookie }),
+  );
+  assert.equal(unknownEvent.status, 404);
+});
+
+test("admin reads a gallery by email and the paged list of galleries", async () => {
+  const h = await harness();
+  const cookie = await adminCookie(h);
+  const { id: participantId, cookie: pCookie } = await participantCookie(h, "p@example.com");
+  const photos = await seedGallery(h, participantId, 3);
+  const first = photos[0];
+  assert.ok(first);
+  await h.app.request(
+    json("POST", `/v1/events/${h.event.slug}/gallery/feedback`, { photoId: first.photoId, verdict: "not_me" }, { cookie: pCookie }),
+  );
+
+  const byEmail = await h.app.request(get(`/v1/admin/galleries?eventId=${h.event.id}&email=P@example.com`, cookie));
+  assert.equal(byEmail.status, 200);
+  const body = adminGalleryByEmailResponseSchema.parse(await byEmail.json());
+  assert.equal(body.user.id, participantId);
+  assert.ok(body.gallery);
+  assert.equal(body.gallery.total, 3);
+  assert.deepEqual(body.gallery.anchorFaceIds, ["anchor-1"]);
+  assert.equal(body.items.length, 3);
+  assert.equal(body.items[0]?.photoId, first.photoId);
+  assert.equal(body.items[0]?.feedback, "not_me");
+  assert.equal(body.items[1]?.feedback, null);
+  assert.equal(body.items[0]?.photo.sha256.length, 64);
+
+  const missing = await h.app.request(get(`/v1/admin/galleries?eventId=${h.event.id}&email=nobody@example.com`, cookie));
+  assert.equal(missing.status, 404);
+
+  const other = await participantCookie(h, "q@example.com");
+  await h.db.replaceGallery(other.id, h.event.id, [], []);
+  const page1 = await h.app.request(get(`/v1/admin/galleries?eventId=${h.event.id}&limit=1`, cookie));
+  assert.equal(page1.status, 200);
+  const list1 = adminGalleriesListResponseSchema.parse(await page1.json());
+  assert.equal(list1.galleries.length, 1);
+  assert.ok(list1.nextCursor);
+  const page2 = await h.app.request(
+    get(`/v1/admin/galleries?eventId=${h.event.id}&limit=1&cursor=${encodeURIComponent(list1.nextCursor)}`, cookie),
+  );
+  const list2 = adminGalleriesListResponseSchema.parse(await page2.json());
+  assert.equal(list2.galleries.length, 1);
+  assert.equal(list2.nextCursor, null);
+  const emails = new Set([...list1.galleries, ...list2.galleries].map((row) => row.email));
+  assert.deepEqual([...emails].sort(), ["p@example.com", "q@example.com"]);
+  const p = [...list1.galleries, ...list2.galleries].find((row) => row.email === "p@example.com");
+  assert.equal(p?.total, 3);
+});
+
+test("admin photo detail shows faces, galleries and neighbours with a cosine", async () => {
+  const h = await harness({
+    faces: {
+      async indexPhoto() {
+        return [];
+      },
+      async search() {
+        return [];
+      },
+      async searchFaces(input) {
+        return [
+          { externalFaceId: `${input.externalFaceId}-b`, photoId: randomUUID(), similarity: 90 },
+          { externalFaceId: `${input.externalFaceId}-c`, photoId: randomUUID(), similarity: 100, cosine: 0.91 } as never,
+        ];
+      },
+      async deleteFaces() {},
+      async deleteCollection() {},
+    } satisfies FaceEngine,
+  });
+  const cookie = await adminCookie(h);
+  const { id: participantId } = await participantCookie(h, "p@example.com");
+  const [seeded] = await seedGallery(h, participantId, 1);
+  assert.ok(seeded);
+  await h.db.replaceFaces(seeded.photoId, h.event.id, [
+    { externalId: "face-a", bbox: { x: 0.1, y: 0.2, width: 0.3, height: 0.4 }, confidence: 0.98 },
+  ]);
+  const faceRows = await h.db.findFaceRowsByPhoto(seeded.photoId);
+  const face = faceRows[0];
+  assert.ok(face);
+  await h.db.replaceGallery(participantId, h.event.id, [{ photoId: seeded.photoId, faceId: face.id, score: 0.95 }], ["face-a"]);
+
+  const detail = await h.app.request(get(`/v1/admin/photos/${seeded.photoId}`, cookie));
+  assert.equal(detail.status, 200);
+  const body = adminPhotoDetailResponseSchema.parse(await detail.json());
+  assert.equal(body.photo.id, seeded.photoId);
+  assert.deepEqual(body.faces.map((row) => row.externalId), ["face-a"]);
+  assert.deepEqual(body.faces[0]?.bbox, { x: 0.1, y: 0.2, width: 0.3, height: 0.4 });
+  assert.equal(body.galleries.length, 1);
+  assert.equal(body.galleries[0]?.email, "p@example.com");
+  assert.equal(body.galleries[0]?.score, 0.95);
+  assert.ok(body.webUrl?.includes(objectKeys.web(seeded.photoId)));
+  assert.equal((await h.app.request(get(`/v1/admin/photos/${randomUUID()}`, cookie))).status, 404);
+  assert.equal((await h.app.request(get("/v1/admin/photos/not-a-uuid", cookie))).status, 400);
+
+  const neighbours = await h.app.request(get(`/v1/admin/faces/face-a/neighbours?eventId=${h.event.id}&limit=5`, cookie));
+  assert.equal(neighbours.status, 200);
+  const hits = adminNeighboursResponseSchema.parse(await neighbours.json());
+  assert.equal(hits.length, 2);
+  // The engine's cosine wins; otherwise the inverse of the similarity mapping (80 → MIN, 100 → SURE).
+  assert.equal(hits[0]?.cosine, 0.91);
+  assert.equal(hits[1]?.cosine, Number((env.INSIGHTFACE_MIN_COSINE + 0.5 * (env.INSIGHTFACE_SURE_COSINE - env.INSIGHTFACE_MIN_COSINE)).toFixed(4)));
+  assert.equal((await h.app.request(get(`/v1/admin/faces/unknown/neighbours?eventId=${h.event.id}`, cookie))).status, 404);
+});
+
+test("uploads/init stores filename and tags; admin photo search filters on them", async () => {
+  const h = await harness();
+  const cookie = await adminCookie(h);
+  const photographer = await h.db.findUserByEmailRole("photographer@rephoto.local", "photographer");
+  assert.ok(photographer);
+  const pCookie = await sessionCookie(h.db, photographer.id);
+  const upload = async (filename: string, tags?: string[]) => {
+    const bytes = Buffer.from(`bytes-of-${filename}-${"x".repeat(40)}`);
+    const init = await h.app.request(
+      json(
+        "POST",
+        "/v1/uploads/init",
+        {
+          eventId: h.event.id,
+          filename,
+          contentType: "image/jpeg",
+          sha256: sha256(bytes),
+          bytes: bytes.byteLength,
+          ...(tags ? { tags } : {}),
+        },
+        { cookie: pCookie },
+      ),
+    );
+    assert.equal(init.status, 201);
+    const session = (await init.json()) as { id: string; objectKey: string };
+    await h.objects.put(session.objectKey, bytes, "image/jpeg");
+    const complete = await h.app.request(json("POST", `/v1/uploads/${session.id}/complete`, { parts: [] }, { cookie: pCookie }));
+    assert.equal(complete.status, 201);
+    return ((await complete.json()) as { photoId: string }).photoId;
+  };
+  const a = await upload("IMG_0001.jpg", ["synth", "round-1"]);
+  const b = await upload("IMG_0002.jpg");
+  const c = await upload("DSC_0003.jpg", ["round-1"]);
+
+  const detail = adminPhotoDetailResponseSchema.parse(await (await h.app.request(get(`/v1/admin/photos/${a}`, cookie))).json());
+  assert.equal(detail.photo.filename, "IMG_0001.jpg");
+  assert.deepEqual(detail.photo.tags, ["synth", "round-1"]);
+
+  const byName = adminPhotosResponseSchema.parse(
+    await (await h.app.request(get(`/v1/admin/photos?eventId=${h.event.id}&filename=IMG_`, cookie))).json(),
+  );
+  assert.deepEqual(byName.photos.map((row) => row.id).sort(), [a, b].sort());
+  const byTag = adminPhotosResponseSchema.parse(
+    await (await h.app.request(get(`/v1/admin/photos?eventId=${h.event.id}&tag=synth`, cookie))).json(),
+  );
+  assert.deepEqual(byTag.photos.map((row) => row.id), [a]);
+  const photoB = await h.db.findPhoto(b);
+  assert.ok(photoB);
+  const bySha = adminPhotosResponseSchema.parse(
+    await (await h.app.request(get(`/v1/admin/photos?eventId=${h.event.id}&sha256=${photoB.sha256.slice(0, 10)}`, cookie))).json(),
+  );
+  assert.deepEqual(bySha.photos.map((row) => row.id), [b]);
+  const byStatus = adminPhotosResponseSchema.parse(
+    await (await h.app.request(get(`/v1/admin/photos?eventId=${h.event.id}&status=uploaded&limit=2`, cookie))).json(),
+  );
+  assert.equal(byStatus.photos.length, 2);
+  assert.ok(byStatus.nextCursor);
+  const rest = adminPhotosResponseSchema.parse(
+    await (
+      await h.app.request(get(`/v1/admin/photos?eventId=${h.event.id}&status=uploaded&limit=2&cursor=${encodeURIComponent(byStatus.nextCursor)}`, cookie))
+    ).json(),
+  );
+  assert.equal(rest.photos.length, 1);
+  assert.deepEqual(new Set([...byStatus.photos, ...rest.photos].map((row) => row.id)), new Set([a, b, c]));
+  const tooManyTags = await h.app.request(
+    json(
+      "POST",
+      "/v1/uploads/init",
+      { eventId: h.event.id, filename: "x.jpg", contentType: "image/jpeg", sha256: "a".repeat(64), bytes: 10, tags: Array.from({ length: 21 }, (_, i) => `t${i}`) },
+      { cookie: pCookie },
+    ),
+  );
+  assert.equal(tooManyTags.status, 400);
+});
+
+test("participant feedback is stored, flagged on the gallery and limited to own photos", async () => {
+  const h = await harness();
+  const { id: participantId, cookie } = await participantCookie(h, "p@example.com");
+  const photos = await seedGallery(h, participantId, 3);
+  const [first, second] = photos;
+  assert.ok(first && second);
+  const res = await h.app.request(
+    json("POST", `/v1/events/${h.event.slug}/gallery/feedback`, { photoId: first.photoId, verdict: "not_me" }, { cookie }),
+  );
+  assert.equal(res.status, 201);
+  assert.deepEqual(await res.json(), { photoId: first.photoId, verdict: "not_me" });
+
+  const gallery = await h.app.request(get(`/v1/events/${h.event.slug}/gallery`, cookie));
+  assert.equal(gallery.status, 200);
+  const body = galleryResponseSchema.parse(await gallery.json());
+  assert.equal(body.items.length, 3);
+  assert.equal(body.items.find((item) => item.photoId === first.photoId)?.feedback, "not_me");
+  assert.equal(body.items.find((item) => item.photoId === second.photoId)?.feedback, null);
+
+  // Reversible, and remembered after a re-match (the verdict lives outside gallery_items).
+  await h.app.request(json("POST", `/v1/events/${h.event.slug}/gallery/feedback`, { photoId: first.photoId, verdict: "me" }, { cookie }));
+  await h.app.request(json("POST", `/v1/events/${h.event.slug}/gallery/feedback`, { photoId: second.photoId, verdict: "not_me" }, { cookie }));
+  await h.db.replaceGallery(participantId, h.event.id, photos.map((p) => ({ photoId: p.photoId, faceId: randomUUID(), score: p.score })), []);
+  const again = galleryResponseSchema.parse(await (await h.app.request(get(`/v1/events/${h.event.slug}/gallery`, cookie))).json());
+  assert.equal(again.items.find((item) => item.photoId === first.photoId)?.feedback, "me");
+  assert.equal(again.items.find((item) => item.photoId === second.photoId)?.feedback, "not_me");
+
+  const stranger = await participantCookie(h, "q@example.com");
+  const forbidden = await h.app.request(
+    json("POST", `/v1/events/${h.event.slug}/gallery/feedback`, { photoId: first.photoId, verdict: "not_me" }, { cookie: stranger.cookie }),
+  );
+  assert.equal(forbidden.status, 403);
+  const bad = await h.app.request(json("POST", `/v1/events/${h.event.slug}/gallery/feedback`, { photoId: first.photoId, verdict: "maybe" }, { cookie }));
+  assert.equal(bad.status, 400);
+  assert.equal((await h.app.request(json("POST", `/v1/events/${h.event.slug}/gallery/feedback`, { photoId: first.photoId, verdict: "me" }))).status, 401);
+});
+
+test("rematch needs KEEP_SELFIES and a stored selfie; delete gallery removes it", async () => {
+  const h = await harness();
+  const cookie = await adminCookie(h);
+  const { id: participantId } = await participantCookie(h, "p@example.com");
+  await seedGallery(h, participantId, 1);
+  const path = `/v1/admin/galleries/${participantId}/${h.event.id}`;
+  const off = await h.app.request(new Request(`http://api.local${path}/rematch`, { method: "POST", headers: { cookie } }));
+  assert.equal(off.status, 409);
+  assert.deepEqual(await off.json(), { error: MESSAGES.selfieNotKept });
+
+  const kept = await harness({ env: { ...env, KEEP_SELFIES: true } });
+  const keptCookie = await adminCookie(kept);
+  const { id: keptParticipant } = await participantCookie(kept, "p@example.com");
+  await seedGallery(kept, keptParticipant, 1);
+  const keptPath = `/v1/admin/galleries/${keptParticipant}/${kept.event.id}`;
+  const noKey = await kept.app.request(new Request(`http://api.local${keptPath}/rematch`, { method: "POST", headers: { cookie: keptCookie } }));
+  assert.equal(noKey.status, 409);
+  kept.db.setGallerySelfieKey(keptParticipant, kept.event.id, objectKeys.selfie(kept.event.id, keptParticipant, "kept"));
+  const ok = await kept.app.request(new Request(`http://api.local${keptPath}/rematch`, { method: "POST", headers: { cookie: keptCookie } }));
+  assert.equal(ok.status, 202);
+  const { jobId } = (await ok.json()) as { jobId: string };
+  const job = kept.db.jobView(jobId);
+  assert.equal(job?.status, "queued");
+  assert.equal(await kept.db.countMatchJobsSince(keptParticipant, new Date(0)), 1);
+  const unknown = await kept.app.request(
+    new Request(`http://api.local/v1/admin/galleries/${randomUUID()}/${kept.event.id}/rematch`, { method: "POST", headers: { cookie: keptCookie } }),
+  );
+  assert.equal(unknown.status, 404);
+
+  const deleted = await h.app.request(new Request(`http://api.local${path}`, { method: "DELETE", headers: { cookie } }));
+  assert.equal(deleted.status, 204);
+  assert.equal(await h.db.findGalleryByUser(participantId, h.event.id), null);
+  assert.deepEqual(await h.db.listGallery(participantId, h.event.id), []);
+  const again = await h.app.request(new Request(`http://api.local${path}`, { method: "DELETE", headers: { cookie } }));
+  assert.equal(again.status, 404);
+});
+
+test("event reset needs the slug as confirmation and enqueues one reset job", async () => {
+  const h = await harness();
+  const cookie = await adminCookie(h);
+  const wrong = await h.app.request(json("POST", `/v1/admin/events/${h.event.id}/reset`, { confirm: "other" }, { cookie }));
+  assert.equal(wrong.status, 400);
+  const missing = await h.app.request(json("POST", `/v1/admin/events/${randomUUID()}/reset`, { confirm: "demo" }, { cookie }));
+  assert.equal(missing.status, 404);
+  const ok = await h.app.request(json("POST", `/v1/admin/events/${h.event.id}/reset`, { confirm: "demo" }, { cookie }));
+  assert.equal(ok.status, 202);
+  const { jobId } = (await ok.json()) as { jobId: string };
+  const job = h.db.jobView(jobId);
+  assert.equal(job?.status, "queued");
+  assert.equal(job?.dedupeKey, `reset:${h.event.id}`);
+  const twice = await h.app.request(json("POST", `/v1/admin/events/${h.event.id}/reset`, { confirm: "demo" }, { cookie }));
+  assert.deepEqual(await twice.json(), { jobId });
+  const claimed = await h.db.claimJob();
+  assert.equal(claimed?.type, "reset");
+  assert.deepEqual(claimed?.payload, { eventId: h.event.id, actorId: (await h.db.findUserByEmailRole("admin@rephoto.local", "admin"))?.id });
+});
+
+test("csv exports stream galleries, match hits and feedback", async () => {
+  const h = await harness();
+  const cookie = await adminCookie(h);
+  const { id: participantId, cookie: pCookie } = await participantCookie(h, "p@example.com");
+  const photos = await seedGallery(h, participantId, 2);
+  const [first] = photos;
+  assert.ok(first);
+  await h.app.request(json("POST", `/v1/events/${h.event.slug}/gallery/feedback`, { photoId: first.photoId, verdict: "not_me" }, { cookie: pCookie }));
+  const runId = h.db.addMatchRun(
+    { userId: participantId, eventId: h.event.id, liveness: "challenge", reason: null, selfieSha256: "ab".repeat(32), selfieFaces: 1, engineMs: 120, hits: 2 },
+    [
+      { photoId: first.photoId, externalFaceId: "f1", cosine: 0.72, similarity: 100, kept: true },
+      { photoId: randomUUID(), externalFaceId: "f2", cosine: 0.31, similarity: 0, kept: false },
+    ],
+  );
+
+  const galleries = await h.app.request(get(`/v1/admin/export/galleries.csv?eventId=${h.event.id}`, cookie));
+  assert.equal(galleries.status, 200);
+  assert.ok(galleries.headers.get("content-type")?.startsWith("text/csv"));
+  assert.ok(galleries.headers.get("content-disposition")?.includes('gallerie-demo.csv'));
+  const lines = (await galleries.text()).trim().split("\n");
+  assert.equal(lines[0], "email,user_id,photo_id,sha256,filename,score,source,face_id,created_at,feedback");
+  assert.equal(lines.length, 3);
+  assert.ok(lines[1]?.startsWith(`p@example.com,${participantId},${first.photoId},`));
+  assert.ok(lines[1]?.endsWith(",not_me"));
+  assert.ok(lines[2]?.endsWith(","));
+
+  const hits = await h.app.request(get(`/v1/admin/export/match-hits.csv?eventId=${h.event.id}`, cookie));
+  assert.equal(hits.status, 200);
+  const hitLines = (await hits.text()).trim().split("\n");
+  assert.equal(hitLines[0], "run_id,email,user_id,run_created_at,photo_id,external_face_id,cosine,similarity,kept");
+  assert.equal(hitLines.length, 3);
+  assert.ok(hitLines[1]?.startsWith(`${runId},p@example.com,${participantId},`));
+  assert.ok(hitLines[1]?.endsWith(",f1,0.72,100,true"));
+  assert.ok(hitLines[2]?.endsWith(",f2,0.31,0,false"));
+
+  const feedback = await h.app.request(get(`/v1/admin/export/feedback.csv?eventId=${h.event.id}`, cookie));
+  assert.equal(feedback.status, 200);
+  const feedbackLines = (await feedback.text()).trim().split("\n");
+  assert.equal(feedbackLines[0], "email,user_id,photo_id,sha256,filename,verdict,score_at_time,created_at");
+  assert.equal(feedbackLines.length, 2);
+  assert.ok(feedbackLines[1]?.includes(`,${first.photoId},`));
+  assert.ok(feedbackLines[1]?.includes(`,not_me,${first.score},`));
+
+  assert.equal((await h.app.request(get("/v1/admin/export/galleries.csv", cookie))).status, 400);
+  assert.equal((await h.app.request(get(`/v1/admin/export/galleries.csv?eventId=${randomUUID()}`, cookie))).status, 404);
+
+  const runs = await h.app.request(get(`/v1/admin/match-runs?eventId=${h.event.id}&email=p@example.com`, cookie));
+  assert.equal(runs.status, 200);
+  const runsBody = adminMatchRunsResponseSchema.parse(await runs.json());
+  assert.equal(runsBody.runs.length, 1);
+  assert.equal(runsBody.runs[0]?.id, runId);
+  assert.equal(runsBody.runs[0]?.kept, 1);
+  assert.equal(runsBody.runs[0]?.maxCosine, 0.72);
+  assert.equal(runsBody.runs[0]?.liveness, "challenge");
+  const none = adminMatchRunsResponseSchema.parse(
+    await (await h.app.request(get(`/v1/admin/match-runs?eventId=${h.event.id}&email=nobody@example.com`, cookie))).json(),
+  );
+  assert.equal(none.runs.length, 0);
+});
+
+test("admin metrics carry the queue by type, the oldest age, last errors and the face-service probe", async () => {
+  const h = await harness();
+  const cookie = await adminCookie(h);
+  const queued = await h.db.enqueueJob("derive", { photoId: randomUUID() });
+  h.db.setJobCreatedAt(queued, new Date(Date.now() - 90_000));
+  const failed = await h.db.enqueueJob("index", { photoId: randomUUID() });
+  await h.db.failJobTerminal(failed, "face service down");
+  const res = await h.app.request(get("/v1/admin/metrics", cookie));
+  assert.equal(res.status, 200);
+  const body = adminMetricsResponseSchema.parse(await res.json());
+  assert.deepEqual(body.faceService, { ok: null, ms: null });
+  assert.ok(body.oldestQueuedSeconds !== null && body.oldestQueuedSeconds >= 89);
+  const derive = body.jobsByType.find((row) => row.type === "derive");
+  assert.equal(derive?.queued, 1);
+  const index = body.jobsByType.find((row) => row.type === "index");
+  assert.equal(index?.error, 1);
+  assert.equal(body.lastErrors.length, 1);
+  assert.equal(body.lastErrors[0]?.error, "face service down");
+  assert.equal(body.lastErrors[0]?.type, "index");
+});
+
+test("rate limits come from env and exempt IPs skip them", async () => {
+  const strict = await harness({ env: { ...env, MAGIC_LINK_PER_EMAIL: 1, MAGIC_LINK_PER_IP: 2, RATE_LIMIT_EXEMPT_IPS: "10.20.0.0/16, 2001:db8::1" } });
+  const ask = (h: Harness, email: string, ip: string) =>
+    h.app.request(json("POST", "/v1/auth/request-link", { email, role: "participant" }, { "x-forwarded-for": ip }));
+  assert.equal((await ask(strict, "a@example.com", "198.51.100.7")).status, 202);
+  assert.equal((await ask(strict, "a@example.com", "198.51.100.7")).status, 429);
+  assert.equal((await ask(strict, "b@example.com", "198.51.100.7")).status, 202);
+  assert.equal((await ask(strict, "c@example.com", "198.51.100.7")).status, 429);
+  // The room's NAT (CIDR) and a v6 host are exempt from both limits.
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    assert.equal((await ask(strict, "a@example.com", "10.20.33.44")).status, 202);
+    assert.equal((await ask(strict, "a@example.com", "2001:db8::1")).status, 202);
+  }
+  assert.equal((await ask(strict, "a@example.com", "10.21.0.1")).status, 429);
+
+  const open = await harness({ env: { ...env, MAGIC_LINK_PER_IP: 0, MAGIC_LINK_PER_EMAIL: 0, SELFIE_MAX_PER_HOUR: 0 } });
+  for (let attempt = 0; attempt < 25; attempt += 1) {
+    assert.equal((await ask(open, "same@example.com", "198.51.100.9")).status, 202);
+  }
+  const { id: participantId, cookie } = await participantCookie(open, "live@example.com");
+  await open.db.insertConsent({ userId: participantId, eventId: open.event.id, textVersion: CONSENT_TEXT_VERSION, ip: "127.0.0.1", userAgent: "t" });
+  const selfie = () => {
+    const form = new FormData();
+    form.set("selfie", new File([Buffer.from("not really a jpeg")], "me.jpg", { type: "image/jpeg" }));
+    return open.app.request(new Request(`http://api.local/v1/events/${open.event.slug}/selfie`, { method: "POST", headers: { cookie }, body: form }));
+  };
+  for (let attempt = 0; attempt < 7; attempt += 1) assert.equal((await selfie()).status, 202);
+
+  const two = await harness({ env: { ...env, SELFIE_MAX_PER_HOUR: 2 } });
+  const p2 = await participantCookie(two, "live@example.com");
+  await two.db.insertConsent({ userId: p2.id, eventId: two.event.id, textVersion: CONSENT_TEXT_VERSION, ip: "127.0.0.1", userAgent: "t" });
+  const selfie2 = () => {
+    const form = new FormData();
+    form.set("selfie", new File([Buffer.from("not really a jpeg")], "me.jpg", { type: "image/jpeg" }));
+    return two.app.request(new Request(`http://api.local/v1/events/${two.event.slug}/selfie`, { method: "POST", headers: { cookie: p2.cookie }, body: form }));
+  };
+  assert.equal((await selfie2()).status, 202);
+  assert.equal((await selfie2()).status, 202);
+  assert.equal((await selfie2()).status, 429);
+});
+
+test("env defaults for the v5 limits and the ip matcher", () => {
+  assert.equal(env.MAGIC_LINK_PER_EMAIL, 3);
+  assert.equal(env.MAGIC_LINK_PER_IP, 20);
+  assert.equal(env.SELFIE_MAX_PER_HOUR, 5);
+  assert.equal(env.RATE_LIMIT_EXEMPT_IPS, "");
+  assert.equal(env.BOOTSTRAP_ADMINS, "");
+  assert.deepEqual(parseIpList(" a, ,b ,"), ["a", "b"]);
+  const entries = ["192.0.2.10", "10.0.0.0/8", "2001:db8::/32", "fe80::1"];
+  assert.equal(ipMatches("192.0.2.10", entries), true);
+  assert.equal(ipMatches("192.0.2.11", entries), false);
+  assert.equal(ipMatches("10.255.1.2", entries), true);
+  assert.equal(ipMatches("::ffff:10.1.2.3", entries), true);
+  assert.equal(ipMatches("11.0.0.1", entries), false);
+  assert.equal(ipMatches("2001:db8:1::5", entries), true);
+  assert.equal(ipMatches("2001:db9::5", entries), false);
+  assert.equal(ipMatches("fe80::1", entries), true);
+  assert.equal(ipMatches("unknown", entries), false);
+  assert.equal(ipMatches("10.0.0.1", ["10.0.0.0/33", "garbage"]), false);
+});
+
+test("BOOTSTRAP_ADMINS upserts admins at boot", async () => {
+  const db = new MemoryDatabase();
+  await db.seedDemo();
+  const created = await bootstrapAdmins(db, "Ops@Example.com, admin@rephoto.local,, not-an-email");
+  assert.deepEqual(created, ["ops@example.com", "admin@rephoto.local"]);
+  const ops = await db.findUserByEmailRole("ops@example.com", "admin");
+  assert.ok(ops);
+  const again = await bootstrapAdmins(db, "ops@example.com");
+  assert.deepEqual(again, ["ops@example.com"]);
+  assert.equal((await db.findUserByEmailRole("ops@example.com", "admin"))?.id, ops.id);
+  const parsed = envSchema.parse({
+    DATABASE_URL: "postgres://x",
+    S3_BUCKET: "b",
+    S3_REGION: "eu-central-1",
+    SESSION_SECRET: "test-session-secret-value",
+    FACE_ENGINE: "fake",
+    SMTP_HOST: "localhost",
+    SMTP_PORT: "1025",
+    SMTP_FROM: "noreply@rephoto.local",
+    WEB_ORIGIN: "http://localhost:3000",
+    API_ORIGIN: "http://localhost:8787",
+    BOOTSTRAP_ADMINS: "x@example.com",
+    RATE_LIMIT_EXEMPT_IPS: " 10.0.0.0/8 ",
+    MAGIC_LINK_PER_IP: "0",
+  });
+  assert.equal(parsed.BOOTSTRAP_ADMINS, "x@example.com");
+  assert.equal(parsed.RATE_LIMIT_EXEMPT_IPS, "10.0.0.0/8");
+  assert.equal(parsed.MAGIC_LINK_PER_IP, 0);
+});

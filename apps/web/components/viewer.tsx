@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { GalleryItem } from "@/lib/types";
+import type { FeedbackVerdict, GalleryItem } from "@/lib/types";
 import { useReducedMotion } from "@/lib/motion";
 
 const EASE = "transform 200ms cubic-bezier(0.23, 1, 0.32, 1)";
@@ -12,6 +12,8 @@ export function Viewer({
   onIndex,
   onClose,
   onDownload,
+  onFeedback,
+  debug = false,
 }: {
   items: GalleryItem[];
   index: number;
@@ -19,6 +21,10 @@ export function Viewer({
   onClose: () => void;
   /** Resolves with a fallback URL when the browser blocked the popup, null otherwise. */
   onDownload?: (item: GalleryItem) => Promise<string | null>;
+  /** "Non sono io" / "Sono io" (v5). */
+  onFeedback?: (item: GalleryItem, verdict: FeedbackVerdict) => void;
+  /** Shows score and source under the photo (v5). */
+  debug?: boolean;
 }) {
   const reduced = useReducedMotion();
   const [downloading, setDownloading] = useState(false);
@@ -210,6 +216,7 @@ export function Viewer({
         ) : null}
         <p className="meta">
           {index + 1} di {items.length}
+          {debug ? ` · ${current.score.toFixed(2)} · ${current.source}` : ""}
         </p>
       </div>
       <div
@@ -243,6 +250,15 @@ export function Viewer({
               {downloading ? "Preparo…" : "Scarica"}
             </button>
           )
+        ) : null}
+        {onFeedback ? (
+          <button
+            type="button"
+            className="linkish"
+            onClick={() => onFeedback(current, current.feedback === "not_me" ? "me" : "not_me")}
+          >
+            {current.feedback === "not_me" ? "Sono io" : "Non sono io"}
+          </button>
         ) : null}
         <button
           type="button"

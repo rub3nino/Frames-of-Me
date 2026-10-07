@@ -1,8 +1,9 @@
 "use client";
 
 import { Gallery } from "@/components/gallery";
-import { eventSlug } from "@/lib/event";
+import { useEventSlug } from "@/lib/event";
 
 export default function GalleryPage() {
-  return <Gallery slug={eventSlug} />;
+  const slug = useEventSlug();
+  return <Gallery slug={slug} />;
 }

@@ -5,7 +5,7 @@ import { Gate } from "@/components/require-role";
 import { Progress } from "@/components/progress";
 import { Shell } from "@/components/shell";
 import { ApiError, api } from "@/lib/api";
-import { eventSlug } from "@/lib/event";
+import { loadEventSlug, useEventSlug } from "@/lib/event";
 import { ensurePermission, FolderPickCancelled, isFolderWatchSupported, pickFolder } from "@/lib/folder-watch";
 import { isWebRenderSupported } from "@/lib/image-resize";
 import {
@@ -81,6 +81,7 @@ export default function UploadPage() {
 }
 
 function Uploader() {
+  const eventSlug = useEventSlug();
   const [eventId, setEventId] = useState<string | null>(null);
   const [gate, setGate] = useState<"anon" | "wrong" | null>(null);
   const [bootError, setBootError] = useState<string | null>(null);
@@ -117,7 +118,8 @@ function Uploader() {
 
   useEffect(() => {
     let stop = false;
-    api<EventInfo>(`/v1/events/${eventSlug}`)
+    loadEventSlug()
+      .then((slug) => api<EventInfo>(`/v1/events/${slug}`))
       .then((event) => {
         if (!stop) setEventId(event.id);
       })

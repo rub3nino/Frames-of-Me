@@ -1,17 +1,42 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import type { AdminMetrics, EventAccess, EventInfo, ParticipantsImportResponse } from "@/lib/types";
+import { useCallback, useEffect, useState } from "react";
+import type { AdminEvent, AdminEventsResponse } from "@/lib/types";
 import { RequireRole } from "@/components/require-role";
 import { Shell } from "@/components/shell";
 import { ApiError, api } from "@/lib/api";
-import { eventSlug } from "@/lib/event";
+import { useEventSlug } from "@/lib/event";
+import { EventsSection } from "@/components/admin/events";
+import { LinksSection } from "@/components/admin/links";
+import { GalleriesSection } from "@/components/admin/galleries";
+import { PhotosSection } from "@/components/admin/photos";
+import { StatusSection } from "@/components/admin/status";
+import { ExportSection } from "@/components/admin/export";
+import { ResetSection } from "@/components/admin/reset";
+import { ManageSection } from "@/components/admin/manage";
 
-const IMPORT_MAX = 5000;
+type Section = "eventi" | "link" | "gallerie" | "foto" | "stato" | "esporta" | "gestione" | "reset";
+
+const SECTIONS: Array<{ key: Section; label: string }> = [
+  { key: "stato", label: "Stato" },
+  { key: "eventi", label: "Eventi" },
+  { key: "link", label: "Link di accesso" },
+  { key: "gallerie", label: "Gallerie" },
+  { key: "foto", label: "Foto" },
+  { key: "esporta", label: "Esporta" },
+  { key: "gestione", label: "Gestione" },
+  { key: "reset", label: "Reset" },
+];
+
+function readHash(): Section {
+  if (typeof window === "undefined") return "stato";
+  const raw = window.location.hash.replace(/^#/, "");
+  return SECTIONS.some((section) => section.key === raw) ? (raw as Section) : "stato";
+}
 
 export default function AdminPage() {
   return (
-    <Shell signOut>
+    <Shell wide signOut>
       <RequireRole role="admin" probe="/v1/admin/metrics">
         <AdminHome />
       </RequireRole>
@@ -19,454 +44,98 @@ export default function AdminPage() {
   );
 }
 
+/**
+ * Admin console (v5). Every section works on the selected event, which defaults to the
+ * runtime slug (`/api/config`) and can be switched from the Eventi section.
+ */
 function AdminHome() {
-  const [metrics, setMetrics] = useState<AdminMetrics | null>(null);
-  const [metricsError, setMetricsError] = useState<string | null>(null);
+  const runtimeSlug = useEventSlug();
+  const [section, setSection] = useState<Section>("stato");
+  const [events, setEvents] = useState<AdminEvent[] | null>(null);
+  const [eventsError, setEventsError] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
-  const [email, setEmail] = useState("");
-  const [slug, setSlug] = useState(eventSlug);
-  const [inviteState, setInviteState] = useState<string | null>(null);
-  const [inviteError, setInviteError] = useState<string | null>(null);
-  const [invitePending, setInvitePending] = useState(false);
-  const [photoId, setPhotoId] = useState("");
-  const [deleteState, setDeleteState] = useState<string | null>(null);
-  const [deleteError, setDeleteError] = useState<string | null>(null);
-  const [deletePending, setDeletePending] = useState(false);
-  const [participantId, setParticipantId] = useState("");
-  const [participantState, setParticipantState] = useState<string | null>(null);
-  const [participantError, setParticipantError] = useState<string | null>(null);
-  const [participantPending, setParticipantPending] = useState(false);
+
+  useEffect(() => {
+    setSection(readHash());
+    const onHash = () => setSection(readHash());
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
 
   useEffect(() => {
     let cancel = false;
-    api<AdminMetrics>("/v1/admin/metrics")
+    api<AdminEventsResponse>("/v1/admin/events")
       .then((data) => {
-        if (!cancel) {
-          setMetrics(data);
-          setMetricsError(null);
-        }
+        if (cancel) return;
+        setEvents(data.events);
+        setEventsError(null);
       })
       .catch((cause: unknown) => {
-        if (!cancel) {
-          setMetricsError(cause instanceof ApiError ? cause.message : "Non riusciamo a leggere i numeri.");
-        }
+        if (!cancel) setEventsError(cause instanceof ApiError ? cause.message : "Non riusciamo a leggere gli eventi.");
       });
     return () => {
       cancel = true;
     };
   }, [attempt]);
 
-  async function invite(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setInvitePending(true);
-    setInviteError(null);
-    setInviteState(null);
-    try {
-      const event = await api<EventInfo>(`/v1/events/${slug.trim()}`);
-      await api("/v1/admin/photographers/invite", {
-        method: "POST",
-        body: JSON.stringify({ email: email.trim(), eventId: event.id }),
-      });
-      setInviteState("Invito inviato.");
-      setEmail("");
-    } catch (cause) {
-      setInviteError(cause instanceof ApiError ? cause.message : "Invito non riuscito.");
-    } finally {
-      setInvitePending(false);
-    }
-  }
+  const selected =
+    events?.find((event) => event.id === selectedId) ??
+    events?.find((event) => event.slug === runtimeSlug) ??
+    events?.[0] ??
+    null;
 
-  async function remove(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const id = photoId.trim();
-    if (!id) {
-      setDeleteError("Inserisci l'identificativo.");
-      return;
-    }
-    setDeletePending(true);
-    setDeleteError(null);
-    setDeleteState(null);
-    try {
-      await api(`/v1/admin/photos/${id}`, { method: "DELETE" });
-      setDeleteState("Foto eliminata.");
-      setPhotoId("");
-      setAttempt((value) => value + 1);
-    } catch (cause) {
-      setDeleteError(cause instanceof ApiError ? cause.message : "Eliminazione non riuscita.");
-    } finally {
-      setDeletePending(false);
-    }
-  }
+  const refresh = useCallback(() => setAttempt((value) => value + 1), []);
 
-  async function removeParticipant(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const id = participantId.trim();
-    if (!id) {
-      setParticipantError("Inserisci l'identificativo.");
-      return;
-    }
-    setParticipantPending(true);
-    setParticipantError(null);
-    setParticipantState(null);
-    try {
-      await api(`/v1/admin/participants/${id}`, { method: "DELETE" });
-      setParticipantState("Partecipante eliminato.");
-      setParticipantId("");
-      setAttempt((value) => value + 1);
-    } catch (cause) {
-      setParticipantError(cause instanceof ApiError ? cause.message : "Eliminazione non riuscita.");
-    } finally {
-      setParticipantPending(false);
-    }
+  function go(next: Section) {
+    setSection(next);
+    window.history.replaceState(null, "", `#${next}`);
   }
 
   return (
-    <div>
-      <h1>Amministrazione</h1>
-      {metricsError ? (
-        <div>
-          <p className="alert" role="alert">
-            {metricsError}
-          </p>
-          <button className="button quiet" type="button" onClick={() => setAttempt((value) => value + 1)}>
-            Riprova
-          </button>
-        </div>
-      ) : (
-        <dl className="metrics">
-          <div>
-            <dt>Eventi</dt>
-            <dd>{metrics ? metrics.events : "…"}</dd>
-          </div>
-          <div>
-            <dt>Foto</dt>
-            <dd>{metrics ? metrics.photos : "…"}</dd>
-          </div>
-          <div>
-            <dt>Foto ricevute</dt>
-            <dd>{metrics ? metrics.photosByStatus.uploaded : "…"}</dd>
-          </div>
-          <div>
-            <dt>Foto in elaborazione</dt>
-            <dd>{metrics ? metrics.photosByStatus.processing : "…"}</dd>
-          </div>
-          <div>
-            <dt>Foto indicizzate</dt>
-            <dd>{metrics ? metrics.photosByStatus.indexed : "…"}</dd>
-          </div>
-          <div>
-            <dt>Foto con errori</dt>
-            <dd>{metrics ? metrics.photosByStatus.error : "…"}</dd>
-          </div>
-          <div>
-            <dt>Volti</dt>
-            <dd>{metrics ? metrics.faces : "…"}</dd>
-          </div>
-          <div>
-            <dt>Utenti</dt>
-            <dd>{metrics ? metrics.users : "…"}</dd>
-          </div>
-          <div>
-            <dt>Gallerie</dt>
-            <dd>{metrics ? metrics.galleries : "…"}</dd>
-          </div>
-          <div>
-            <dt>Lavori in coda</dt>
-            <dd>{metrics ? metrics.jobsQueued : "…"}</dd>
-          </div>
-          <div>
-            <dt>Lavori in corso</dt>
-            <dd>{metrics ? metrics.jobsRunning : "…"}</dd>
-          </div>
-          <div>
-            <dt>Lavori in errore</dt>
-            <dd>{metrics ? metrics.jobsError : "…"}</dd>
-          </div>
-        </dl>
-      )}
-
-      <EventAccessPanel />
-
-      <section className="block">
-        <h2>Invita un fotografo</h2>
-        <form onSubmit={(event) => void invite(event)}>
-          <label>
-            Email
-            <input
-              type="email"
-              autoComplete="email"
-              required
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-            />
-          </label>
-          <label>
-            Evento
-            <input
-              type="text"
-              required
-              value={slug}
-              spellCheck={false}
-              onChange={(event) => setSlug(event.target.value)}
-            />
-          </label>
-          {inviteError ? (
-            <p className="alert" role="alert">
-              {inviteError}
-            </p>
-          ) : null}
-          {inviteState ? <p role="status">{inviteState}</p> : null}
-          <div className="actions inline">
-            <button className="button primary" type="submit" disabled={invitePending}>
-              {invitePending ? "Invio…" : "Invia l'invito"}
-            </button>
-          </div>
-        </form>
-      </section>
-
-      <ParticipantsImport />
-
-      <section className="block">
-        <h2>Elimina una foto</h2>
-        <form onSubmit={(event) => void remove(event)}>
-          <label>
-            Identificativo della foto
-            <input
-              type="text"
-              value={photoId}
-              spellCheck={false}
-              autoComplete="off"
-              onChange={(event) => setPhotoId(event.target.value)}
-            />
-          </label>
-          {deleteError ? (
-            <p className="alert" role="alert">
-              {deleteError}
-            </p>
-          ) : null}
-          {deleteState ? <p role="status">{deleteState}</p> : null}
-          <div className="actions inline">
-            <button className="button quiet" type="submit" disabled={deletePending}>
-              {deletePending ? "Elimino…" : "Elimina"}
-            </button>
-          </div>
-        </form>
-      </section>
-
-      <section className="block">
-        <h2>Elimina un partecipante</h2>
-        <form onSubmit={(event) => void removeParticipant(event)}>
-          <label>
-            Identificativo del partecipante
-            <input
-              type="text"
-              value={participantId}
-              spellCheck={false}
-              autoComplete="off"
-              onChange={(event) => setParticipantId(event.target.value)}
-            />
-          </label>
-          {participantError ? (
-            <p className="alert" role="alert">
-              {participantError}
-            </p>
-          ) : null}
-          {participantState ? <p role="status">{participantState}</p> : null}
-          <div className="actions inline">
-            <button className="button quiet" type="submit" disabled={participantPending}>
-              {participantPending ? "Elimino…" : "Elimina"}
-            </button>
-          </div>
-        </form>
-      </section>
-    </div>
-  );
-}
-
-/** Loads the event by slug and lets the admin switch between open access and the participant list. */
-function EventAccessPanel() {
-  const [slug, setSlug] = useState(eventSlug);
-  const [event, setEvent] = useState<EventInfo | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [pending, setPending] = useState(false);
-  const [state, setState] = useState<string | null>(null);
-
-  async function load(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    setPending(true);
-    setError(null);
-    setState(null);
-    try {
-      setEvent(await api<EventInfo>(`/v1/events/${slug.trim()}`));
-    } catch (cause) {
-      setEvent(null);
-      setError(cause instanceof ApiError ? cause.message : "Evento non trovato.");
-    } finally {
-      setPending(false);
-    }
-  }
-
-  async function setAccess(access: EventAccess) {
-    if (!event || event.access === access) return;
-    setPending(true);
-    setError(null);
-    setState(null);
-    try {
-      const updated = await api<EventInfo>(`/v1/admin/events/${event.id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ access }),
-      });
-      setEvent(updated);
-      setState(access === "list" ? "Accesso limitato alla lista." : "Accesso aperto a tutti.");
-    } catch (cause) {
-      setError(cause instanceof ApiError ? cause.message : "Modifica non riuscita.");
-    } finally {
-      setPending(false);
-    }
-  }
-
-  return (
-    <section className="block">
-      <h2>Accesso all&apos;evento</h2>
-      <form onSubmit={(e) => void load(e)}>
-        <label>
-          Evento
-          <input
-            type="text"
-            required
-            value={slug}
-            spellCheck={false}
-            onChange={(e) => setSlug(e.target.value)}
-          />
-        </label>
-        <div className="actions inline">
-          <button className="button quiet" type="submit" disabled={pending}>
-            {pending && !event ? "Carico…" : "Carica l'evento"}
-          </button>
-        </div>
-      </form>
-      {event ? (
-        <div className="access">
-          <p className="note">
-            {event.name} · conservazione {event.retentionDays} giorni
-          </p>
-          <div className="segmented" role="radiogroup" aria-label="Accesso">
-            <button
-              type="button"
-              role="radio"
-              aria-checked={event.access === "open"}
-              disabled={pending}
-              onClick={() => void setAccess("open")}
-            >
-              Aperto
-            </button>
-            <button
-              type="button"
-              role="radio"
-              aria-checked={event.access === "list"}
-              disabled={pending}
-              onClick={() => void setAccess("list")}
-            >
-              Solo lista
-            </button>
-          </div>
-          <p className="fine">
-            {event.access === "list"
-              ? "Possono cercarsi solo le email importate nella lista."
-              : "Chiunque con un link di accesso può cercarsi."}
-          </p>
-        </div>
-      ) : null}
-      {error ? (
-        <p className="alert" role="alert">
-          {error}
-        </p>
-      ) : null}
-      {state ? <p role="status">{state}</p> : null}
-    </section>
-  );
-}
-
-function parseEmails(raw: string): string[] {
-  const seen = new Set<string>();
-  for (const line of raw.split(/[\n,;]+/)) {
-    const value = line.trim().toLowerCase();
-    if (value) seen.add(value);
-  }
-  return [...seen];
-}
-
-function ParticipantsImport() {
-  const [slug, setSlug] = useState(eventSlug);
-  const [raw, setRaw] = useState("");
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [state, setState] = useState<string | null>(null);
-
-  const emails = parseEmails(raw);
-  const tooMany = emails.length > IMPORT_MAX;
-
-  async function submit(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    if (emails.length === 0 || tooMany) return;
-    setPending(true);
-    setError(null);
-    setState(null);
-    try {
-      const event = await api<EventInfo>(`/v1/events/${slug.trim()}`);
-      const data = await api<ParticipantsImportResponse>("/v1/admin/participants/import", {
-        method: "POST",
-        body: JSON.stringify({ eventId: event.id, emails }),
-      });
-      setState(data.inserted === 1 ? "1 indirizzo aggiunto." : `${data.inserted} indirizzi aggiunti.`);
-      setRaw("");
-    } catch (cause) {
-      setError(cause instanceof ApiError ? cause.message : "Importazione non riuscita.");
-    } finally {
-      setPending(false);
-    }
-  }
-
-  return (
-    <section className="block">
-      <h2>Importa i partecipanti</h2>
-      <form onSubmit={(e) => void submit(e)}>
-        <label>
-          Evento
-          <input
-            type="text"
-            required
-            value={slug}
-            spellCheck={false}
-            onChange={(e) => setSlug(e.target.value)}
-          />
-        </label>
-        <label>
-          Email, una per riga
-          <textarea
-            rows={8}
-            value={raw}
-            spellCheck={false}
-            autoComplete="off"
-            onChange={(e) => setRaw(e.target.value)}
-          />
-        </label>
+    <div className="admin">
+      <div className="admin-head">
+        <h1>Amministrazione</h1>
         <p className="meta">
-          {emails.length === 1 ? "1 indirizzo" : `${emails.length} indirizzi`}
-          {tooMany ? ` · massimo ${IMPORT_MAX}` : ""}
+          {selected ? (
+            <>
+              Evento <code>{selected.slug}</code> · {selected.name}
+            </>
+          ) : (
+            "Nessun evento selezionato"
+          )}
         </p>
-        {error ? (
-          <p className="alert" role="alert">
-            {error}
-          </p>
-        ) : null}
-        {state ? <p role="status">{state}</p> : null}
-        <div className="actions inline">
-          <button className="button primary" type="submit" disabled={pending || emails.length === 0 || tooMany}>
-            {pending ? "Importo…" : "Importa"}
+      </div>
+      <nav className="tabs" aria-label="Sezioni">
+        {SECTIONS.map((item) => (
+          <button
+            key={item.key}
+            type="button"
+            className="tab"
+            aria-current={section === item.key ? "page" : undefined}
+            onClick={() => go(item.key)}
+          >
+            {item.label}
           </button>
-        </div>
-      </form>
-    </section>
+        ))}
+      </nav>
+
+      {section === "stato" ? <StatusSection /> : null}
+      {section === "eventi" ? (
+        <EventsSection
+          events={events}
+          selected={selected}
+          error={eventsError}
+          onSelect={(event) => setSelectedId(event.id)}
+          onCreated={refresh}
+        />
+      ) : null}
+      {section === "link" ? <LinksSection event={selected} /> : null}
+      {section === "gallerie" ? <GalleriesSection event={selected} /> : null}
+      {section === "foto" ? <PhotosSection event={selected} /> : null}
+      {section === "esporta" ? <ExportSection event={selected} /> : null}
+      {section === "gestione" ? <ManageSection event={selected} onChanged={refresh} /> : null}
+      {section === "reset" ? <ResetSection event={selected} onDone={refresh} /> : null}
+    </div>
   );
 }

@@ -7,12 +7,22 @@ import { stream } from "hono/streaming";
 import {
   jobDedupeKey,
   acceptInviteBodySchema,
+  adminEventCreateBodySchema,
+  adminExportQuerySchema,
+  adminGalleriesQuerySchema,
+  adminMagicLinkBodySchema,
+  adminMatchRunsQuerySchema,
+  adminNeighboursQuerySchema,
+  adminPhotosQuerySchema,
+  adminResetBodySchema,
+  galleryFeedbackBodySchema,
   consentBodySchema,
   decodeGalleryCursor,
   encodeGalleryCursor,
   eventPatchBodySchema,
   galleryDownloadBodySchema,
   galleryQuerySchema,
+  galleryReasonSchema,
   galleryZipBodySchema,
   invitePhotographerBodySchema,
   MAGIC_LINK_RATE_LIMIT,
@@ -37,7 +47,14 @@ import {
   type Role,
   type SelfieLiveness,
 } from "@rephoto/contracts";
-import { DuplicateKeyError, type EventRow, type PhotoRow, type UserRow } from "@rephoto/db";
+import {
+  DuplicateKeyError,
+  type EventRow,
+  type EventWithCounts,
+  type PhotoAdminRow,
+  type PhotoRow,
+  type UserRow,
+} from "@rephoto/db";
 import { newToken, sha256Hex } from "./crypto.js";
 import type { AppDeps, AppEnv } from "./deps.js";
 import { ApiError, MESSAGES } from "./errors.js";
@@ -50,6 +67,7 @@ import {
   since,
   webOrigin,
 } from "./http.js";
+import { ipMatches, parseIpList } from "./net.js";
 import { purgePhoto } from "./purge.js";
 
 const UUID =
@@ -74,14 +92,19 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const email = body.data.email.toLowerCase();
     const role = body.data.role;
     const ip = c.get("ip");
-    const windowStart = since(MAGIC_LINK_RATE_LIMIT.windowSeconds);
-    const byEmail = await deps.db.countMagicLinksSince({ email, since: windowStart });
-    if (byEmail >= MAGIC_LINK_RATE_LIMIT.perEmail) {
-      throw new ApiError(429, MESSAGES.rateLimited);
-    }
-    const byIp = await deps.db.countMagicLinksSince({ ip, since: windowStart });
-    if (byIp >= MAGIC_LINK_RATE_LIMIT.perIp) {
-      throw new ApiError(429, MESSAGES.rateLimited);
+    // v5: limits from env (0 = off for the per-ip one); exempt IPs/CIDRs skip both.
+    if (!rateLimitExempt(deps, ip)) {
+      const windowStart = since(MAGIC_LINK_RATE_LIMIT.windowSeconds);
+      const perEmail = deps.env.MAGIC_LINK_PER_EMAIL;
+      if (perEmail > 0) {
+        const byEmail = await deps.db.countMagicLinksSince({ email, since: windowStart });
+        if (byEmail >= perEmail) throw new ApiError(429, MESSAGES.rateLimited);
+      }
+      const perIp = deps.env.MAGIC_LINK_PER_IP;
+      if (perIp > 0) {
+        const byIp = await deps.db.countMagicLinksSince({ ip, since: windowStart });
+        if (byIp >= perIp) throw new ApiError(429, MESSAGES.rateLimited);
+      }
     }
     const allowed =
       role === "participant" ||
@@ -170,12 +193,13 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     if (!(await deps.db.hasActiveConsent(user.id, event.id))) {
       throw new ApiError(403, MESSAGES.consentRequired);
     }
-    const recent = await deps.db.countMatchJobsSince(
-      user.id,
-      since(SELFIE_RATE_LIMIT.windowSeconds),
-    );
-    if (recent >= SELFIE_RATE_LIMIT.max) {
-      throw new ApiError(429, MESSAGES.rateLimited);
+    const selfieMax = deps.env.SELFIE_MAX_PER_HOUR;
+    if (selfieMax > 0 && !rateLimitExempt(deps, c.get("ip"))) {
+      const recent = await deps.db.countMatchJobsSince(
+        user.id,
+        since(SELFIE_RATE_LIMIT.windowSeconds),
+      );
+      if (recent >= selfieMax) throw new ApiError(429, MESSAGES.rateLimited);
     }
     const image = await readSelfie(c);
     const key = objectKeys.selfie(event.id, user.id, randomUUID());
@@ -206,12 +230,15 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const cursor = query.data.cursor ? decodeGalleryCursor(query.data.cursor) : undefined;
     if (cursor === null) throw new ApiError(400, MESSAGES.validation);
     const limit = query.data.limit;
-    const [latest, gallery, page] = await Promise.all([
+    const [latest, gallery, page, feedbackRows] = await Promise.all([
       deps.db.latestMatchJob(user.id, event.id),
       deps.db.findGalleryByUser(user.id, event.id),
       deps.db.listGalleryPage(user.id, event.id, { limit, ...(cursor ? { cursor } : {}) }),
+      deps.db.listFeedback(user.id, event.id),
     ]);
     const status = galleryStatus(latest?.status ?? null, gallery !== null, page.total);
+    // v5 (D): `not_me` items stay in the page with the flag; the web hides them under "Nascoste".
+    const feedbackByPhoto = new Map(feedbackRows.map((row) => [row.photoId, row.verdict]));
     const items = [];
     for (const row of page.items) {
       items.push({
@@ -222,6 +249,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
         source: row.source,
         createdAt: row.createdAt.toISOString(),
         originalReady: row.originalReady,
+        feedback: feedbackByPhoto.get(row.photoId) ?? null,
       });
     }
     const last = page.items[page.items.length - 1];
@@ -229,7 +257,15 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       page.items.length === limit && last
         ? encodeGalleryCursor({ score: last.score, photoId: last.photoId })
         : null;
-    return c.json({ status, total: page.total, items, nextCursor });
+    // v5: why the last match left the gallery empty (null after a successful match).
+    const reason = galleryReasonSchema.safeParse(gallery?.reason ?? null);
+    return c.json({
+      status,
+      total: page.total,
+      items,
+      nextCursor,
+      reason: reason.success ? reason.data : null,
+    });
   });
 
   app.post("/v1/events/:slug/gallery/download", async (c) => {
@@ -343,6 +379,8 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
         stage: "web",
         originalContentType: input.originalContentType,
         originalBytes: input.originalBytes,
+        filename: input.filename,
+        tags: input.tags ?? [],
       });
       return c.json(
         {
@@ -389,6 +427,8 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       bytes: input.bytes,
       stage: "original",
       photoId,
+      filename: input.filename,
+      tags: input.tags ?? [],
     });
     if (multipart) {
       return c.json(
@@ -499,6 +539,8 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
         contentType: web ? session.originalContentType ?? session.contentType : session.contentType,
         bytes: web ? session.originalBytes ?? stored.bytes : stored.bytes,
         originalStatus: web ? "pending" : "present",
+        filename: session.filename,
+        tags: session.tags,
       });
     } catch (error) {
       if (!(error instanceof DuplicateKeyError)) throw error;
@@ -573,7 +615,23 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
   app.get("/v1/admin/metrics", async (c) => {
     const user = requireUser(c);
     requireRole(user, ["admin"]);
-    return c.json(await deps.db.metrics());
+    const [base, extras, faceService] = await Promise.all([
+      deps.db.metrics(),
+      deps.db.metricsExtras(),
+      probeFaceService(deps),
+    ]);
+    return c.json({
+      ...base,
+      jobsByType: extras.jobsByType,
+      oldestQueuedSeconds: extras.oldestQueuedSeconds,
+      lastErrors: extras.lastErrors.map((row) => ({
+        id: row.id,
+        type: row.type,
+        error: row.error,
+        at: row.at.toISOString(),
+      })),
+      faceService,
+    });
   });
 
   app.post("/v1/admin/photographers/invite", async (c) => {
@@ -668,6 +726,536 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     });
     return c.json({ jobId }, 202);
   });
+
+  // ---- v5 (agent A): put photos that failed (face service outage, bad batch) back in the pipeline.
+  app.post("/v1/admin/photos/requeue", async (c) => {
+    const actor = requireUser(c);
+    requireRole(actor, ["admin"]);
+    const body = parseRequeueBody(await readJson(c));
+    const event = await deps.db.findEventById(body.eventId);
+    if (!event) throw new ApiError(404, MESSAGES.notFound);
+    const photos = await deps.db.resetPhotosForRequeue({
+      eventId: event.id,
+      status: body.status,
+      ...(body.errorLike === undefined ? {} : { errorLike: body.errorLike }),
+    });
+    for (const photo of photos) {
+      const type = photo.webReady ? "index" : "derive";
+      const payload = { photoId: photo.id };
+      await deps.queue.enqueue(type, payload, {
+        dedupeKey: jobDedupeKey(type, payload) ?? undefined,
+      });
+    }
+    await deps.db.insertAudit({
+      actorId: actor.id,
+      action: "photos.requeued",
+      target: `event:${event.id}`,
+      meta: { status: body.status, errorLike: body.errorLike ?? null, requeued: photos.length },
+    });
+    return c.json({ requeued: photos.length });
+  });
+
+  // ---- admin and participant tooling v5 (agent D) ----------------------------------------
+
+  app.post("/v1/admin/events", async (c) => {
+    const actor = requireUser(c);
+    requireRole(actor, ["admin"]);
+    const body = adminEventCreateBodySchema.safeParse(await readJson(c));
+    if (!body.success) throw new ApiError(400, MESSAGES.validation);
+    let event: EventRow;
+    try {
+      event = await deps.db.createEvent(body.data);
+    } catch (error) {
+      if (error instanceof DuplicateKeyError) throw new ApiError(409, MESSAGES.conflict);
+      throw error;
+    }
+    await deps.db.insertAudit({
+      actorId: actor.id,
+      action: "event.created",
+      target: `event:${event.id}`,
+      meta: { slug: event.slug },
+    });
+    return c.json(publicEvent(event), 201);
+  });
+
+  app.get("/v1/admin/events", async (c) => {
+    const actor = requireUser(c);
+    requireRole(actor, ["admin"]);
+    const events = await deps.db.listEventsWithCounts();
+    return c.json({ events: events.map(adminEvent) });
+  });
+
+  app.post("/v1/admin/magic-links", async (c) => {
+    const actor = requireUser(c);
+    requireRole(actor, ["admin"]);
+    const body = adminMagicLinkBodySchema.safeParse(await readJson(c));
+    if (!body.success) throw new ApiError(400, MESSAGES.validation);
+    const email = body.data.email.toLowerCase();
+    const role = body.data.role;
+    let eventId: string | null = null;
+    if (body.data.eventId) {
+      const event = await deps.db.findEventById(body.data.eventId);
+      if (!event) throw new ApiError(404, MESSAGES.notFound);
+      eventId = event.id;
+    }
+    // verify creates participants on the fly; staff must exist before the link is used.
+    if (role !== "participant") {
+      const user = await deps.db.insertUser(email, role);
+      if (role === "photographer" && eventId) await deps.db.addEventPhotographer(eventId, user.id);
+    }
+    const token = newToken();
+    await deps.db.insertMagicLink({
+      email,
+      role,
+      tokenHash: sha256Hex(token),
+      expiresAt: new Date(Date.now() + MAGIC_LINK_TTL_SECONDS * 1000),
+      ip: null,
+    });
+    await deps.db.insertAudit({
+      actorId: actor.id,
+      action: "magic_link.issued",
+      target: `user:${email}`,
+      meta: { role, eventId },
+    });
+    return c.json({ url: `${webOrigin(deps.env)}/verifica?token=${encodeURIComponent(token)}` });
+  });
+
+  app.get("/v1/admin/galleries", async (c) => {
+    const actor = requireUser(c);
+    requireRole(actor, ["admin"]);
+    const query = adminGalleriesQuerySchema.safeParse(c.req.query());
+    if (!query.success) throw new ApiError(400, MESSAGES.validation);
+    const event = await deps.db.findEventById(query.data.eventId);
+    if (!event) throw new ApiError(404, MESSAGES.notFound);
+    if (query.data.email) {
+      const found = await deps.db.findGalleryWithItemsByEmail(event.id, query.data.email.toLowerCase());
+      if (!found) throw new ApiError(404, MESSAGES.notFound);
+      const items = [];
+      for (const row of found.items) {
+        items.push({
+          photoId: row.photoId,
+          faceId: row.faceId,
+          thumbUrl: await presignOrPlaceholder(deps, row.thumbKey),
+          webUrl: await presignOrPlaceholder(deps, row.webKey),
+          score: row.score,
+          source: row.source,
+          createdAt: row.createdAt.toISOString(),
+          originalReady: row.originalReady,
+          feedback: row.feedback,
+          photo: { sha256: row.sha256, filename: row.filename },
+        });
+      }
+      return c.json({
+        user: publicUser(found.user),
+        gallery: found.gallery
+          ? {
+              id: found.gallery.id,
+              matchedAt: found.gallery.matchedAt?.toISOString() ?? null,
+              anchorFaceIds: found.gallery.anchorFaceIds,
+              reason: found.gallery.reason,
+              total: found.gallery.total,
+            }
+          : null,
+        items,
+      });
+    }
+    const cursor = query.data.cursor ? decodeUploadCursor(query.data.cursor) : undefined;
+    if (cursor === null) throw new ApiError(400, MESSAGES.validation);
+    const page = await deps.db.listGalleriesPage(event.id, {
+      limit: query.data.limit,
+      ...(cursor ? { cursor: { matchedAt: cursor.createdAt, userId: cursor.id } } : {}),
+    });
+    return c.json({
+      galleries: page.galleries.map((row) => ({
+        userId: row.userId,
+        email: row.email,
+        total: row.total,
+        matchedAt: row.matchedAt?.toISOString() ?? null,
+        reason: row.reason,
+      })),
+      nextCursor: page.nextCursor
+        ? encodeCursor([page.nextCursor.matchedAt.toISOString(), page.nextCursor.userId])
+        : null,
+    });
+  });
+
+  app.get("/v1/admin/photos", async (c) => {
+    const actor = requireUser(c);
+    requireRole(actor, ["admin"]);
+    const query = adminPhotosQuerySchema.safeParse(c.req.query());
+    if (!query.success) throw new ApiError(400, MESSAGES.validation);
+    const cursor = query.data.cursor ? decodeUploadCursor(query.data.cursor) : undefined;
+    if (cursor === null) throw new ApiError(400, MESSAGES.validation);
+    const { cursor: rawCursor, limit, ...filters } = query.data;
+    void rawCursor;
+    const page = await deps.db.listPhotosAdmin(filters, { limit, ...(cursor ? { cursor } : {}) });
+    const photos = [];
+    for (const photo of page.items) {
+      photos.push({
+        ...adminPhoto(photo),
+        thumbUrl:
+          photo.status === "indexed" ? await deps.objects.presignGet(objectKeys.thumb(photo.id)) : null,
+      });
+    }
+    return c.json({
+      photos,
+      nextCursor: page.nextCursor
+        ? encodeCursor([page.nextCursor.createdAt.toISOString(), page.nextCursor.id])
+        : null,
+    });
+  });
+
+  app.get("/v1/admin/photos/:id", async (c) => {
+    const actor = requireUser(c);
+    requireRole(actor, ["admin"]);
+    const detail = await deps.db.findPhotoDetail(parseUuid(c.req.param("id")));
+    if (!detail) throw new ApiError(404, MESSAGES.notFound);
+    const derivatives = await deps.db.listDerivatives(detail.photo.id);
+    const web = derivatives.find((row) => row.kind === "web");
+    const thumb = derivatives.find((row) => row.kind === "thumb");
+    return c.json({
+      photo: adminPhoto(detail.photo),
+      webUrl: web ? await deps.objects.presignGet(web.s3Key) : null,
+      thumbUrl: thumb ? await deps.objects.presignGet(thumb.s3Key) : null,
+      faces: detail.faces,
+      galleries: detail.galleries,
+    });
+  });
+
+  app.get("/v1/admin/faces/:externalId/neighbours", async (c) => {
+    const actor = requireUser(c);
+    requireRole(actor, ["admin"]);
+    const query = adminNeighboursQuerySchema.safeParse(c.req.query());
+    if (!query.success) throw new ApiError(400, MESSAGES.validation);
+    const externalFaceId = c.req.param("externalId");
+    const face = await deps.db.findFaceByExternalId(query.data.eventId, externalFaceId);
+    if (!face) throw new ApiError(404, MESSAGES.notFound);
+    const hits = await deps.faces.searchFaces({ eventId: query.data.eventId, externalFaceId });
+    const ranked = hits
+      .map((hit) => ({
+        externalFaceId: hit.externalFaceId,
+        photoId: hit.photoId,
+        cosine: (hit as { cosine?: number }).cosine ?? inverseSimilarity(deps, hit.similarity),
+        similarity: hit.similarity,
+      }))
+      .sort((a, b) => b.cosine - a.cosine || b.similarity - a.similarity)
+      .slice(0, query.data.limit);
+    return c.json(ranked);
+  });
+
+  app.post("/v1/admin/galleries/:userId/:eventId/rematch", async (c) => {
+    const actor = requireUser(c);
+    requireRole(actor, ["admin"]);
+    const userId = parseUuid(c.req.param("userId"));
+    const eventId = parseUuid(c.req.param("eventId"));
+    if (!deps.env.KEEP_SELFIES) throw new ApiError(409, MESSAGES.selfieNotKept);
+    const [user, event] = await Promise.all([
+      deps.db.findUserById(userId),
+      deps.db.findEventById(eventId),
+    ]);
+    if (!user || !event) throw new ApiError(404, MESSAGES.notFound);
+    const selfieKey = await deps.db.findGallerySelfieKey(userId, eventId);
+    if (!selfieKey) throw new ApiError(409, MESSAGES.selfieNotKept);
+    const jobId = await deps.queue.enqueue("match", { userId, eventId, selfieKey });
+    await deps.db.insertAudit({
+      actorId: actor.id,
+      action: "gallery.rematch",
+      target: `user:${userId}`,
+      meta: { eventId, jobId },
+    });
+    return c.json({ jobId }, 202);
+  });
+
+  app.delete("/v1/admin/galleries/:userId/:eventId", async (c) => {
+    const actor = requireUser(c);
+    requireRole(actor, ["admin"]);
+    const userId = parseUuid(c.req.param("userId"));
+    const eventId = parseUuid(c.req.param("eventId"));
+    const deleted = await deps.db.deleteGallery(userId, eventId);
+    if (!deleted) throw new ApiError(404, MESSAGES.notFound);
+    await deps.db.insertAudit({
+      actorId: actor.id,
+      action: "gallery.deleted",
+      target: `user:${userId}`,
+      meta: { eventId },
+    });
+    return c.body(null, 204);
+  });
+
+  app.post("/v1/admin/events/:id/reset", async (c) => {
+    const actor = requireUser(c);
+    requireRole(actor, ["admin"]);
+    const eventId = parseUuid(c.req.param("id"));
+    const body = adminResetBodySchema.safeParse(await readJson(c));
+    if (!body.success) throw new ApiError(400, MESSAGES.validation);
+    const event = await deps.db.findEventById(eventId);
+    if (!event) throw new ApiError(404, MESSAGES.notFound);
+    if (body.data.confirm !== event.slug) throw new ApiError(400, MESSAGES.validation);
+    const payload = { eventId: event.id, actorId: actor.id };
+    const jobId = await deps.queue.enqueue("reset", payload, {
+      dedupeKey: jobDedupeKey("reset", payload) ?? `reset:${event.id}`,
+    });
+    await deps.db.insertAudit({
+      actorId: actor.id,
+      action: "event.reset",
+      target: `event:${event.id}`,
+      meta: { jobId },
+    });
+    return c.json({ jobId }, 202);
+  });
+
+  app.get("/v1/admin/export/galleries.csv", async (c) => {
+    const actor = requireUser(c);
+    requireRole(actor, ["admin"]);
+    const event = await exportEvent(c, deps);
+    return streamCsv(
+      c,
+      `gallerie-${safeFilenamePart(event.slug)}.csv`,
+      ["email", "user_id", "photo_id", "sha256", "filename", "score", "source", "face_id", "created_at", "feedback"],
+      deps.db.exportGalleries(event.id),
+      (row) => [
+        row.email,
+        row.userId,
+        row.photoId,
+        row.sha256,
+        row.filename ?? "",
+        String(row.score),
+        row.source,
+        row.faceId,
+        row.createdAt.toISOString(),
+        row.feedback ?? "",
+      ],
+    );
+  });
+
+  app.get("/v1/admin/export/match-hits.csv", async (c) => {
+    const actor = requireUser(c);
+    requireRole(actor, ["admin"]);
+    const event = await exportEvent(c, deps);
+    return streamCsv(
+      c,
+      `match-hits-${safeFilenamePart(event.slug)}.csv`,
+      ["run_id", "email", "user_id", "run_created_at", "photo_id", "external_face_id", "cosine", "similarity", "kept"],
+      deps.db.exportMatchHits(event.id),
+      (row) => [
+        row.runId,
+        row.email,
+        row.userId,
+        row.runCreatedAt.toISOString(),
+        row.photoId,
+        row.externalFaceId,
+        String(row.cosine),
+        String(row.similarity),
+        row.kept ? "true" : "false",
+      ],
+    );
+  });
+
+  app.get("/v1/admin/export/feedback.csv", async (c) => {
+    const actor = requireUser(c);
+    requireRole(actor, ["admin"]);
+    const event = await exportEvent(c, deps);
+    return streamCsv(
+      c,
+      `feedback-${safeFilenamePart(event.slug)}.csv`,
+      ["email", "user_id", "photo_id", "sha256", "filename", "verdict", "score_at_time", "created_at"],
+      deps.db.exportFeedback(event.id),
+      (row) => [
+        row.email,
+        row.userId,
+        row.photoId,
+        row.sha256,
+        row.filename ?? "",
+        row.verdict,
+        row.scoreAtTime === null ? "" : String(row.scoreAtTime),
+        row.createdAt.toISOString(),
+      ],
+    );
+  });
+
+  app.get("/v1/admin/match-runs", async (c) => {
+    const actor = requireUser(c);
+    requireRole(actor, ["admin"]);
+    const query = adminMatchRunsQuerySchema.safeParse(c.req.query());
+    if (!query.success) throw new ApiError(400, MESSAGES.validation);
+    const event = await deps.db.findEventById(query.data.eventId);
+    if (!event) throw new ApiError(404, MESSAGES.notFound);
+    const cursor = query.data.cursor ? decodeUploadCursor(query.data.cursor) : undefined;
+    if (cursor === null) throw new ApiError(400, MESSAGES.validation);
+    const page = await deps.db.listMatchRuns(event.id, {
+      limit: query.data.limit,
+      ...(query.data.email ? { email: query.data.email.toLowerCase() } : {}),
+      ...(cursor ? { cursor } : {}),
+    });
+    return c.json({
+      runs: page.runs.map((run) => ({ ...run, createdAt: run.createdAt.toISOString() })),
+      nextCursor: page.nextCursor
+        ? encodeCursor([page.nextCursor.createdAt.toISOString(), page.nextCursor.id])
+        : null,
+    });
+  });
+
+  app.post("/v1/events/:slug/gallery/feedback", async (c) => {
+    const user = requireUser(c);
+    requireRole(user, ["participant"]);
+    const event = await loadEvent(deps, c.req.param("slug"));
+    const body = galleryFeedbackBodySchema.safeParse(await readJson(c));
+    if (!body.success) throw new ApiError(400, MESSAGES.validation);
+    // Only photos of the caller's own gallery can be judged.
+    const owned = await deps.db.listOwnedPhotos(user.id, event.id, [body.data.photoId]);
+    if (owned.length === 0) throw new ApiError(403, MESSAGES.forbidden);
+    const item = (await deps.db.listGallery(user.id, event.id)).find(
+      (row) => row.photoId === body.data.photoId,
+    );
+    await deps.db.upsertFeedback({
+      userId: user.id,
+      eventId: event.id,
+      photoId: body.data.photoId,
+      verdict: body.data.verdict,
+      scoreAtTime: item?.score ?? null,
+    });
+    await deps.db.insertAudit({
+      actorId: user.id,
+      action: "gallery.feedback",
+      target: `photo:${body.data.photoId}`,
+      meta: { eventId: event.id, verdict: body.data.verdict },
+    });
+    return c.json({ photoId: body.data.photoId, verdict: body.data.verdict }, 201);
+  });
+}
+
+// ---- admin and participant tooling v5 (agent D) helpers --------------------------------------
+
+function rateLimitExempt(deps: AppDeps, ip: string): boolean {
+  const entries = parseIpList(deps.env.RATE_LIMIT_EXEMPT_IPS);
+  return entries.length > 0 && ipMatches(ip, entries);
+}
+
+function adminEvent(event: EventWithCounts) {
+  return {
+    ...publicEvent(event),
+    createdAt: event.createdAt.toISOString(),
+    photos: event.photos,
+    galleries: event.galleries,
+    participants: event.participants,
+    photographers: event.photographers,
+  };
+}
+
+function adminPhoto(photo: PhotoAdminRow) {
+  return {
+    id: photo.id,
+    eventId: photo.eventId,
+    photographerId: photo.photographerId,
+    sha256: photo.sha256,
+    status: photo.status,
+    contentType: photo.contentType,
+    bytes: photo.bytes,
+    originalStatus: photo.originalStatus,
+    indexedAt: photo.indexedAt?.toISOString() ?? null,
+    error: photo.error,
+    createdAt: photo.createdAt.toISOString(),
+    filename: photo.filename,
+    tags: photo.tags,
+  };
+}
+
+/** Admin views tolerate photos whose derivatives are not there yet. */
+async function presignOrPlaceholder(deps: AppDeps, key: string): Promise<string> {
+  if (!key) return `${webOrigin(deps.env)}/missing`;
+  return deps.objects.presignGet(key);
+}
+
+/**
+ * Inverse of the engine's `similarity = 80 + 20 × (cos − MIN) / (SURE − MIN)` mapping, for
+ * engines that do not report the raw cosine on a hit.
+ */
+function inverseSimilarity(deps: AppDeps, similarity: number): number {
+  const min = deps.env.INSIGHTFACE_MIN_COSINE;
+  const sure = deps.env.INSIGHTFACE_SURE_COSINE;
+  const t = Math.min(1, Math.max(0, (similarity - 80) / 20));
+  return Number((min + t * (sure - min)).toFixed(4));
+}
+
+async function exportEvent(c: Context<AppEnv>, deps: AppDeps): Promise<EventRow> {
+  const query = adminExportQuerySchema.safeParse(c.req.query());
+  if (!query.success) throw new ApiError(400, MESSAGES.validation);
+  const event = await deps.db.findEventById(query.data.eventId);
+  if (!event) throw new ApiError(404, MESSAGES.notFound);
+  return event;
+}
+
+function csvField(value: string): string {
+  return /[",\r\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
+}
+
+/** Streams `header` then one line per row; rows come from an async iterable (a DB cursor). */
+function streamCsv<T>(
+  c: Context<AppEnv>,
+  filename: string,
+  header: string[],
+  rows: AsyncIterable<T>,
+  toFields: (row: T) => string[],
+): Response {
+  c.header("Content-Type", "text/csv; charset=utf-8");
+  c.header("Content-Disposition", `attachment; filename="${filename}"`);
+  c.header("Cache-Control", "no-store");
+  return stream(
+    c,
+    async (body) => {
+      let aborted = false;
+      body.onAbort(() => {
+        aborted = true;
+      });
+      await body.write(`${header.join(",")}\n`);
+      for await (const row of rows) {
+        if (aborted) return;
+        await body.write(`${toFields(row).map(csvField).join(",")}\n`);
+      }
+    },
+    async (error) => {
+      console.error(`csv stream failed: ${error.message.slice(0, 300)}`);
+    },
+  );
+}
+
+const FACE_SERVICE_PROBE_MS = 2_000;
+
+/** `GET {FACE_SERVICE_URL}/health` with a short timeout; `ok: null` when another engine is configured. */
+async function probeFaceService(deps: AppDeps): Promise<{ ok: boolean | null; ms: number | null }> {
+  if (deps.env.FACE_ENGINE !== "insightface") return { ok: null, ms: null };
+  const started = Date.now();
+  try {
+    const base = deps.env.FACE_SERVICE_URL.replace(/\/$/, "");
+    const response = await fetch(`${base}/health`, {
+      signal: AbortSignal.timeout(FACE_SERVICE_PROBE_MS),
+    });
+    return { ok: response.ok, ms: Date.now() - started };
+  } catch {
+    return { ok: false, ms: Date.now() - started };
+  }
+}
+
+/** `{ eventId, status?: "error", errorLike?: string }` without a shared schema (routes-local). */
+function parseRequeueBody(raw: unknown): { eventId: string; status: "error"; errorLike?: string } {
+  if (!raw || typeof raw !== "object") throw new ApiError(400, MESSAGES.validation);
+  const body = raw as Record<string, unknown>;
+  const allowed = new Set(["eventId", "status", "errorLike"]);
+  for (const key of Object.keys(body)) {
+    if (!allowed.has(key)) throw new ApiError(400, MESSAGES.validation);
+  }
+  if (typeof body.eventId !== "string") throw new ApiError(400, MESSAGES.validation);
+  const eventId = parseUuid(body.eventId);
+  if (body.status !== undefined && body.status !== "error") {
+    throw new ApiError(400, MESSAGES.validation);
+  }
+  if (body.errorLike !== undefined) {
+    if (typeof body.errorLike !== "string" || body.errorLike.length === 0 || body.errorLike.length > 200) {
+      throw new ApiError(400, MESSAGES.validation);
+    }
+    return { eventId, status: "error", errorLike: body.errorLike };
+  }
+  return { eventId, status: "error" };
 }
 
 function parseUuid(value: string): string {

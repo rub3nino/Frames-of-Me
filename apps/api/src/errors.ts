@@ -9,6 +9,7 @@ export const MESSAGES = {
   notFound: "Risorsa non trovata.",
   conflict: "Operazione in conflitto con lo stato attuale.",
   rateLimited: "Troppe richieste. Riprova più tardi.",
+  selfieNotKept: "Il selfie non è stato conservato: serve KEEP_SELFIES e un nuovo selfie.",
   internal: "Errore interno.",
 } as const;
 
