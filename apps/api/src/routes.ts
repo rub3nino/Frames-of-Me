@@ -666,6 +666,11 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     requireRole(user, ["photographer"]);
     const query = uploadLookupQuerySchema.safeParse(c.req.query());
     if (!query.success) throw new ApiError(400, MESSAGES.validation);
+    // v6 (agent C): this lookup is still EVENT-wide while dedup moved to
+    // `unique (album_id, sha256)` (migration 009), so with several albums per event the same
+    // bytes can exist more than once and this returns an arbitrary one. Harmless today --
+    // this route and the photographer upload above both target the event's official album --
+    // but an exact lookup needs an album id in the query.
     const photo = await deps.db.findOwnPhotoBySha(user.id, query.data.eventId, query.data.sha256);
     if (!photo) throw new ApiError(404, MESSAGES.notFound);
     return c.json({ photoId: photo.id, originalStatus: photo.originalStatus, status: photo.status });

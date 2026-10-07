@@ -548,6 +548,10 @@ export interface Database {
    * One report per (photo, reporter) — `reports unique (photo_id, reporter_id)`. A second
    * report from the same person is `created: false` and changes nothing, which is what makes
    * the threshold count distinct people.
+   *
+   * The one exception: a stored `not_me` is escalated to a counting reason (`created: true`),
+   * one-way. Otherwise tapping "non sono io" would silently spend the person's only report on
+   * that photo; a counting reason is never replaced, so this cannot un-report anything.
    */
   insertReport(input: {
     photoId: string;
@@ -555,8 +559,14 @@ export interface Database {
     reason: ReportReason;
     note?: string | null;
   }): Promise<{ created: boolean; report: ReportRow }>;
-  /** How many DISTINCT people have an open report on the photo. */
+  /**
+   * How many DISTINCT people have an open report on the photo **whose reason counts**
+   * (`MODERATION_COUNTING_REASONS`). This is the number the auto-pending threshold compares
+   * against, and `not_me` is deliberately not in it — see that constant for why.
+   */
   countOpenReports(photoId: string): Promise<number>;
+  /** How many DISTINCT people said `not_me`. Shown to moderators, never counted. */
+  countOpenNotMeReports(photoId: string): Promise<number>;
   /** Reports filed by this user since `since` (the per-user report rate limit). */
   countReportsByUserSince(reporterId: string, since: Date): Promise<number>;
   /** A moderator ruled: every open report on the photo is closed. Returns how many. */
@@ -564,13 +574,16 @@ export interface Database {
   /** Open reports of the photo, oldest first. */
   listOpenReports(photoId: string): Promise<ReportRow[]>;
   /**
-   * The staff moderation queue: photos that are not `approved`, or that carry an open
-   * report, newest first (`created_at desc, id desc`). `state` narrows to one moderation
-   * state, `albumId` to one album.
+   * The staff moderation queue: photos that are not `approved`, or that carry an open report
+   * **whose reason counts**, newest first (`created_at desc, id desc`). `state` narrows to
+   * one moderation state, `albumId` to one album, `includeNotMe` adds the wrong-match
+   * reports that are otherwise kept out so they cannot bury the queue.
    */
   listModerationPage(input: {
     albumId?: string;
     state?: ModerationState;
+    /** Also queue approved photos whose only open reports are `not_me`. Off by default. */
+    includeNotMe?: boolean;
     limit: number;
     cursor?: UploadCursor;
   }): Promise<{ items: ModerationItem[]; nextCursor: UploadCursor | null }>;
@@ -850,9 +863,12 @@ export type ModerationItem = {
   uploaderId: string;
   moderationState: ModerationState;
   createdAt: Date;
+  /** Counting reasons only (`MODERATION_COUNTING_REASONS`): `not_me` is not in here. */
   openReports: number;
-  /** Distinct reasons of the open reports, in the table's check order. */
+  /** Distinct reasons of every open report, `not_me` included: the moderator sees it all. */
   reasons: ReportReason[];
+  /** Distinct people who said `not_me`. Shown, never counted. */
+  notMeReports: number;
   thumbKey: string | null;
   webKey: string | null;
 };

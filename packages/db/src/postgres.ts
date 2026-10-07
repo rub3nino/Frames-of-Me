@@ -3,6 +3,9 @@ import type { JobType, PhotoStatus, Role } from "@rephoto/contracts";
 import {
   JOB_MAX_ATTEMPTS,
   JOB_PRIORITY,
+  // v6 (agent C): the reasons that count toward the auto-pending threshold. `not_me` is
+  // excluded on purpose; the constant's own comment says why.
+  MODERATION_COUNTING_REASONS,
   STALE_RUNNING_MS,
   THROTTLE_REQUEUE_SECONDS,
 } from "@rephoto/contracts";
@@ -310,6 +313,14 @@ export class PostgresDatabase implements Database {
     return rows[0] ? mapPhoto(rows[0]) : null;
   }
 
+  /**
+   * Still EVENT-wide, unlike {@link findPhotoByAlbumSha}: it backs
+   * `GET /v1/uploads/lookup`, which only knows an event. Since v6 the same bytes can exist
+   * once per album (`photos unique (album_id, sha256)`), so with several albums per event
+   * this can return any one of them. Harmless today -- the photographer upload route only
+   * ever writes into the event's official album -- but a lookup that has to be exact needs
+   * an album id in the query.
+   */
   async findOwnPhotoBySha(
     photographerId: string,
     eventId: string,
@@ -2170,12 +2181,24 @@ export class PostgresDatabase implements Database {
     reason: ReportReason;
     note?: string | null;
   }): Promise<{ created: boolean; report: ReportRow }> {
-    // `on conflict do nothing` + a read of the existing row: one report per person per
-    // photo, and a repeated tap is an answer rather than an error.
+    // One report per person per photo (`reports unique (photo_id, reporter_id)`), so a
+    // repeated tap is an answer rather than an error — with ONE exception: a stored `not_me`
+    // may be escalated to a counting reason.
+    //
+    // Without that exception, tapping "non sono io" would silently spend the person's only
+    // report on this photo, and someone who first corrected a wrong match and then realised
+    // the photo is genuinely inappropriate could never say so. The `where` clause makes the
+    // escalation one-way: a counting reason is never replaced, least of all by `not_me`, so
+    // this cannot be used to un-report something.
     const inserted = await this.sql<ReportSql[]>`
       insert into reports (photo_id, reporter_id, reason, note)
       values (${input.photoId}, ${input.reporterId}, ${input.reason}, ${input.note ?? null})
-      on conflict (photo_id, reporter_id) do nothing
+      on conflict (photo_id, reporter_id) do update
+        set reason = excluded.reason,
+            note = coalesce(excluded.note, reports.note),
+            state = 'open',
+            created_at = now()
+        where reports.reason = 'not_me' and excluded.reason <> 'not_me'
       returning ${this.sql.unsafe(REPORT_COLUMNS)}
     `;
     const row = inserted[0];
@@ -2190,9 +2213,21 @@ export class PostgresDatabase implements Database {
   }
 
   async countOpenReports(photoId: string): Promise<number> {
+    // Counting reasons ONLY. A `not_me` report is recorded but never moves a photo: it is
+    // the normal error mode of face matching, not an abuse signal, and it is answered
+    // per-user through `gallery_feedback`. See MODERATION_COUNTING_REASONS.
     const rows = await this.sql<{ count: number }[]>`
       select count(distinct reporter_id)::int as count from reports
       where photo_id = ${photoId} and state = 'open'
+        and reason = any(${[...MODERATION_COUNTING_REASONS]}::text[])
+    `;
+    return rows[0]?.count ?? 0;
+  }
+
+  async countOpenNotMeReports(photoId: string): Promise<number> {
+    const rows = await this.sql<{ count: number }[]>`
+      select count(distinct reporter_id)::int as count from reports
+      where photo_id = ${photoId} and state = 'open' and reason = 'not_me'
     `;
     return rows[0]?.count ?? 0;
   }
@@ -2226,6 +2261,7 @@ export class PostgresDatabase implements Database {
   async listModerationPage(input: {
     albumId?: string;
     state?: ModerationState;
+    includeNotMe?: boolean;
     limit: number;
     cursor?: UploadCursor;
   }): Promise<{ items: ModerationItem[]; nextCursor: UploadCursor | null }> {
@@ -2233,25 +2269,40 @@ export class PostgresDatabase implements Database {
     const albumId = input.albumId ?? null;
     const state = input.state ?? null;
     // The queue is "everything a moderator still has to look at": not approved, or approved
-    // but carrying an open report. The ordering mirrors the other admin lists (v6 F3: the
-    // three-argument date_trunc is the indexable one, migration 014).
+    // with an open report whose reason COUNTS. `not_me` alone never queues a photo -- with
+    // 6,000 participants wrong matches are the common case and they would bury two
+    // moderators -- but the count is reported so a moderator looking at a photo for another
+    // reason sees it, and `includeNotMe` asks for them on purpose.
+    //
+    // NOTE for anyone adding a `-- ...` comment INSIDE one of these tagged templates: a
+    // backtick in it closes the template literal, and the parser then fails lines away with
+    // a bewildering "',' expected". Name columns bare in SQL comments (moderation_state),
+    // never in the backticks this file uses in its TypeScript comments. It has bitten twice.
     const rows = await this.sql<ModerationSql[]>`
       select p.id, p.album_id, p.event_id, p.photographer_id, p.moderation_state, p.created_at,
              coalesce(r.open_reports, 0)::int as open_reports,
              coalesce(r.reasons, '{}')::text[] as reasons,
+             coalesce(r.not_me_reports, 0)::int as not_me_reports,
              thumb.s3_key as thumb_key,
              web.s3_key as web_key
       from photos p
       left join (
         select photo_id,
-               count(distinct reporter_id) as open_reports,
+               count(distinct reporter_id) filter (
+                 where reason = any(${[...MODERATION_COUNTING_REASONS]}::text[])
+               ) as open_reports,
+               count(distinct reporter_id) filter (where reason = 'not_me') as not_me_reports,
                array_agg(distinct reason order by reason) as reasons
         from reports where state = 'open'
         group by photo_id
       ) r on r.photo_id = p.id
       left join derivatives thumb on thumb.photo_id = p.id and thumb.kind = 'thumb'
       left join derivatives web on web.photo_id = p.id and web.kind = 'web'
-      where (p.moderation_state <> 'approved' or r.open_reports is not null)
+      where (
+          p.moderation_state <> 'approved'
+          or coalesce(r.open_reports, 0) > 0
+          ${input.includeNotMe ? this.sql`or coalesce(r.not_me_reports, 0) > 0` : this.sql``}
+        )
         ${albumId ? this.sql`and p.album_id = ${albumId}::uuid` : this.sql``}
         ${state ? this.sql`and p.moderation_state = ${state}` : this.sql``}
         ${
@@ -2527,6 +2578,7 @@ type ModerationSql = {
   created_at: Date;
   open_reports: number;
   reasons: string[] | null;
+  not_me_reports: number;
   thumb_key: string | null;
   web_key: string | null;
 };
@@ -2562,6 +2614,7 @@ function mapModerationItem(row: ModerationSql): ModerationItem {
     createdAt: row.created_at,
     openReports: Number(row.open_reports),
     reasons: (row.reasons ?? []) as ReportReason[],
+    notMeReports: Number(row.not_me_reports),
     thumbKey: row.thumb_key,
     webKey: row.web_key,
   };

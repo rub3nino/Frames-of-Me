@@ -638,7 +638,15 @@ test("a photo reaching the report threshold flips to pending and leaves the gall
   );
   assert.equal(first.status, 200);
   const firstBody = reportResponseSchema.parse(await first.json());
-  assert.deepEqual(firstBody, { status: "recorded", state: "approved", openReports: 1 });
+  assert.deepEqual(firstBody, {
+    status: "recorded",
+    state: "approved",
+    openReports: 1,
+    counts: true,
+    // A crowd-album photo is in nobody's match gallery, so there is nothing to hide for the
+    // reporter: `hiddenForYou` is about `gallery_feedback`, not about the album feed.
+    hiddenForYou: false,
+  });
   // Still visible under the threshold.
   const visible = albumPhotosResponseSchema.parse(
     await (await h.app.request(get(`/v1/albums/${h.crowd.id}/photos`, anna.cookie))).json(),
@@ -646,18 +654,38 @@ test("a photo reaching the report threshold flips to pending and leaves the gall
   assert.equal(visible.photos.length, 1);
 
   // A second report from the SAME person changes nothing: the threshold counts people.
+  // (A stored `not_me` is the one thing a second report may change — see the escalation
+  // test below — and this first report was already a counting one.)
   const repeat = await h.app.request(
     json("POST", `/v1/photos/${photoId}/report`, { reason: "other" }, bruno.cookie),
   );
   const repeatBody = reportResponseSchema.parse(await repeat.json());
-  assert.deepEqual(repeatBody, { status: "already-reported", state: "approved", openReports: 1 });
+  assert.deepEqual(repeatBody, {
+    status: "already-reported",
+    state: "approved",
+    openReports: 1,
+    counts: true,
+    hiddenForYou: false,
+  });
 
-  // The second DISTINCT person crosses it.
+  // The second DISTINCT person crosses it, with a counting reason. `not_me` could not: that
+  // is the whole point of MODERATION_COUNTING_REASONS.
   const second = await h.app.request(
-    json("POST", `/v1/photos/${photoId}/report`, { reason: "not_me", note: "non sono io" }, carla.cookie),
+    json(
+      "POST",
+      `/v1/photos/${photoId}/report`,
+      { reason: "inappropriate", note: "non va bene" },
+      carla.cookie,
+    ),
   );
   const secondBody = reportResponseSchema.parse(await second.json());
-  assert.deepEqual(secondBody, { status: "recorded", state: "pending", openReports: 2 });
+  assert.deepEqual(secondBody, {
+    status: "recorded",
+    state: "pending",
+    openReports: 2,
+    counts: true,
+    hiddenForYou: false,
+  });
   assert.equal((await h.db.findPhoto(photoId))?.moderationState, "pending");
 
   // And it is gone from the album feed until a moderator rules.
@@ -704,6 +732,207 @@ test("reporting requires a participant of the event and a photo still visible", 
   );
   assert.equal(withheld.status, 404);
   assert.deepEqual(await withheld.json(), { error: MESSAGES.photoNotVisible });
+});
+
+/**
+ * Seeds `count` official-album photos with derivatives and puts them in `userId`'s personal
+ * match gallery, scores descending. Returns the photo ids in gallery order.
+ */
+async function seedMatchGallery(
+  h: Harness,
+  userId: string,
+  count: number,
+  salt = "",
+): Promise<string[]> {
+  const photographer = await h.db.findUserByEmailRole("photographer@rephoto.local", "photographer");
+  assert.ok(photographer);
+  const items: Array<{ photoId: string; faceId: string; score: number }> = [];
+  for (let index = 0; index < count; index += 1) {
+    const photoId = randomUUID();
+    const bytes = Buffer.from(`original-${salt}-${index}`);
+    const originalKey = objectKeys.original(h.event.id, photoId);
+    await h.db.insertPhoto({
+      id: photoId,
+      eventId: h.event.id,
+      photographerId: photographer.id,
+      sha256: sha256(bytes),
+      originalKey,
+      contentType: "image/jpeg",
+      bytes: bytes.byteLength,
+    });
+    await h.objects.put(originalKey, bytes, "image/jpeg");
+    await derive(h, photoId);
+    items.push({ photoId, faceId: randomUUID(), score: 0.9 - index * 0.1 });
+  }
+  await h.db.replaceGallery(userId, h.event.id, items, ["anchor-1"]);
+  return items.map((row) => row.photoId);
+}
+
+/**
+ * THE regression guard for the interaction that made `not_me` dangerous.
+ *
+ * `not_me` is the expected output of face matching: one group photo is matched to several
+ * people and each of them correctly rejects it. Because a non-approved photo leaves EVERY
+ * personal gallery, counting those rejections toward the auto-pending threshold would turn
+ * the recognition system's normal error mode into global takedowns — three taps on
+ * "non sono io" and a correctly-uploaded photo vanishes for all 6,000 participants until one
+ * of two moderators rules on it.
+ *
+ * So: the reports are recorded, the photo stays `approved` and visible to everyone else, and
+ * the only thing that changes is the reporter's own `gallery_feedback` row.
+ */
+test("not_me reports never reach the threshold: the photo stays approved and visible to everyone else", async () => {
+  // A threshold of 2 that `not_me` must not be able to cross, even with 3 distinct people.
+  const h = await harness({}, {}, { REPORT_AUTO_PENDING: "2" });
+  const anna = await participant(h, "anna@example.com");
+  const bruno = await participant(h, "bruno@example.com");
+  const carla = await participant(h, "carla@example.com");
+  const dario = await participant(h, "dario@example.com");
+
+  // One group photo, in everybody's match gallery: exactly the shape that produces wrong
+  // matches at scale.
+  const [photoId] = await seedMatchGallery(h, anna.user.id, 1, "group");
+  assert.ok(photoId);
+  for (const other of [bruno, carla, dario]) {
+    await h.db.replaceGallery(
+      other.user.id,
+      h.event.id,
+      [{ photoId, faceId: randomUUID(), score: 0.82 }],
+      ["anchor-1"],
+    );
+  }
+
+  // Three DISTINCT people say "non sono io" — one more than the threshold.
+  for (const reporter of [bruno, carla, dario]) {
+    const res = await h.app.request(
+      json("POST", `/v1/photos/${photoId}/report`, { reason: "not_me" }, reporter.cookie),
+    );
+    assert.equal(res.status, 200);
+    const body = reportResponseSchema.parse(await res.json());
+    assert.equal(body.status, "recorded");
+    assert.equal(body.state, "approved", "a wrong match is not a takedown");
+    assert.equal(body.counts, false, "not_me never counts toward the threshold");
+    assert.equal(body.openReports, 0, "the counting total ignores not_me entirely");
+    assert.equal(body.hiddenForYou, true, "but it does hide the photo for the reporter");
+  }
+
+  // The photo itself never moved.
+  const photo = await h.db.findPhoto(photoId);
+  assert.equal(photo?.moderationState, "approved");
+  // The reports were recorded, so a moderator can still see the wrong-match signal.
+  assert.equal(await h.db.countOpenNotMeReports(photoId), 3);
+  assert.equal(await h.db.countOpenReports(photoId), 0);
+
+  // It is still in the gallery of someone who did NOT report it, unflagged.
+  const annaPage = await h.db.listGalleryPage(anna.user.id, h.event.id, { limit: 10 });
+  assert.equal(annaPage.total, 1);
+  assert.equal(annaPage.items[0]?.photoId, photoId);
+  assert.deepEqual(await h.db.listFeedback(anna.user.id, h.event.id, [photoId]), []);
+
+  // And it is flagged `not_me` for each reporter — the per-user answer they actually asked
+  // for. (v5 keeps the row and the web hides it under "Nascoste"; the report route writes
+  // exactly the same `gallery_feedback` row as the gallery's own button.)
+  for (const reporter of [bruno, carla, dario]) {
+    assert.deepEqual(await h.db.listFeedback(reporter.user.id, h.event.id, [photoId]), [
+      { photoId, verdict: "not_me" },
+    ]);
+  }
+
+  // By default the queue does not carry it: at 6,000 participants wrong matches would bury
+  // two moderators. A moderator who wants them asks for them.
+  const adminCookie = await cookieFor(h.db, h.admin.id);
+  const quiet = moderationResponseSchema.parse(
+    await (await h.app.request(get("/v1/admin/moderation", adminCookie))).json(),
+  );
+  assert.equal(quiet.items.length, 0);
+  const asked = moderationResponseSchema.parse(
+    await (
+      await h.app.request(get("/v1/admin/moderation?includeNotMe=true", adminCookie))
+    ).json(),
+  );
+  assert.equal(asked.items.length, 1);
+  assert.equal(asked.items[0]?.photoId, photoId);
+  assert.equal(asked.items[0]?.openReports, 0);
+  assert.equal(asked.items[0]?.notMeReports, 3);
+  assert.deepEqual(asked.items[0]?.reasons, ["not_me"]);
+});
+
+/** The other half of the guard: excluding `not_me` must not have disabled moderation. */
+test("the threshold still fires on inappropriate reports from distinct people", async () => {
+  const h = await harness({}, {}, { REPORT_AUTO_PENDING: "2" });
+  const anna = await participant(h, "anna@example.com");
+  const bruno = await participant(h, "bruno@example.com");
+  const carla = await participant(h, "carla@example.com");
+  const [photoId] = await seedMatchGallery(h, anna.user.id, 1, "abuse");
+  assert.ok(photoId);
+
+  // A `not_me` first, from the person who will then escalate. It must neither count nor
+  // spend their only report on this photo: tapping "non sono io" and later realising the
+  // photo is genuinely inappropriate has to remain sayable.
+  const ignored = reportResponseSchema.parse(
+    await (
+      await h.app.request(
+        json("POST", `/v1/photos/${photoId}/report`, { reason: "not_me" }, bruno.cookie),
+      )
+    ).json(),
+  );
+  assert.equal(ignored.openReports, 0);
+  assert.equal(ignored.state, "approved");
+
+  // The same person escalates `not_me` -> `inappropriate`: one counting report now, still
+  // under the threshold and still visible.
+  const first = reportResponseSchema.parse(
+    await (
+      await h.app.request(
+        json("POST", `/v1/photos/${photoId}/report`, { reason: "inappropriate" }, bruno.cookie),
+      )
+    ).json(),
+  );
+  assert.equal(first.status, "recorded", "an escalation is a new report, not a repeat");
+  assert.equal(first.counts, true);
+  assert.equal(first.openReports, 1);
+  assert.equal(first.state, "approved");
+  // One row, escalated in place: the escalation did not become a second vote.
+  assert.equal(await h.db.countOpenNotMeReports(photoId), 0);
+  assert.equal((await h.db.listOpenReports(photoId)).length, 1);
+  // And it is one-way: `not_me` can never replace a counting reason, so this is not a way
+  // to un-report a photo.
+  const downgrade = reportResponseSchema.parse(
+    await (
+      await h.app.request(
+        json("POST", `/v1/photos/${photoId}/report`, { reason: "not_me" }, bruno.cookie),
+      )
+    ).json(),
+  );
+  assert.equal(downgrade.status, "already-reported");
+  assert.equal(downgrade.openReports, 1);
+  assert.equal((await h.db.listGalleryPage(anna.user.id, h.event.id, { limit: 10 })).total, 1);
+
+  // A second DISTINCT person with a counting reason crosses it.
+  const second = reportResponseSchema.parse(
+    await (
+      await h.app.request(
+        json("POST", `/v1/photos/${photoId}/report`, { reason: "copyright" }, carla.cookie),
+      )
+    ).json(),
+  );
+  assert.equal(second.openReports, 2);
+  assert.equal(second.state, "pending");
+  assert.equal((await h.db.findPhoto(photoId))?.moderationState, "pending");
+  // And now it really does leave everyone's gallery, which is the point of the threshold.
+  assert.equal((await h.db.listGalleryPage(anna.user.id, h.event.id, { limit: 10 })).total, 0);
+
+  // It is in the queue without being asked for, with the wrong-match signal alongside.
+  const adminCookie = await cookieFor(h.db, h.admin.id);
+  const page = moderationResponseSchema.parse(
+    await (await h.app.request(get("/v1/admin/moderation", adminCookie))).json(),
+  );
+  assert.equal(page.items.length, 1);
+  assert.equal(page.items[0]?.photoId, photoId);
+  assert.equal(page.items[0]?.openReports, 2);
+  // Bruno's `not_me` was escalated in place, so no wrong-match signal is left on this photo.
+  assert.equal(page.items[0]?.notMeReports, 0);
+  assert.deepEqual(page.items[0]?.reasons, ["copyright", "inappropriate"]);
 });
 
 // ---- C2: the moderation queue and the rulings --------------------------------------------

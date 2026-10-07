@@ -63,10 +63,16 @@ function CrowdAlbum({ albumId }: { albumId: string }) {
       setReporting(null);
       try {
         const answer = await reportPhoto(photoId, reason);
+        // "Non sono io" is a per-user correction, not a takedown: say so, so nobody taps it
+        // expecting the photo to disappear for everyone.
         setMessage(
           answer.status === "already-reported"
             ? "Hai già segnalato questa foto."
-            : "Segnalazione inviata. Grazie.",
+            : answer.hiddenForYou
+              ? "Foto nascosta dalla tua galleria. Resta visibile agli altri."
+              : answer.counts
+                ? "Segnalazione inviata. Grazie."
+                : "Segnalazione registrata. Grazie.",
         );
         // The threshold may have withheld it: a reload is the single source of truth.
         if (answer.state !== "approved") await load();

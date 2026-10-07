@@ -314,7 +314,12 @@ export type CrowdUploadCompleteResponse = {
 export type ReportResponse = {
   status: "recorded" | "already-reported";
   state: ModerationState;
+  /** Counting reasons only: a `not_me` report never moves this number. */
   openReports: number;
+  /** False for `not_me`: recorded and shown to moderators, never counted. */
+  counts: boolean;
+  /** True when the report hid the photo in the caller's own match gallery. */
+  hiddenForYou: boolean;
 };
 
 export type ModerationItem = {
@@ -326,6 +331,7 @@ export type ModerationItem = {
   createdAt: string;
   openReports: number;
   reasons: ReportReason[];
+  notMeReports: number;
   thumbUrl: string | null;
   webUrl: string | null;
 };

@@ -29,6 +29,7 @@ import {
   moderationQuerySchema,
   MULTIPART_THRESHOLD_BYTES,
   objectKeys,
+  countsTowardModeration,
   reportBodySchema,
   REPORT_RATE_LIMIT,
   uploadCompleteBodySchema,
@@ -309,12 +310,20 @@ export function registerCrowdRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       );
       if (recent >= perUser) throw new ApiError(429, MESSAGES.rateLimited);
     }
+    const reason = body.data.reason;
     const { created } = await deps.db.insertReport({
       photoId: photo.id,
       reporterId: user.id,
-      reason: body.data.reason,
+      reason,
       note: body.data.note ?? null,
     });
+    // `not_me` is the recognition system's normal error mode, not an abuse signal: it is
+    // answered PER USER through `gallery_feedback` — the same row the gallery's own
+    // "Non sono io" button writes — so the photo is hidden for this person and for nobody
+    // else. The report row stays (someone may genuinely want a wrong match looked at) but it
+    // never counts. See MODERATION_COUNTING_REASONS in the contracts.
+    const hiddenForYou = reason === "not_me" ? await hideForReporter(deps, photo, user.id) : false;
+    // Counting reasons only: a `not_me` report cannot move this number.
     const openReports = await deps.db.countOpenReports(photo.id);
     let state: ModerationState = photo.moderationState;
     // The threshold is read from the env on every request, so the event-day value can be
@@ -335,13 +344,15 @@ export function registerCrowdRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
         actorId: user.id,
         action: "moderation.report",
         target: `photo:${photo.id}`,
-        meta: { albumId: album.id, reason: body.data.reason },
+        meta: { albumId: album.id, reason, counts: countsTowardModeration(reason) },
       });
     }
     return c.json({
       status: created ? ("recorded" as const) : ("already-reported" as const),
       state,
       openReports,
+      counts: countsTowardModeration(reason),
+      hiddenForYou,
     });
   });
 
@@ -357,6 +368,7 @@ export function registerCrowdRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const page = await deps.db.listModerationPage({
       ...(query.data.albumId ? { albumId: query.data.albumId } : {}),
       ...(query.data.state ? { state: query.data.state } : {}),
+      includeNotMe: query.data.includeNotMe,
       limit: query.data.limit,
       ...(cursor ? { cursor } : {}),
     });
@@ -371,6 +383,7 @@ export function registerCrowdRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
         createdAt: row.createdAt.toISOString(),
         openReports: row.openReports,
         reasons: row.reasons,
+        notMeReports: row.notMeReports,
         thumbUrl: row.thumbKey ? await deps.objects.presignGet(row.thumbKey) : null,
         webUrl: row.webKey ? await deps.objects.presignGet(row.webKey) : null,
       });
@@ -517,4 +530,34 @@ function decodeCrowdCursor(raw: string): CrowdCursor | null {
   const createdAt = new Date(createdAtText ?? "");
   if (!id || Number.isNaN(createdAt.getTime()) || !UUID_PATTERN.test(id)) return null;
   return { createdAt, id };
+}
+
+/**
+ * The per-user answer to `not_me`: the `gallery_feedback` row the gallery's own
+ * "Non sono io" button writes, which is what hides the photo for this person (the web shows
+ * `not_me` items under "Nascoste") and for nobody else.
+ *
+ * Only a photo that is really in the caller's own match gallery can be judged — the same
+ * rule the gallery feedback route enforces — so a `not_me` on a crowd-album photo nobody
+ * matched records the report and returns `hiddenForYou: false`, because there is no gallery
+ * entry to hide.
+ */
+async function hideForReporter(
+  deps: AppDeps,
+  photo: PhotoRow,
+  userId: string,
+): Promise<boolean> {
+  const owned = await deps.db.listOwnedPhotos(userId, photo.eventId, [photo.id]);
+  if (owned.length === 0) return false;
+  const item = (await deps.db.listGallery(userId, photo.eventId)).find(
+    (row) => row.photoId === photo.id,
+  );
+  await deps.db.upsertFeedback({
+    userId,
+    eventId: photo.eventId,
+    photoId: photo.id,
+    verdict: "not_me",
+    scoreAtTime: item?.score ?? null,
+  });
+  return true;
 }

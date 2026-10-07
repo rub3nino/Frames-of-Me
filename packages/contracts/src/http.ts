@@ -971,6 +971,32 @@ export type ModerationState = z.infer<typeof moderationStateSchema>;
 export const reportReasonSchema = z.enum(["inappropriate", "not_me", "copyright", "other"]);
 export type ReportReason = z.infer<typeof reportReasonSchema>;
 
+/**
+ * The ONLY reasons that count toward the auto-pending threshold, and the only ones that put
+ * an otherwise approved photo in the moderation queue.
+ *
+ * `not_me` is deliberately NOT here, and must not be "simplified" back in. It is not an abuse
+ * signal: it is the expected output of face matching. One group photo gets matched to several
+ * people and each of them correctly rejects it — the system working as designed. At 6,000
+ * participants that happens constantly, so counting it would turn the recognition system's
+ * normal error mode into global takedowns: three people tapping "non sono io" would pull a
+ * correctly-uploaded photo out of EVERYONE's gallery (because a non-approved photo leaves
+ * every gallery, see `listGalleryPage`) and would fill a two-person moderation queue with
+ * false positives.
+ *
+ * `not_me` has a home already: `gallery_feedback`, which the gallery's own "Non sono io"
+ * button writes and which agent E's tag removal reuses. It is a PER-USER correctness signal,
+ * so it hides the photo for that one person and for nobody else. The report row is still
+ * recorded (someone may genuinely want a wrong match looked at) and a moderator can ask for
+ * those rows explicitly, but it never counts.
+ */
+export const MODERATION_COUNTING_REASONS = ["inappropriate", "copyright", "other"] as const;
+export type ModerationCountingReason = (typeof MODERATION_COUNTING_REASONS)[number];
+
+export function countsTowardModeration(reason: ReportReason): boolean {
+  return (MODERATION_COUNTING_REASONS as readonly string[]).includes(reason);
+}
+
 /** How many DISTINCT open reports flip a photo to `pending` when the env var is unset. */
 export const REPORT_AUTO_PENDING_DEFAULT = 3;
 
@@ -994,7 +1020,20 @@ export const reportResponseSchema = z
   .object({
     status: z.enum(["recorded", "already-reported"]),
     state: moderationStateSchema,
+    /**
+     * Distinct people with an open report whose reason is in
+     * {@link MODERATION_COUNTING_REASONS}. `not_me` reports are excluded, so this is the
+     * number the threshold actually compares against.
+     */
     openReports: z.number().int().nonnegative(),
+    /** False for `not_me`: recorded, never counted toward the threshold. */
+    counts: z.boolean(),
+    /**
+     * True when the report also wrote the caller's `gallery_feedback` row, which is what
+     * hides the photo in THEIR gallery and nobody else's (a `not_me` on a photo of their
+     * own match gallery).
+     */
+    hiddenForYou: z.boolean(),
   })
   .strict();
 
@@ -1043,6 +1082,15 @@ export const moderationQuerySchema = z
   .object({
     albumId: z.string().uuid().optional(),
     state: moderationStateSchema.optional(),
+    /**
+     * Opt-in: also return approved photos whose only open reports are `not_me`. Off by
+     * default, because at 6,000 participants wrong matches are the common case and they
+     * would bury the queue. A moderator who wants to look at them asks for them.
+     */
+    includeNotMe: z
+      .enum(["true", "false"])
+      .default("false")
+      .transform((value) => value === "true"),
     limit: z.coerce.number().int().min(1).max(100).default(30),
     cursor: z.string().min(1).optional(),
   })
@@ -1056,8 +1104,12 @@ export const moderationItemSchema = z
     uploaderId: z.string().uuid(),
     moderationState: moderationStateSchema,
     createdAt: z.string().datetime(),
+    /** Counting reasons only (see {@link MODERATION_COUNTING_REASONS}). */
     openReports: z.number().int().nonnegative(),
+    /** Distinct reasons of every open report, `not_me` included: the moderator sees it all. */
     reasons: z.array(reportReasonSchema),
+    /** Distinct people who said "non sono io". Shown, never counted. */
+    notMeReports: z.number().int().nonnegative(),
     thumbUrl: z.string().min(1).nullable(),
     webUrl: z.string().min(1).nullable(),
   })

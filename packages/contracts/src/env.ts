@@ -189,8 +189,10 @@ export const envSchema = z
     ),
     // --- v6 crowd upload and moderation (agent C) -----------------------------
     /**
-     * How many DISTINCT open reports flip a photo to `pending` (C2). Read per request, so
-     * the event-day value can change without a restart of anything but the api process.
+     * How many DISTINCT people with a **counting** open report flip a photo to `pending`
+     * (C2) — see MODERATION_COUNTING_REASONS: `not_me` is excluded, so no value here can
+     * turn a wrong match into a takedown. Read per request, so the event-day value can
+     * change without a restart of anything but the api process.
      */
     REPORT_AUTO_PENDING: z.preprocess(
       blankToUndefined,

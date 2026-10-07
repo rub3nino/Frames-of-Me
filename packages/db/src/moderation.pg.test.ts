@@ -5,7 +5,10 @@
  * - `moderation_state` is a column SEPARATE from `photos.status`, with its own check
  *   constraint and its own default (`approved`, i.e. post-moderation);
  * - `reports unique (photo_id, reporter_id)` is what makes the auto-pending threshold a
- *   count of distinct people;
+ *   count of distinct people, and the `on conflict ... where` that lets a stored `not_me` be
+ *   escalated to a counting reason, one-way;
+ * - only the moderation-relevant reasons count: `not_me` is recorded and shown but never
+ *   moves a photo, because it is the normal error mode of face matching;
  * - `upload_sessions.album_id` exists and the pre-010 rows are backfilled to the official
  *   album, so `complete` always knows where the photo belongs;
  * - a human ruling stamps `moderated_by` / `moderated_at` while the automatic paths (the
@@ -355,6 +358,125 @@ describe("migration 010 on a database at 001-009", () => {
     // Closing settles them.
     assert.equal(await f.db.closeReports(f.secondPhotoId), 2);
     assert.equal(await f.db.countOpenReports(f.secondPhotoId), 0);
+  });
+
+  it("counts only the moderation-relevant reasons: not_me is recorded, never counted", async (t) => {
+    if (skipReason) return t.skip(skipReason);
+    const f = required();
+    // Proving this against the real SQL matters: `countOpenReports` filters on
+    // `reason = any(MODERATION_COUNTING_REASONS)` and `listModerationPage` uses
+    // `count(...) filter (where ...)`. `not_me` is the recognition system's normal error
+    // mode, so counting it would turn wrong matches into global takedowns.
+    const [photo] = await f.sql<{ id: string }[]>`
+      insert into photos (event_id, album_id, photographer_id, sha256, status, original_key,
+                          content_type, bytes)
+      values (${f.eventId}, ${f.albumId}, ${f.photographerId}, ${"e".repeat(64)}, 'indexed',
+              ${`originals/${f.eventId}/not-me`}, 'image/jpeg', 10)
+      returning id
+    `;
+    assert.ok(photo);
+
+    await f.db.insertReport({
+      photoId: photo.id,
+      reporterId: f.participantId,
+      reason: "not_me",
+    });
+    await f.db.insertReport({
+      photoId: photo.id,
+      reporterId: f.otherParticipantId,
+      reason: "not_me",
+    });
+    assert.equal(await f.db.countOpenReports(photo.id), 0, "two not_me reports count as zero");
+    assert.equal(await f.db.countOpenNotMeReports(photo.id), 2);
+    // Both rows really are there: recorded, so a moderator can ask for them.
+    assert.equal((await f.db.listOpenReports(photo.id)).length, 2);
+
+    // By default the queue leaves it alone; `includeNotMe` asks for it.
+    const quiet = await f.db.listModerationPage({ albumId: f.albumId, limit: 20 });
+    assert.equal(
+      quiet.items.some((row) => row.photoId === photo.id),
+      false,
+    );
+    const asked = await f.db.listModerationPage({
+      albumId: f.albumId,
+      includeNotMe: true,
+      limit: 20,
+    });
+    const item = asked.items.find((row) => row.photoId === photo.id);
+    assert.ok(item);
+    assert.equal(item.openReports, 0);
+    assert.equal(item.notMeReports, 2);
+    assert.deepEqual(item.reasons, ["not_me"]);
+
+    // A counting reason from a third person does count, and queues it without being asked.
+    await f.db.insertReport({
+      photoId: photo.id,
+      reporterId: f.moderatorId,
+      reason: "inappropriate",
+    });
+    assert.equal(await f.db.countOpenReports(photo.id), 1);
+    const queued = await f.db.listModerationPage({ albumId: f.albumId, limit: 20 });
+    const now = queued.items.find((row) => row.photoId === photo.id);
+    assert.ok(now);
+    assert.equal(now.openReports, 1);
+    assert.equal(now.notMeReports, 2);
+    assert.deepEqual(now.reasons, ["inappropriate", "not_me"]);
+  });
+
+  it("escalates a stored not_me to a counting reason, one-way", async (t) => {
+    if (skipReason) return t.skip(skipReason);
+    const f = required();
+    // The `on conflict (photo_id, reporter_id) do update ... where reports.reason = 'not_me'`
+    // clause: tapping "non sono io" must not silently spend the person's only report on the
+    // photo, and the escalation must never run backwards.
+    const [photo] = await f.sql<{ id: string }[]>`
+      insert into photos (event_id, album_id, photographer_id, sha256, status, original_key,
+                          content_type, bytes)
+      values (${f.eventId}, ${f.albumId}, ${f.photographerId}, ${"f".repeat(64)}, 'indexed',
+              ${`originals/${f.eventId}/escalate`}, 'image/jpeg', 10)
+      returning id
+    `;
+    assert.ok(photo);
+
+    const wrongMatch = await f.db.insertReport({
+      photoId: photo.id,
+      reporterId: f.participantId,
+      reason: "not_me",
+    });
+    assert.equal(wrongMatch.created, true);
+    assert.equal(await f.db.countOpenReports(photo.id), 0);
+
+    const escalated = await f.db.insertReport({
+      photoId: photo.id,
+      reporterId: f.participantId,
+      reason: "inappropriate",
+      note: "ripensandoci",
+    });
+    assert.equal(escalated.created, true, "an escalation is a new report, not a repeat");
+    assert.equal(escalated.report.id, wrongMatch.report.id, "escalated in place, one row");
+    assert.equal(escalated.report.reason, "inappropriate");
+    assert.equal(escalated.report.note, "ripensandoci");
+    assert.equal(await f.db.countOpenReports(photo.id), 1);
+    assert.equal(await f.db.countOpenNotMeReports(photo.id), 0);
+    assert.equal((await f.db.listOpenReports(photo.id)).length, 1);
+
+    // One-way: neither another counting reason nor `not_me` may overwrite it, so this is not
+    // a way to un-report a photo.
+    const sideways = await f.db.insertReport({
+      photoId: photo.id,
+      reporterId: f.participantId,
+      reason: "copyright",
+    });
+    assert.equal(sideways.created, false);
+    assert.equal(sideways.report.reason, "inappropriate");
+    const backwards = await f.db.insertReport({
+      photoId: photo.id,
+      reporterId: f.participantId,
+      reason: "not_me",
+    });
+    assert.equal(backwards.created, false);
+    assert.equal(backwards.report.reason, "inappropriate");
+    assert.equal(await f.db.countOpenReports(photo.id), 1);
   });
 
   it("stamps moderated_by/at for a human ruling and leaves them for the automatic path", async (t) => {

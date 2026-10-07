@@ -3,6 +3,9 @@ import type { JobType, PhotoStatus, Role } from "@rephoto/contracts";
 import {
   JOB_MAX_ATTEMPTS,
   JOB_PRIORITY,
+  // v6 (agent C): `not_me` never counts toward the auto-pending threshold. The predicate
+  // and MODERATION_COUNTING_REASONS in the contracts carry the reasoning.
+  countsTowardModeration,
   STALE_RUNNING_MS,
   THROTTLE_REQUEUE_SECONDS,
 } from "@rephoto/contracts";
@@ -345,6 +348,7 @@ export class MemoryDatabase implements Database {
     return null;
   }
 
+  /** Event-wide, like {@link findPhotoBySha}: see the note on the Postgres implementation. */
   async findOwnPhotoBySha(
     photographerId: string,
     eventId: string,
@@ -1930,7 +1934,18 @@ export class MemoryDatabase implements Database {
     );
     // `reports unique (photo_id, reporter_id)`: a second tap from the same person changes
     // nothing, which is what keeps the auto-pending threshold a count of distinct people.
-    if (existing) return { created: false, report: existing };
+    // The one exception, mirrored from the Postgres `on conflict ... where`: a stored
+    // `not_me` may be escalated to a counting reason, one-way, so that tapping
+    // "non sono io" does not silently spend the person's only report on this photo.
+    if (existing) {
+      const escalates = existing.reason === "not_me" && input.reason !== "not_me";
+      if (!escalates) return { created: false, report: existing };
+      existing.reason = input.reason;
+      existing.note = input.note ?? existing.note;
+      existing.state = "open";
+      existing.createdAt = new Date();
+      return { created: true, report: existing };
+    }
     const report: ReportRow = {
       id: randomUUID(),
       photoId: input.photoId,
@@ -1945,9 +1960,23 @@ export class MemoryDatabase implements Database {
   }
 
   async countOpenReports(photoId: string): Promise<number> {
+    // Counting reasons ONLY. A `not_me` report is recorded but never moves a photo: it is
+    // the normal error mode of face matching, not an abuse signal, and it is answered
+    // per-user through `gallery_feedback`. See MODERATION_COUNTING_REASONS.
     const reporters = new Set<string>();
     for (const row of this.reports) {
-      if (row.photoId === photoId && row.state === "open") reporters.add(row.reporterId);
+      if (row.photoId !== photoId || row.state !== "open") continue;
+      if (!countsTowardModeration(row.reason)) continue;
+      reporters.add(row.reporterId);
+    }
+    return reporters.size;
+  }
+
+  async countOpenNotMeReports(photoId: string): Promise<number> {
+    const reporters = new Set<string>();
+    for (const row of this.reports) {
+      if (row.photoId !== photoId || row.state !== "open" || row.reason !== "not_me") continue;
+      reporters.add(row.reporterId);
     }
     return reporters.size;
   }
@@ -1977,6 +2006,7 @@ export class MemoryDatabase implements Database {
   async listModerationPage(input: {
     albumId?: string;
     state?: ModerationState;
+    includeNotMe?: boolean;
     limit: number;
     cursor?: UploadCursor;
   }): Promise<{ items: ModerationItem[]; nextCursor: UploadCursor | null }> {
@@ -1986,10 +2016,21 @@ export class MemoryDatabase implements Database {
       if (input.albumId && photo.albumId !== input.albumId) continue;
       if (input.state && photo.moderationState !== input.state) continue;
       const open = this.reports.filter((row) => row.photoId === photo.id && row.state === "open");
-      const reporters = new Set(open.map((row) => row.reporterId));
-      // Everything a moderator still has to look at: not approved, or approved with an
-      // open report on it.
-      if (photo.moderationState === "approved" && reporters.size === 0) continue;
+      const counting = new Set(
+        open.filter((row) => countsTowardModeration(row.reason)).map((row) => row.reporterId),
+      );
+      const notMe = new Set(
+        open.filter((row) => row.reason === "not_me").map((row) => row.reporterId),
+      );
+      // Everything a moderator still has to look at: not approved, or approved with an open
+      // report whose reason COUNTS. `not_me` alone never queues a photo (it is the normal
+      // error mode of face matching and would bury two moderators); `includeNotMe` asks for
+      // those on purpose.
+      const queued =
+        photo.moderationState !== "approved" ||
+        counting.size > 0 ||
+        (input.includeNotMe === true && notMe.size > 0);
+      if (!queued) continue;
       if (cursor) {
         const byTime = photo.createdAt.getTime() - cursor.createdAt.getTime();
         if (!(byTime < 0 || (byTime === 0 && photo.id < cursor.id))) continue;
@@ -2001,8 +2042,9 @@ export class MemoryDatabase implements Database {
         uploaderId: photo.photographerId,
         moderationState: photo.moderationState,
         createdAt: photo.createdAt,
-        openReports: reporters.size,
+        openReports: counting.size,
         reasons: [...new Set(open.map((row) => row.reason))].sort(compareText),
+        notMeReports: notMe.size,
         thumbKey: this.derivativeKey(photo.id, "thumb"),
         webKey: this.derivativeKey(photo.id, "web"),
       });
