@@ -251,6 +251,11 @@ async function verifyOriginal(photoId: string, deps: WorkerDeps): Promise<void> 
 async function indexPhoto(photoId: string, deps: WorkerDeps): Promise<void> {
   const photo = await deps.db.findPhoto(photoId);
   if (!photo) return;
+  // Public uploads must never enter the face engine or create biometric records.
+  if (photo.collection === "public") {
+    await deps.db.setPhotoIndexed(photo.id);
+    return;
+  }
   if (photo.originalKey.startsWith("selfies/")) {
     throw new Error("Refusing to index a selfie");
   }
@@ -329,6 +334,7 @@ type AttachCandidate = { faceId: string; score: number };
 async function attachPhoto(photoId: string, deps: WorkerDeps): Promise<void> {
   const photo = await deps.db.findPhoto(photoId);
   if (!photo) return;
+  if (photo.collection === "public") return;
   const faces = await deps.db.findFaceRowsByPhoto(photo.id);
   if (faces.length === 0) return;
   // Nothing to attach to yet (uploads usually start before the first selfie): skip the searches.

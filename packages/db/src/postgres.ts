@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { JobType, PhotoStatus, Role } from "@rephoto/contracts";
+import type { JobType, PhotoCollection, PhotoStatus, Role } from "@rephoto/contracts";
 import {
   JOB_MAX_ATTEMPTS,
   JOB_PRIORITY,
@@ -44,6 +44,7 @@ import type {
   PhotoAdminFilters,
   PhotoAdminRow,
   PhotoDetail,
+  PublicGalleryItem,
   BBox,
   ClaimOptions,
   GalleryMatchPatch,
@@ -58,10 +59,10 @@ const PHOTOGRAPHER_ID = "00000000-0000-4000-8000-000000000003";
 const INVITE_ID = "00000000-0000-4000-8000-000000000004";
 
 const PHOTO_COLUMNS =
-  "id, event_id, photographer_id, sha256, status, original_key, content_type, bytes, original_status, indexed_at, error, created_at";
+  "id, event_id, photographer_id, collection, sha256, status, original_key, content_type, bytes, original_status, indexed_at, error, created_at";
 const EVENT_COLUMNS = "id, slug, name, retention_days, access, created_at";
 const UPLOAD_COLUMNS =
-  "id, event_id, photographer_id, s3_upload_id, object_key, sha256, content_type, status, bytes, stage, photo_id, original_content_type, original_bytes, filename, tags, created_at";
+  "id, event_id, photographer_id, collection, s3_upload_id, object_key, sha256, content_type, status, bytes, stage, photo_id, original_content_type, original_bytes, filename, tags, created_at";
 const PHOTO_ADMIN_COLUMNS = `${PHOTO_COLUMNS}, filename, tags`;
 
 function asContentType(value: string): ImageContentType {
@@ -303,6 +304,7 @@ export class PostgresDatabase implements Database {
     id: string;
     eventId: string;
     photographerId: string;
+    collection?: PhotoCollection;
     s3UploadId: string | null;
     objectKey: string;
     sha256: string;
@@ -317,10 +319,10 @@ export class PostgresDatabase implements Database {
   }): Promise<void> {
     await this.sql`
       insert into upload_sessions (
-        id, event_id, photographer_id, s3_upload_id, object_key, sha256, content_type, status, bytes,
+        id, event_id, photographer_id, collection, s3_upload_id, object_key, sha256, content_type, status, bytes,
         stage, photo_id, original_content_type, original_bytes, filename, tags
       ) values (
-        ${input.id}, ${input.eventId}, ${input.photographerId}, ${input.s3UploadId},
+        ${input.id}, ${input.eventId}, ${input.photographerId}, ${input.collection ?? "official"}, ${input.s3UploadId},
         ${input.objectKey}, ${input.sha256}, ${input.contentType}, 'open', ${input.bytes},
         ${input.stage ?? "original"}, ${input.photoId ?? null},
         ${input.originalContentType ?? null}, ${input.originalBytes ?? null},
@@ -432,6 +434,7 @@ export class PostgresDatabase implements Database {
     id: string;
     eventId: string;
     photographerId: string;
+    collection?: PhotoCollection;
     sha256: string;
     originalKey: string;
     contentType: ImageContentType;
@@ -443,11 +446,11 @@ export class PostgresDatabase implements Database {
     try {
       const rows = await this.sql<PhotoSql[]>`
         insert into photos (
-          id, event_id, photographer_id, sha256, status, original_key, content_type, bytes, original_status,
+          id, event_id, photographer_id, collection, sha256, status, original_key, content_type, bytes, original_status,
           filename, tags
         )
         values (
-          ${input.id}, ${input.eventId}, ${input.photographerId}, ${input.sha256},
+          ${input.id}, ${input.eventId}, ${input.photographerId}, ${input.collection ?? "official"}, ${input.sha256},
           'uploaded', ${input.originalKey}, ${input.contentType}, ${input.bytes},
           ${input.originalStatus ?? "present"}, ${input.filename ?? null}, ${input.tags ?? []}::text[]
         )
@@ -531,6 +534,35 @@ export class PostgresDatabase implements Database {
       from photos where id = any(${ids}::uuid[])
     `;
     return rows.map(mapPhoto);
+  }
+
+  async listPublicGallery(
+    eventId: string,
+    input: { limit: number; offset: number },
+  ): Promise<PublicGalleryItem[]> {
+    const rows = await this.sql<{
+      photo_id: string;
+      created_at: Date;
+      thumb_key: string;
+      web_key: string;
+      original_status: OriginalStatus;
+    }[]>`
+      select p.id as photo_id, p.created_at, t.s3_key as thumb_key, w.s3_key as web_key,
+             p.original_status
+      from photos p
+      join derivatives t on t.photo_id = p.id and t.kind = 'thumb'
+      join derivatives w on w.photo_id = p.id and w.kind = 'web'
+      where p.event_id = ${eventId} and p.collection = 'public' and p.status = 'indexed'
+      order by p.created_at desc, p.id desc
+      limit ${input.limit} offset ${input.offset}
+    `;
+    return rows.map((row) => ({
+      photoId: row.photo_id,
+      createdAt: row.created_at,
+      thumbKey: row.thumb_key,
+      webKey: row.web_key,
+      originalReady: row.original_status === "present",
+    }));
   }
 
   async listOwnedPhotos(userId: string, eventId: string, photoIds: string[]): Promise<PhotoRow[]> {
@@ -1862,6 +1894,7 @@ type PhotoSql = {
   id: string;
   event_id: string;
   photographer_id: string;
+  collection: PhotoCollection;
   sha256: string;
   status: PhotoStatus;
   original_key: string;
@@ -1876,6 +1909,7 @@ type UploadSql = {
   id: string;
   event_id: string;
   photographer_id: string;
+  collection: PhotoCollection;
   s3_upload_id: string | null;
   object_key: string;
   sha256: string;
@@ -1938,6 +1972,7 @@ function mapPhoto(row: PhotoSql): PhotoRow {
     id: row.id,
     eventId: row.event_id,
     photographerId: row.photographer_id,
+    collection: row.collection,
     sha256: row.sha256,
     status: row.status,
     originalKey: row.original_key,
@@ -1954,6 +1989,7 @@ function mapUpload(row: UploadSql): UploadSessionRow {
     id: row.id,
     eventId: row.event_id,
     photographerId: row.photographer_id,
+    collection: row.collection,
     s3UploadId: row.s3_upload_id,
     objectKey: row.object_key,
     sha256: row.sha256,

@@ -154,6 +154,13 @@ export const galleryQuerySchema = z
   })
   .strict();
 
+export const publicGalleryQuerySchema = z
+  .object({
+    offset: z.coerce.number().int().min(0).default(0),
+    limit: z.coerce.number().int().min(1).max(GALLERY_PAGE_MAX).default(GALLERY_PAGE_DEFAULT),
+  })
+  .strict();
+
 export const galleryItemSchema = z
   .object({
     photoId: z.string().uuid(),
@@ -250,6 +257,10 @@ export function decodeGalleryCursor(
 export const uploadStageSchema = z.enum(["original", "web"]);
 export type UploadStage = z.infer<typeof uploadStageSchema>;
 
+/** The public stream is user-contributed; the official stream is photographer-curated. */
+export const photoCollectionSchema = z.enum(["public", "official"]);
+export type PhotoCollection = z.infer<typeof photoCollectionSchema>;
+
 export const originalStatusSchema = z.enum(["pending", "present"]);
 export type OriginalStatus = z.infer<typeof originalStatusSchema>;
 
@@ -267,6 +278,7 @@ const uploadTagsSchema = z
 export const uploadInitOriginalBodySchema = z
   .object({
     eventId: z.string().uuid(),
+    collection: photoCollectionSchema.default("official"),
     filename: z.string().min(1).max(200),
     contentType: imageContentTypeSchema,
     sha256: sha256Schema,
@@ -285,6 +297,7 @@ export const uploadInitOriginalBodySchema = z
 export const uploadInitWebBodySchema = z
   .object({
     eventId: z.string().uuid(),
+    collection: photoCollectionSchema.default("official"),
     filename: z.string().min(1).max(200),
     contentType: z.literal("image/jpeg"),
     sha256: sha256Schema,

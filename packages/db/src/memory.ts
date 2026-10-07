@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { JobType, PhotoStatus, Role } from "@rephoto/contracts";
+import type { JobType, PhotoCollection, PhotoStatus, Role } from "@rephoto/contracts";
 import {
   JOB_MAX_ATTEMPTS,
   JOB_PRIORITY,
@@ -42,6 +42,7 @@ import type {
   PhotoAdminFilters,
   PhotoAdminRow,
   PhotoDetail,
+  PublicGalleryItem,
   ClaimOptions,
   GalleryMatchPatch,
   MatchHitInsert,
@@ -327,6 +328,7 @@ export class MemoryDatabase implements Database {
     id: string;
     eventId: string;
     photographerId: string;
+    collection?: PhotoCollection;
     s3UploadId: string | null;
     objectKey: string;
     sha256: string;
@@ -345,6 +347,7 @@ export class MemoryDatabase implements Database {
       id: input.id,
       eventId: input.eventId,
       photographerId: input.photographerId,
+      collection: input.collection ?? "official",
       s3UploadId: input.s3UploadId,
       objectKey: input.objectKey,
       sha256: input.sha256,
@@ -425,6 +428,7 @@ export class MemoryDatabase implements Database {
     id: string;
     eventId: string;
     photographerId: string;
+    collection?: PhotoCollection;
     sha256: string;
     originalKey: string;
     contentType: ImageContentType;
@@ -439,6 +443,7 @@ export class MemoryDatabase implements Database {
       id: input.id,
       eventId: input.eventId,
       photographerId: input.photographerId,
+      collection: input.collection ?? "official",
       sha256: input.sha256,
       originalKey: input.originalKey,
       contentType: input.contentType,
@@ -515,6 +520,23 @@ export class MemoryDatabase implements Database {
       if (photo) rows.push(photo);
     }
     return rows;
+  }
+
+  async listPublicGallery(
+    eventId: string,
+    input: { limit: number; offset: number },
+  ): Promise<PublicGalleryItem[]> {
+    return [...this.photos.values()]
+      .filter((photo) => photo.eventId === eventId && photo.collection === "public" && photo.status === "indexed")
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id))
+      .slice(input.offset, input.offset + input.limit)
+      .flatMap((photo) => {
+        const thumb = this.derivatives.find((row) => row.photoId === photo.id && row.kind === "thumb");
+        const web = this.derivatives.find((row) => row.photoId === photo.id && row.kind === "web");
+        return thumb && web
+          ? [{ photoId: photo.id, createdAt: photo.createdAt, thumbKey: thumb.s3Key, webKey: web.s3Key, originalReady: photo.originalStatus === "present" }]
+          : [];
+      });
   }
 
   async listOwnedPhotos(userId: string, eventId: string, photoIds: string[]): Promise<PhotoRow[]> {

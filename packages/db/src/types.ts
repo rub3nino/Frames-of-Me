@@ -1,4 +1,4 @@
-import type { JobType, PhotoStatus, Role } from "@rephoto/contracts";
+import type { JobType, PhotoCollection, PhotoStatus, Role } from "@rephoto/contracts";
 
 export type ImageContentType = "image/jpeg" | "image/png";
 
@@ -38,6 +38,7 @@ export type PhotoRow = {
   id: string;
   eventId: string;
   photographerId: string;
+  collection: PhotoCollection;
   sha256: string;
   status: PhotoStatus;
   originalKey: string;
@@ -53,6 +54,7 @@ export type UploadSessionRow = {
   id: string;
   eventId: string;
   photographerId: string;
+  collection: PhotoCollection;
   s3UploadId: string | null;
   objectKey: string;
   sha256: string;
@@ -91,6 +93,14 @@ export type GalleryPageItem = {
 export type GalleryCursor = { score: number; photoId: string };
 
 export type GalleryPage = { total: number; items: GalleryPageItem[] };
+
+export type PublicGalleryItem = {
+  photoId: string;
+  createdAt: Date;
+  thumbKey: string;
+  webKey: string;
+  originalReady: boolean;
+};
 
 export type AnchoredGallery = {
   id: string;
@@ -197,6 +207,7 @@ export interface Database {
     id: string;
     eventId: string;
     photographerId: string;
+    collection?: PhotoCollection;
     s3UploadId: string | null;
     objectKey: string;
     sha256: string;
@@ -227,6 +238,7 @@ export interface Database {
     id: string;
     eventId: string;
     photographerId: string;
+    collection?: PhotoCollection;
     sha256: string;
     originalKey: string;
     contentType: ImageContentType;
@@ -250,6 +262,7 @@ export interface Database {
   listPhotosCreatedBefore(eventId: string, cutoff: Date, limit?: number): Promise<PhotoRow[]>;
   countPhotos(eventId: string): Promise<number>;
   listPhotosByIds(ids: string[]): Promise<PhotoRow[]>;
+  listPublicGallery(eventId: string, input: { limit: number; offset: number }): Promise<PublicGalleryItem[]>;
   /** Photos among `photoIds` that are in the caller's gallery for the event. One query. */
   listOwnedPhotos(userId: string, eventId: string, photoIds: string[]): Promise<PhotoRow[]>;
   upsertDerivative(input: {

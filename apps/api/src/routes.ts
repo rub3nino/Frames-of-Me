@@ -32,6 +32,7 @@ import {
   MULTIPART_THRESHOLD_BYTES,
   objectKeys,
   participantsImportBodySchema,
+  publicGalleryQuerySchema,
   requestLinkBodySchema,
   retentionBodySchema,
   SELFIE_FIELD_NAME,
@@ -283,6 +284,26 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     });
   });
 
+  app.get("/v1/events/:slug/public-gallery", async (c) => {
+    const user = requireUser(c);
+    requireRole(user, ["participant"]);
+    const event = await loadEvent(deps, c.req.param("slug"));
+    await requireParticipantAccess(deps, user, event);
+    const query = publicGalleryQuerySchema.safeParse(c.req.query());
+    if (!query.success) throw new ApiError(400, MESSAGES.validation);
+    const page = await deps.db.listPublicGallery(event.id, query.data);
+    const items = await Promise.all(
+      page.map(async (row) => ({
+        photoId: row.photoId,
+        thumbUrl: await deps.objects.presignGet(row.thumbKey),
+        webUrl: await deps.objects.presignGet(row.webKey),
+        createdAt: row.createdAt.toISOString(),
+        originalReady: row.originalReady,
+      })),
+    );
+    return c.json({ offset: query.data.offset, limit: query.data.limit, items });
+  });
+
   app.post("/v1/events/:slug/gallery/download", async (c) => {
     const user = requireUser(c);
     requireRole(user, ["participant"]);
@@ -366,15 +387,22 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
 
   app.post("/v1/uploads/init", async (c) => {
     const user = requireUser(c);
-    requireRole(user, ["photographer"]);
     const body = uploadInitBodySchema.safeParse(await readJson(c));
     if (!body.success) throw new ApiError(400, MESSAGES.validation);
     const event = await deps.db.findEventById(body.data.eventId);
     if (!event) throw new ApiError(404, MESSAGES.notFound);
-    if (!(await deps.db.isEventPhotographer(event.id, user.id))) {
-      throw new ApiError(403, MESSAGES.forbidden);
-    }
     const input = body.data;
+    if (input.collection === "official") {
+      requireRole(user, ["photographer"]);
+      if (!(await deps.db.isEventPhotographer(event.id, user.id))) {
+        throw new ApiError(403, MESSAGES.forbidden);
+      }
+    } else {
+      // Public contributions still require an authenticated participant and event access.
+      // Anonymous uploads would make the 150k-photo target an unauditable abuse surface.
+      requireRole(user, ["participant"]);
+      await requireParticipantAccess(deps, user, event);
+    }
     const uploadId = randomUUID();
     if (input.stage === "web") {
       // Web stage: the 1600 px JPEG goes straight to the web derivative key; the photo row
@@ -387,6 +415,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
         id: uploadId,
         eventId: event.id,
         photographerId: user.id,
+        collection: input.collection,
         s3UploadId: null,
         objectKey,
         sha256: input.sha256,
@@ -436,6 +465,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       id: uploadId,
       eventId: event.id,
       photographerId: user.id,
+      collection: input.collection,
       s3UploadId,
       objectKey,
       sha256: input.sha256,
@@ -470,8 +500,8 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
 
   app.post("/v1/uploads/:id/parts", async (c) => {
     const user = requireUser(c);
-    requireRole(user, ["photographer"]);
     const session = await ownUpload(deps, c.req.param("id"), user.id);
+    requireRole(user, session.collection === "public" ? ["participant"] : ["photographer"]);
     if (!session.s3UploadId) throw new ApiError(400, MESSAGES.validation);
     const body = uploadPartBodySchema.safeParse(await readJson(c));
     if (!body.success) throw new ApiError(400, MESSAGES.validation);
@@ -485,8 +515,8 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
 
   app.post("/v1/uploads/:id/complete", async (c) => {
     const user = requireUser(c);
-    requireRole(user, ["photographer"]);
     const session = await ownUpload(deps, c.req.param("id"), user.id);
+    requireRole(user, session.collection === "public" ? ["participant"] : ["photographer"]);
     if (session.status !== "open") throw new ApiError(409, MESSAGES.conflict);
     const body = uploadCompleteBodySchema.safeParse(await readJson(c));
     if (!body.success) throw new ApiError(400, MESSAGES.validation);
@@ -550,6 +580,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
         id: photoId,
         eventId: session.eventId,
         photographerId: user.id,
+        collection: session.collection,
         sha256: session.sha256,
         originalKey: web ? objectKeys.original(session.eventId, photoId) : session.objectKey,
         contentType: web ? session.originalContentType ?? session.contentType : session.contentType,
