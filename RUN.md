@@ -63,8 +63,32 @@ Notes:
 - **Keep root for the console.** http://localhost:9001 and any `mc` alias stay on `rephoto` / `rephoto-secret`.
 - **`mc ls` / `mc stat` fail as `rephoto-app`**, on purpose: the policy grants no `s3:ListBucket`, so a leaked application key cannot enumerate the bucket. The application never lists — it addresses every object by key — and a Get/Head of a missing key still answers `NoSuchKey`, so `store.get()` / `store.head()` keep returning `null` instead of throwing.
 - **To rotate the key**: set `S3_APP_SECRET_KEY` in the shell (or in a `.env` compose reads), `docker compose up -d --force-recreate minio-init`, put the same value in `.env` as `S3_SECRET_KEY`, restart api and worker.
-- With the `app` profile (`docker compose --profile app up --build`) there is nothing to do: api, worker and migrate read the application user from compose and wait for `minio-init`.
-- `docker-compose.coolify.yml` is **not** covered by this change: there `MINIO_ROOT_USER` is still `S3_ACCESS_KEY`, i.e. the api's own key is root. It is a live deployment and a separate decision.
+- The `app` profile (`docker compose --profile app up --build`) needs nothing: api, worker and migrate read the application user from compose and wait for `minio-init`.
+
+### Coolify: read this BEFORE the next deploy — one variable to add, or the deploy fails
+
+`docker-compose.coolify.yml` had the same problem, worse: `MINIO_ROOT_USER: ${S3_ACCESS_KEY}`, so the **api's own key was the MinIO root account**. A leaked application key was full administrative access to the object store — delete any bucket, read the backup copy, add users, rewrite policies — and that key is in two long-running Node processes and signs every presigned URL a browser gets. It is now the same split as everywhere else: `rephoto-app` for api and worker, root only for `minio-init` and the console.
+
+**What happens if you deploy without doing anything: the deploy fails and nothing changes.** `S3_APP_SECRET_KEY` has no default — deliberately, because a default here would be a key whose secret is printed in this repository, on a bucket reachable from the internet. Compose stops at interpolation with
+
+```
+error while interpolating x-app-env.S3_SECRET_KEY: required variable S3_APP_SECRET_KEY is
+missing a value: add S3_APP_SECRET_KEY in Coolify (v6 hardening H3; see "MinIO credentials"
+in RUN.md). ...
+```
+
+No container is recreated, so **the running stack keeps serving** — the site stays up, the failure is in the deploy log. It is a blocked deploy, not an outage. Fix it by doing step 1 and redeploying.
+
+Steps in Coolify → the resource → *Environment Variables*, in this order:
+
+1. **Add `S3_APP_SECRET_KEY`** — a new random value, `openssl rand -base64 24`, at least 8 characters. Do **not** reuse `S3_SECRET_KEY`. (Optionally add `S3_APP_ACCESS_KEY`; it defaults to `rephoto-app` and the default is fine, it is a username, not a secret.) **Redeploy.** `minio-init` creates the user and the bucket-scoped policy with the root account you already have, then api and worker come up signing as `rephoto-app`. Everything works at this point: same bucket, same objects, same presigned URLs.
+2. **Add `MINIO_ROOT_USER` and `MINIO_ROOT_PASSWORD`**, set to **exactly the values `S3_ACCESS_KEY` and `S3_SECRET_KEY` have today**. This is a rename, not a change: until these two exist the compose file still reads root from the old pair (`${MINIO_ROOT_USER:-${S3_ACCESS_KEY:-…}}`), which is why step 1 did not change who root is. MinIO reads its root credentials from the environment on every start, so giving them different values here **would** change the root account. **Redeploy** and check the `minio-init` log ends with `minio-init: done`.
+3. **Delete `S3_ACCESS_KEY` and `S3_SECRET_KEY`** from Coolify. Nothing reads them any more. **Redeploy.** If a redeploy ever fails with `required variable S3_APP_SECRET_KEY`, you deleted the wrong one — put back `S3_APP_SECRET_KEY`, not these.
+4. **Rotate root** (recommended, now that it is a separate account): change `MINIO_ROOT_PASSWORD` to a fresh value and redeploy. The old value was also the api's key for as long as this file existed, so treat it as exposed.
+
+Checks after step 3: upload a photo and open its thumbnail (presigned PUT and GET as `rephoto-app`); the `minio-init` log shows `policy rephoto-app`, `user rephoto-app`, `attach` and `lifecycle selfies/`; the MinIO console still logs in with the root pair.
+
+Also carried over: the selfie lifecycle rule (`selfies/*` expires after a day, so a kept selfie is deleted by the store itself) now lives in the shared provisioning script behind `S3_SELFIE_EXPIRE_DAYS`, which only this file sets. It is applied once instead of once per deploy — the old inline `mc ilm rule add` added a duplicate rule on **every** deploy. Existing duplicates are harmless; clear them with `mc ilm rule rm --id <id> local/rephoto` as root if you want a tidy list.
 
 ## Face engine: `fake` or `insightface`
 
@@ -297,13 +321,13 @@ k6 scripts for the two hot paths (photographer upload, participant selfie with p
 The test deployment runs from `docker-compose.coolify.yml` on Coolify. Public exposure is a Cloudflare Tunnel → Coolify's Traefik, so no host ports are published; you map an FQDN per service in the Coolify UI.
 
 1. **New resource**: Coolify → project *RePhoto* → environment *test* → **+ New** → **Docker Compose** → source = the GitHub repo `rub3nino/rephoto`, branch `main`, compose file `docker-compose.coolify.yml`. Enable **automatic deploy on push**.
-2. **Environment variables** (Coolify → the resource → *Environment Variables*): set the values from the *Production / Coolify* block in `.env.example`. At minimum `SESSION_SECRET` (32+ random chars), `S3_ACCESS_KEY` / `S3_SECRET_KEY`, `POSTGRES_PASSWORD`, `WEB_ORIGIN`, `API_ORIGIN`, `S3_ENDPOINT=https://s3.framesofme.com`, `NEXT_PUBLIC_WEB_ORIGIN`, `NEXT_PUBLIC_MEDIA_ORIGINS=https://s3.framesofme.com`, `SMTP_FROM`, `BOOTSTRAP_ADMINS`. The `NEXT_PUBLIC_*` ones are build-time — set them as **Build Variables** too. Do **not** set `SEED_DEMO` on api/worker (it is forced on the one-shot `migrate` service only).
+2. **Environment variables** (Coolify → the resource → *Environment Variables*): set the values from the *Production / Coolify* block in `.env.example`. At minimum `SESSION_SECRET` (32+ random chars), `S3_APP_SECRET_KEY` (**required**, no default — the bucket-scoped application key; see “Coolify: read this BEFORE the next deploy” above) with `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` for the MinIO root account, `POSTGRES_PASSWORD`, `WEB_ORIGIN`, `API_ORIGIN`, `S3_ENDPOINT=https://s3.framesofme.com`, `NEXT_PUBLIC_WEB_ORIGIN`, `NEXT_PUBLIC_MEDIA_ORIGINS=https://s3.framesofme.com`, `SMTP_FROM`, `BOOTSTRAP_ADMINS`. The `NEXT_PUBLIC_*` ones are build-time — set them as **Build Variables** too. Do **not** set `SEED_DEMO` on api/worker (it is forced on the one-shot `migrate` service only).
 3. **Domains (FQDN per service)** in each service's *Domains* field:
    - `web` → `https://framesofme.com` (+ `https://www.framesofme.com`), container port **3000**
    - `api` → `https://api.framesofme.com`, container port **8787**
    - `minio` → `https://s3.framesofme.com`, container port **9000**
    - `mailpit` → `https://mail.framesofme.com`, container port **8025** (keep behind Cloudflare Access)
-4. **Deploy**. On first boot: `migrate` runs once (schema + demo event) and exits 0, then `api` and `worker` start; `minio-init` creates the bucket and the 24 h expiry rule for `selfies/`. `FACE_ENGINE=fake` by default — for real matching set `FACE_ENGINE=insightface` and keep the `face-service` (needs more RAM; first build pulls the ~280 MB model).
+4. **Deploy**. On first boot: `migrate` runs once (schema + demo event) and exits 0, then `api` and `worker` start; `minio-init` creates the bucket, the bucket-scoped `rephoto-app` policy and user (v6 hardening H3) and the 24 h expiry rule for `selfies/`. `FACE_ENGINE=fake` by default — for real matching set `FACE_ENGINE=insightface` and keep the `face-service` (needs more RAM; first build pulls the ~280 MB model).
 5. **Verify**: `https://api.framesofme.com/health` → 200, `https://framesofme.com/` → 200, `https://framesofme.com/v1/events/demo` → 200.
 
 Cloudflare Tunnel: point the tunnel at Coolify's Traefik (the proxy's `:80`/`:443`), with a public hostname per FQDN above. No inbound ports are opened on the host.
