@@ -193,7 +193,16 @@ export class PostgresDatabase implements Database {
   }
 
   async setUserPassword(userId: string, passwordHash: string): Promise<void> {
-    await this.sql`update users set password_hash = ${passwordHash} where id = ${userId}`;
+    // v6 hardening (agent H): a new password retires every outstanding reset link of that
+    // user, in the same transaction. Doing it here rather than at the call sites means no
+    // future password-changing route can forget it. See migration 016.
+    await this.sql.begin(async (tx) => {
+      await tx`update users set password_hash = ${passwordHash} where id = ${userId}`;
+      await tx`
+        update password_reset_tokens set used_at = now()
+        where user_id = ${userId} and used_at is null
+      `;
+    });
   }
 
   async findUserForLogin(
@@ -2108,6 +2117,59 @@ export class PostgresDatabase implements Database {
       select email_verified_at from users where id = ${userId}
     `;
     return rows[0]?.email_verified_at ?? null;
+  }
+
+  // ---- hardening v6 (agent H): password-reset tokens, migration 016 -----------------------
+
+  async insertPasswordResetToken(input: {
+    userId: string;
+    tokenHash: string;
+    expiresAt: Date;
+    ip: string | null;
+  }): Promise<void> {
+    await this.sql`
+      insert into password_reset_tokens (user_id, token_hash, expires_at, ip)
+      values (${input.userId}, ${input.tokenHash}, ${input.expiresAt}, ${input.ip})
+    `;
+  }
+
+  async countPasswordResetTokensSince(input: {
+    userId?: string;
+    ip?: string;
+    since: Date;
+  }): Promise<number> {
+    if (input.userId === undefined && input.ip === undefined) return 0;
+    const rows = await this.sql<{ count: string }[]>`
+      select count(*)::text as count from password_reset_tokens
+      where created_at >= ${input.since}
+        and (${input.userId ?? null}::uuid is null or user_id = ${input.userId ?? null})
+        and (${input.ip ?? null}::text is null or ip = ${input.ip ?? null})
+    `;
+    return Number(rows[0]?.count ?? 0);
+  }
+
+  /** One statement: the `used_at is null` guard makes a replay (or a race) return null. */
+  async consumePasswordResetToken(tokenHash: string): Promise<{ userId: string } | null> {
+    const rows = await this.sql<{ user_id: string }[]>`
+      update password_reset_tokens
+      set used_at = now()
+      where token_hash = ${tokenHash}
+        and used_at is null
+        and expires_at > now()
+      returning user_id
+    `;
+    const row = rows[0];
+    return row ? { userId: String(row.user_id) } : null;
+  }
+
+  async invalidatePasswordResetTokens(userId: string): Promise<number> {
+    const rows = await this.sql<{ id: string }[]>`
+      update password_reset_tokens
+      set used_at = now()
+      where user_id = ${userId} and used_at is null
+      returning id
+    `;
+    return rows.length;
   }
 }
 
