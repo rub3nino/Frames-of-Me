@@ -1,0 +1,937 @@
+/*
+ * v6 section C (agent C): crowd upload, the kill switch, the report threshold, moderation
+ * transitions and the per-album dedup.
+ *
+ * Run: node --import tsx --test apps/api/test/v6-crowd.test.ts
+ *
+ * One test per clause of the C2 authorization rule, as the acceptance criteria ask:
+ * `kind = 'crowd'`, `uploads_open = true`, the caller is a participant of the event, and
+ * their approved + pending count in the album is below `max_photos_per_user`.
+ */
+import assert from "node:assert/strict";
+import { createHash, randomUUID } from "node:crypto";
+import { Readable } from "node:stream";
+import { test } from "node:test";
+import {
+  albumPhotosResponseSchema,
+  albumUploadDedupeResponseSchema,
+  envSchema,
+  moderateResponseSchema,
+  moderationResponseSchema,
+  objectKeys,
+  reportResponseSchema,
+  SESSION_COOKIE_NAME,
+  type Env,
+} from "@rephoto/contracts";
+import { MemoryDatabase, type AlbumRow, type Database, type UserRow } from "@rephoto/db";
+import {
+  FakeFaceEngine,
+  MemoryFaceIndexStore,
+} from "../../../packages/face-engine/src/fake.ts";
+import { createApp } from "../src/app.ts";
+import { sha256Hex } from "../src/crypto.ts";
+import type { AppDeps } from "../src/deps.ts";
+import { MESSAGES } from "../src/errors.ts";
+import type { Mailer, MailMessage } from "../src/mailer.ts";
+import type {
+  CompletedPart,
+  ObjectStore,
+  PutObjectOptions,
+  StoredObject,
+  StreamedObject,
+} from "../src/object-store.ts";
+import { createQueue } from "../src/queue.ts";
+import type { Screening, ScreeningInput, ScreeningVerdict } from "../src/screening.ts";
+
+const baseEnv = {
+  DATABASE_URL: "postgres://rephoto:rephoto@localhost:5432/rephoto",
+  S3_BUCKET: "rephoto",
+  S3_REGION: "eu-central-1",
+  SESSION_SECRET: "test-session-secret-value",
+  FACE_ENGINE: "fake",
+  AWS_REGION: "eu-central-1",
+  REKOGNITION_COLLECTION_PREFIX: "rephoto-",
+  SMTP_HOST: "localhost",
+  SMTP_PORT: "1025",
+  SMTP_FROM: "noreply@rephoto.local",
+  WEB_ORIGIN: "http://localhost:3000",
+  API_ORIGIN: "http://localhost:8787",
+} as const;
+
+const env: Env = envSchema.parse(baseEnv);
+
+class MemoryObjectStore implements ObjectStore {
+  readonly objects = new Map<string, StoredObject>();
+  readonly deleted: string[] = [];
+
+  async put(key: string, body: Uint8Array, contentType: string, _options?: PutObjectOptions) {
+    void _options;
+    this.objects.set(key, { body, contentType });
+  }
+  async get(key: string): Promise<StoredObject | null> {
+    return this.objects.get(key) ?? null;
+  }
+  async stream(key: string): Promise<StreamedObject | null> {
+    const stored = this.objects.get(key);
+    if (!stored) return null;
+    return {
+      body: Readable.from([Buffer.from(stored.body)]),
+      contentType: stored.contentType,
+      bytes: stored.body.byteLength,
+    };
+  }
+  async head(key: string): Promise<{ bytes: number; contentType: string } | null> {
+    const stored = this.objects.get(key);
+    return stored ? { bytes: stored.body.byteLength, contentType: stored.contentType } : null;
+  }
+  async delete(key: string): Promise<void> {
+    this.deleted.push(key);
+    this.objects.delete(key);
+  }
+  async presignPut(key: string): Promise<string> {
+    return `http://localhost:9000/${key}?put=1`;
+  }
+  async createMultipartUpload(): Promise<string> {
+    return `mp-${randomUUID()}`;
+  }
+  async presignUploadPart(key: string, uploadId: string, partNumber: number): Promise<string> {
+    return `http://localhost:9000/${key}?upload=${uploadId}&part=${partNumber}`;
+  }
+  async completeMultipartUpload(): Promise<void> {}
+  async abortMultipartUpload(): Promise<void> {}
+  async presignGet(key: string): Promise<string> {
+    return `http://localhost:9000/${key}`;
+  }
+}
+
+class StubMailer implements Mailer {
+  readonly sent: MailMessage[] = [];
+  async send(message: MailMessage): Promise<void> {
+    this.sent.push(message);
+  }
+}
+
+/** A screening hook that records what it saw and answers whatever the test set. */
+class RecordingScreening implements Screening {
+  readonly seen: ScreeningInput[] = [];
+  verdict: ScreeningVerdict = { state: "approved" };
+  async screen(input: ScreeningInput): Promise<ScreeningVerdict> {
+    this.seen.push(input);
+    return this.verdict;
+  }
+}
+
+type Harness = {
+  app: ReturnType<typeof createApp>;
+  db: MemoryDatabase;
+  objects: MemoryObjectStore;
+  screening: RecordingScreening;
+  event: { id: string; slug: string };
+  crowd: AlbumRow;
+  official: AlbumRow;
+  admin: UserRow;
+};
+
+async function harness(
+  overrides: Partial<AppDeps> = {},
+  albumOverrides: Partial<Parameters<Database["createAlbum"]>[0]> = {},
+  envOverrides: Record<string, string> = {},
+): Promise<Harness> {
+  const db = new MemoryDatabase();
+  await db.seedDemo();
+  const event = await db.findEventBySlug("demo");
+  assert.ok(event);
+  const official = await db.findDefaultAlbum(event.id);
+  assert.ok(official, "migration 009 gives every event its official album");
+  const crowd = await db.createAlbum({
+    eventId: event.id,
+    slug: "di-tutti",
+    name: "Album di tutti",
+    kind: "crowd",
+    ...albumOverrides,
+  });
+  const admin = await db.findUserByEmailRole("admin@rephoto.local", "admin");
+  assert.ok(admin);
+  const objects = new MemoryObjectStore();
+  const screening = new RecordingScreening();
+  const app = createApp({
+    env: Object.keys(envOverrides).length > 0 ? envSchema.parse({ ...baseEnv, ...envOverrides }) : env,
+    db,
+    objects,
+    mailer: new StubMailer(),
+    queue: createQueue(db),
+    faces: new FakeFaceEngine(new MemoryFaceIndexStore()),
+    screening,
+    ...overrides,
+  });
+  return {
+    app,
+    db,
+    objects,
+    screening,
+    event: { id: event.id, slug: event.slug },
+    crowd,
+    official,
+    admin,
+  };
+}
+
+async function participant(h: Harness, email: string): Promise<{ user: UserRow; cookie: string }> {
+  const user = await h.db.createUser({ email, role: "participant" });
+  return { user, cookie: await cookieFor(h.db, user.id) };
+}
+
+async function cookieFor(db: Database, userId: string): Promise<string> {
+  const token = randomUUID();
+  await db.insertSession({
+    userId,
+    tokenHash: sha256Hex(token),
+    expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+  });
+  return `${SESSION_COOKIE_NAME}=${token}`;
+}
+
+function json(method: string, path: string, body: unknown, cookie?: string): Request {
+  return new Request(`http://api.local${path}`, {
+    method,
+    headers: {
+      "content-type": "application/json",
+      ...(cookie ? { cookie } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+function get(path: string, cookie?: string): Request {
+  return new Request(`http://api.local${path}`, {
+    method: "GET",
+    headers: cookie ? { cookie } : {},
+  });
+}
+
+function sha256(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+/** init → PUT the bytes into the store → complete. Returns the complete response. */
+async function upload(
+  h: Harness,
+  albumId: string,
+  cookie: string,
+  content: string,
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const bytes = Buffer.from(content);
+  const init = await h.app.request(
+    json(
+      "POST",
+      `/v1/albums/${albumId}/uploads/init`,
+      {
+        filename: "polaroid.jpg",
+        contentType: "image/jpeg",
+        sha256: sha256(bytes),
+        bytes: bytes.byteLength,
+      },
+      cookie,
+    ),
+  );
+  if (init.status !== 201) {
+    return { status: init.status, body: (await init.json()) as Record<string, unknown> };
+  }
+  const created = (await init.json()) as { id: string; objectKey: string };
+  await h.objects.put(created.objectKey, bytes, "image/jpeg");
+  const done = await h.app.request(
+    json("POST", `/v1/albums/${albumId}/uploads/${created.id}/complete`, { parts: [] }, cookie),
+  );
+  return { status: done.status, body: (await done.json()) as Record<string, unknown> };
+}
+
+/** The derive job the worker would have run: both derivatives, so the photo shows up. */
+async function derive(h: Harness, photoId: string): Promise<void> {
+  await h.objects.put(objectKeys.thumb(photoId), Buffer.from("thumb"), "image/jpeg");
+  await h.objects.put(objectKeys.web(photoId), Buffer.from("web"), "image/jpeg");
+  await h.db.upsertDerivative({ photoId, kind: "thumb", s3Key: objectKeys.thumb(photoId) });
+  await h.db.upsertDerivative({ photoId, kind: "web", s3Key: objectKeys.web(photoId) });
+}
+
+// ---- C2 clause 1: the album must be `kind = 'crowd'` ---------------------------------------
+
+test("a participant cannot upload into the official album (clause: kind = 'crowd')", async () => {
+  const h = await harness();
+  const anna = await participant(h, "anna@example.com");
+  const res = await h.app.request(
+    json(
+      "POST",
+      `/v1/albums/${h.official.id}/uploads/init`,
+      { filename: "a.jpg", contentType: "image/jpeg", sha256: sha256(Buffer.from("a")), bytes: 1 },
+      anna.cookie,
+    ),
+  );
+  assert.equal(res.status, 403);
+  assert.deepEqual(await res.json(), { error: MESSAGES.uploadNotCrowd });
+});
+
+// ---- C2 clause 2: `uploads_open` is the kill switch ---------------------------------------
+
+test("uploads_open = false makes every upload route answer 423, with no restart", async () => {
+  const h = await harness();
+  const anna = await participant(h, "anna@example.com");
+  // It works first: this is a live flip, not a start-up configuration.
+  const first = await upload(h, h.crowd.id, anna.cookie, "one");
+  assert.equal(first.status, 201);
+
+  await h.db.updateAlbum(h.crowd.id, { uploadsOpen: false });
+
+  const init = await h.app.request(
+    json(
+      "POST",
+      `/v1/albums/${h.crowd.id}/uploads/init`,
+      { filename: "b.jpg", contentType: "image/jpeg", sha256: sha256(Buffer.from("b")), bytes: 3 },
+      anna.cookie,
+    ),
+  );
+  assert.equal(init.status, 423);
+  assert.deepEqual(await init.json(), { error: MESSAGES.uploadsClosed });
+
+  // Every upload route, not just init: a session opened before the switch cannot be finished.
+  const parts = await h.app.request(
+    json("POST", `/v1/albums/${h.crowd.id}/uploads/${randomUUID()}/parts`, { partNumber: 1 }, anna.cookie),
+  );
+  assert.equal(parts.status, 423);
+  const complete = await h.app.request(
+    json("POST", `/v1/albums/${h.crowd.id}/uploads/${randomUUID()}/complete`, { parts: [] }, anna.cookie),
+  );
+  assert.equal(complete.status, 423);
+
+  // And back on again, still with no restart.
+  await h.db.updateAlbum(h.crowd.id, { uploadsOpen: true });
+  const again = await upload(h, h.crowd.id, anna.cookie, "two");
+  assert.equal(again.status, 201);
+});
+
+// ---- C2 clause 3: the caller is a participant of the event -------------------------------
+
+test("only a participant of the event may upload (clause: event membership)", async () => {
+  const h = await harness();
+  // An `access = 'list'` event checks the imported participant list, as the selfie route does.
+  await h.db.updateEvent(h.event.id, { access: "list" });
+  const outsider = await participant(h, "outsider@example.com");
+  const body = {
+    filename: "a.jpg",
+    contentType: "image/jpeg" as const,
+    sha256: sha256(Buffer.from("a")),
+    bytes: 1,
+  };
+  const refused = await h.app.request(
+    json("POST", `/v1/albums/${h.crowd.id}/uploads/init`, body, outsider.cookie),
+  );
+  assert.equal(refused.status, 403);
+  assert.deepEqual(await refused.json(), { error: MESSAGES.notOnList });
+
+  await h.db.upsertEventParticipants(h.event.id, ["outsider@example.com"]);
+  const allowed = await h.app.request(
+    json("POST", `/v1/albums/${h.crowd.id}/uploads/init`, body, outsider.cookie),
+  );
+  assert.equal(allowed.status, 201);
+
+  // A photographer is not a participant: the crowd routes are participant-only.
+  const photographer = await h.db.findUserByEmailRole("photographer@rephoto.local", "photographer");
+  assert.ok(photographer);
+  const wrongRole = await h.app.request(
+    json(
+      "POST",
+      `/v1/albums/${h.crowd.id}/uploads/init`,
+      body,
+      await cookieFor(h.db, photographer.id),
+    ),
+  );
+  assert.equal(wrongRole.status, 403);
+
+  // And an anonymous caller gets 401, never 403.
+  const anon = await h.app.request(json("POST", `/v1/albums/${h.crowd.id}/uploads/init`, body));
+  assert.equal(anon.status, 401);
+});
+
+// ---- C2 clause 4: the per-user cap --------------------------------------------------------
+
+test("the per-user cap counts approved + pending and blocks at the limit", async () => {
+  const h = await harness({}, { maxPhotosPerUser: 2 });
+  const anna = await participant(h, "anna@example.com");
+  const first = await upload(h, h.crowd.id, anna.cookie, "one");
+  assert.equal(first.status, 201);
+  const second = await upload(h, h.crowd.id, anna.cookie, "two");
+  assert.equal(second.status, 201);
+
+  const third = await upload(h, h.crowd.id, anna.cookie, "three");
+  assert.equal(third.status, 403);
+  assert.deepEqual(third.body, { error: MESSAGES.uploadQuotaReached });
+
+  // A pending photo still occupies a slot.
+  await h.db.setPhotoModeration({ photoId: String(first.body.photoId), state: "pending" });
+  const stillFull = await upload(h, h.crowd.id, anna.cookie, "four");
+  assert.equal(stillFull.status, 403);
+
+  // A rejected one frees it.
+  await h.db.setPhotoModeration({
+    photoId: String(first.body.photoId),
+    state: "rejected",
+    moderatorId: h.admin.id,
+  });
+  const freed = await upload(h, h.crowd.id, anna.cookie, "five");
+  assert.equal(freed.status, 201);
+
+  // The cap is per user, not per album: someone else still has their own two slots.
+  const bruno = await participant(h, "bruno@example.com");
+  assert.equal((await upload(h, h.crowd.id, bruno.cookie, "b-one")).status, 201);
+});
+
+// ---- C2: post-moderation is the default --------------------------------------------------
+
+test("moderation `post`: the photo is approved on arrival and visible at once", async () => {
+  const h = await harness();
+  const anna = await participant(h, "anna@example.com");
+  const done = await upload(h, h.crowd.id, anna.cookie, "one");
+  assert.equal(done.status, 201);
+  assert.equal(done.body.status, "uploaded");
+  assert.equal(done.body.moderationState, "approved");
+
+  const photo = await h.db.findPhoto(String(done.body.photoId));
+  assert.ok(photo);
+  assert.equal(photo.moderationState, "approved");
+  // `moderation_state` is SEPARATE from `status`: the processing pipeline is untouched.
+  assert.equal(photo.status, "uploaded");
+  assert.equal(photo.albumId, h.crowd.id);
+
+  await derive(h, photo.id);
+  const feed = await h.app.request(get(`/v1/albums/${h.crowd.id}/photos`, anna.cookie));
+  assert.equal(feed.status, 200);
+  const parsed = albumPhotosResponseSchema.parse(await feed.json());
+  assert.equal(parsed.photos.length, 1);
+  assert.equal(parsed.photos[0]?.id, photo.id);
+  assert.equal(parsed.photos[0]?.mine, true);
+  assert.deepEqual(parsed.quota, { used: 1, max: null });
+});
+
+test("the album carries from init to complete (upload_sessions.album_id)", async () => {
+  const h = await harness();
+  const anna = await participant(h, "anna@example.com");
+  const bytes = Buffer.from("one");
+  const init = await h.app.request(
+    json(
+      "POST",
+      `/v1/albums/${h.crowd.id}/uploads/init`,
+      {
+        filename: "p.jpg",
+        contentType: "image/jpeg",
+        sha256: sha256(bytes),
+        bytes: bytes.byteLength,
+      },
+      anna.cookie,
+    ),
+  );
+  const created = (await init.json()) as { id: string; objectKey: string };
+  const session = await h.db.findUploadSession(created.id);
+  assert.ok(session);
+  assert.equal(session.albumId, h.crowd.id);
+
+  await h.objects.put(created.objectKey, bytes, "image/jpeg");
+  const done = await h.app.request(
+    json("POST", `/v1/albums/${h.crowd.id}/uploads/${created.id}/complete`, { parts: [] }, anna.cookie),
+  );
+  assert.equal(done.status, 201);
+  const photo = await h.db.findPhoto(String(((await done.json()) as { photoId: string }).photoId));
+  assert.equal(photo?.albumId, h.crowd.id);
+});
+
+test("a session belonging to another album or another user is a 404", async () => {
+  const h = await harness();
+  const anna = await participant(h, "anna@example.com");
+  const bruno = await participant(h, "bruno@example.com");
+  const bytes = Buffer.from("one");
+  const init = await h.app.request(
+    json(
+      "POST",
+      `/v1/albums/${h.crowd.id}/uploads/init`,
+      {
+        filename: "p.jpg",
+        contentType: "image/jpeg",
+        sha256: sha256(bytes),
+        bytes: bytes.byteLength,
+      },
+      anna.cookie,
+    ),
+  );
+  const created = (await init.json()) as { id: string };
+  const stolen = await h.app.request(
+    json("POST", `/v1/albums/${h.crowd.id}/uploads/${created.id}/complete`, { parts: [] }, bruno.cookie),
+  );
+  assert.equal(stolen.status, 404);
+});
+
+// ---- C2: the screening hook --------------------------------------------------------------
+
+test("the screening hook's default is a no-op; `auto_rejected` withholds and purges", async () => {
+  const h = await harness();
+  const anna = await participant(h, "anna@example.com");
+  const published = await upload(h, h.crowd.id, anna.cookie, "fine");
+  assert.equal(published.body.moderationState, "approved");
+  assert.equal(h.screening.seen.length, 1);
+  assert.equal(h.screening.seen[0]?.albumId, h.crowd.id);
+  assert.equal(h.screening.seen[0]?.uploaderId, anna.user.id);
+
+  h.screening.verdict = { state: "auto_rejected", reason: "nsfw:0.97" };
+  const withheld = await upload(h, h.crowd.id, anna.cookie, "bad");
+  assert.equal(withheld.status, 201);
+  assert.equal(withheld.body.status, "auto_rejected");
+  // Withheld before publication: `purgePhoto` removed the row and the object.
+  assert.equal(await h.db.findPhoto(String(withheld.body.photoId)), null);
+  assert.ok(h.objects.deleted.length > 0);
+});
+
+test("without an injected hook the default implementation publishes everything", async () => {
+  // `screening` left out of AppDeps: `noopScreening` is what runs.
+  const db = new MemoryDatabase();
+  await db.seedDemo();
+  const event = await db.findEventBySlug("demo");
+  assert.ok(event);
+  const album = await db.createAlbum({
+    eventId: event.id,
+    slug: "di-tutti",
+    name: "Album di tutti",
+    kind: "crowd",
+  });
+  const objects = new MemoryObjectStore();
+  const app = createApp({
+    env,
+    db,
+    objects,
+    mailer: new StubMailer(),
+    queue: createQueue(db),
+    faces: new FakeFaceEngine(new MemoryFaceIndexStore()),
+  });
+  const user = await db.createUser({ email: "anna@example.com", role: "participant" });
+  const cookie = await cookieFor(db, user.id);
+  const bytes = Buffer.from("one");
+  const init = await app.request(
+    json(
+      "POST",
+      `/v1/albums/${album.id}/uploads/init`,
+      {
+        filename: "p.jpg",
+        contentType: "image/jpeg",
+        sha256: sha256(bytes),
+        bytes: bytes.byteLength,
+      },
+      cookie,
+    ),
+  );
+  const created = (await init.json()) as { id: string; objectKey: string };
+  await objects.put(created.objectKey, bytes, "image/jpeg");
+  const done = await app.request(
+    json("POST", `/v1/albums/${album.id}/uploads/${created.id}/complete`, { parts: [] }, cookie),
+  );
+  assert.equal(done.status, 201);
+  assert.equal(((await done.json()) as { moderationState: string }).moderationState, "approved");
+});
+
+// ---- C2: dedup is per album --------------------------------------------------------------
+
+test("the same bytes twice in one album answer `already-uploaded`, not an error", async () => {
+  const h = await harness();
+  const anna = await participant(h, "anna@example.com");
+  const first = await upload(h, h.crowd.id, anna.cookie, "same-bytes");
+  assert.equal(first.status, 201);
+
+  const bytes = Buffer.from("same-bytes");
+  const again = await h.app.request(
+    json(
+      "POST",
+      `/v1/albums/${h.crowd.id}/uploads/init`,
+      {
+        filename: "p.jpg",
+        contentType: "image/jpeg",
+        sha256: sha256(bytes),
+        bytes: bytes.byteLength,
+      },
+      anna.cookie,
+    ),
+  );
+  assert.equal(again.status, 200);
+  const parsed = albumUploadDedupeResponseSchema.parse(await again.json());
+  assert.equal(parsed.status, "already-uploaded");
+  assert.equal(parsed.photoId, first.body.photoId);
+  assert.equal(parsed.albumId, h.crowd.id);
+
+  // Someone else re-forwarding the same WhatsApp image gets the same answer, not a 409.
+  const bruno = await participant(h, "bruno@example.com");
+  const other = await h.app.request(
+    json(
+      "POST",
+      `/v1/albums/${h.crowd.id}/uploads/init`,
+      {
+        filename: "p.jpg",
+        contentType: "image/jpeg",
+        sha256: sha256(bytes),
+        bytes: bytes.byteLength,
+      },
+      bruno.cookie,
+    ),
+  );
+  assert.equal(other.status, 200);
+});
+
+test("the photographer route dedups per album and answers `already-uploaded`", async () => {
+  const h = await harness();
+  const photographer = await h.db.findUserByEmailRole("photographer@rephoto.local", "photographer");
+  assert.ok(photographer);
+  const cookie = await cookieFor(h.db, photographer.id);
+  const bytes = Buffer.from("photographer-bytes");
+  const body = {
+    eventId: h.event.id,
+    filename: "a.jpg",
+    contentType: "image/jpeg" as const,
+    sha256: sha256(bytes),
+    bytes: bytes.byteLength,
+    stage: "original" as const,
+  };
+  const init = await h.app.request(json("POST", "/v1/uploads/init", body, cookie));
+  assert.equal(init.status, 201);
+  const created = (await init.json()) as { id: string; objectKey: string };
+  await h.objects.put(created.objectKey, bytes, "image/jpeg");
+  const done = await h.app.request(
+    json("POST", `/v1/uploads/${created.id}/complete`, { parts: [] }, cookie),
+  );
+  assert.equal(done.status, 201);
+  const photoId = ((await done.json()) as { photoId: string }).photoId;
+  // The official album, resolved by the route, is where it landed.
+  assert.equal((await h.db.findPhoto(photoId))?.albumId, h.official.id);
+
+  const again = await h.app.request(json("POST", "/v1/uploads/init", body, cookie));
+  assert.equal(again.status, 200);
+  const parsed = albumUploadDedupeResponseSchema.parse(await again.json());
+  assert.deepEqual(parsed, {
+    status: "already-uploaded",
+    photoId,
+    albumId: h.official.id,
+  });
+
+  // The SAME bytes in the crowd album are a different photo (`unique (album_id, sha256)`).
+  const anna = await participant(h, "anna@example.com");
+  const crowdUpload = await upload(h, h.crowd.id, anna.cookie, "photographer-bytes");
+  assert.equal(crowdUpload.status, 201);
+  assert.notEqual(crowdUpload.body.photoId, photoId);
+});
+
+// ---- C2: the report button and the auto-pending threshold --------------------------------
+
+test("a photo reaching the report threshold flips to pending and leaves the gallery", async () => {
+  const h = await harness({}, {}, { REPORT_AUTO_PENDING: "2" });
+  const anna = await participant(h, "anna@example.com");
+  const done = await upload(h, h.crowd.id, anna.cookie, "one");
+  const photoId = String(done.body.photoId);
+  await derive(h, photoId);
+
+  const bruno = await participant(h, "bruno@example.com");
+  const carla = await participant(h, "carla@example.com");
+
+  const first = await h.app.request(
+    json("POST", `/v1/photos/${photoId}/report`, { reason: "inappropriate" }, bruno.cookie),
+  );
+  assert.equal(first.status, 200);
+  const firstBody = reportResponseSchema.parse(await first.json());
+  assert.deepEqual(firstBody, { status: "recorded", state: "approved", openReports: 1 });
+  // Still visible under the threshold.
+  const visible = albumPhotosResponseSchema.parse(
+    await (await h.app.request(get(`/v1/albums/${h.crowd.id}/photos`, anna.cookie))).json(),
+  );
+  assert.equal(visible.photos.length, 1);
+
+  // A second report from the SAME person changes nothing: the threshold counts people.
+  const repeat = await h.app.request(
+    json("POST", `/v1/photos/${photoId}/report`, { reason: "other" }, bruno.cookie),
+  );
+  const repeatBody = reportResponseSchema.parse(await repeat.json());
+  assert.deepEqual(repeatBody, { status: "already-reported", state: "approved", openReports: 1 });
+
+  // The second DISTINCT person crosses it.
+  const second = await h.app.request(
+    json("POST", `/v1/photos/${photoId}/report`, { reason: "not_me", note: "non sono io" }, carla.cookie),
+  );
+  const secondBody = reportResponseSchema.parse(await second.json());
+  assert.deepEqual(secondBody, { status: "recorded", state: "pending", openReports: 2 });
+  assert.equal((await h.db.findPhoto(photoId))?.moderationState, "pending");
+
+  // And it is gone from the album feed until a moderator rules.
+  const gone = albumPhotosResponseSchema.parse(
+    await (await h.app.request(get(`/v1/albums/${h.crowd.id}/photos`, anna.cookie))).json(),
+  );
+  assert.equal(gone.photos.length, 0);
+});
+
+test("reporting requires a participant of the event and a photo still visible", async () => {
+  const h = await harness();
+  const anna = await participant(h, "anna@example.com");
+  const done = await upload(h, h.crowd.id, anna.cookie, "one");
+  const photoId = String(done.body.photoId);
+
+  assert.equal(
+    (await h.app.request(json("POST", `/v1/photos/${photoId}/report`, { reason: "other" }))).status,
+    401,
+  );
+  assert.equal(
+    (
+      await h.app.request(
+        json("POST", `/v1/photos/${randomUUID()}/report`, { reason: "other" }, anna.cookie),
+      )
+    ).status,
+    404,
+  );
+  assert.equal(
+    (
+      await h.app.request(
+        json("POST", `/v1/photos/${photoId}/report`, { reason: "nope" }, anna.cookie),
+      )
+    ).status,
+    400,
+  );
+
+  await h.db.setPhotoModeration({
+    photoId,
+    state: "rejected",
+    moderatorId: h.admin.id,
+  });
+  const withheld = await h.app.request(
+    json("POST", `/v1/photos/${photoId}/report`, { reason: "other" }, anna.cookie),
+  );
+  assert.equal(withheld.status, 404);
+  assert.deepEqual(await withheld.json(), { error: MESSAGES.photoNotVisible });
+});
+
+// ---- C2: the moderation queue and the rulings --------------------------------------------
+
+test("the queue shows what is not approved or carries an open report; staff only", async () => {
+  const h = await harness({}, {}, { REPORT_AUTO_PENDING: "5" });
+  const anna = await participant(h, "anna@example.com");
+  const bruno = await participant(h, "bruno@example.com");
+  const quiet = await upload(h, h.crowd.id, anna.cookie, "quiet");
+  const reported = await upload(h, h.crowd.id, anna.cookie, "reported");
+  await derive(h, String(quiet.body.photoId));
+  await derive(h, String(reported.body.photoId));
+  await h.app.request(
+    json(
+      "POST",
+      `/v1/photos/${String(reported.body.photoId)}/report`,
+      { reason: "inappropriate" },
+      bruno.cookie,
+    ),
+  );
+
+  assert.equal((await h.app.request(get("/v1/admin/moderation", anna.cookie))).status, 403);
+  assert.equal((await h.app.request(get("/v1/admin/moderation"))).status, 401);
+
+  const adminCookie = await cookieFor(h.db, h.admin.id);
+  const res = await h.app.request(get("/v1/admin/moderation", adminCookie));
+  assert.equal(res.status, 200);
+  const page = moderationResponseSchema.parse(await res.json());
+  assert.equal(page.items.length, 1, "an approved photo with no report is not in the queue");
+  const item = page.items[0];
+  assert.equal(item?.photoId, reported.body.photoId);
+  assert.equal(item?.moderationState, "approved");
+  assert.equal(item?.openReports, 1);
+  assert.deepEqual(item?.reasons, ["inappropriate"]);
+  assert.ok(item?.thumbUrl);
+
+  // Filters.
+  const byAlbum = moderationResponseSchema.parse(
+    await (
+      await h.app.request(get(`/v1/admin/moderation?albumId=${h.official.id}`, adminCookie))
+    ).json(),
+  );
+  assert.equal(byAlbum.items.length, 0);
+  const byState = moderationResponseSchema.parse(
+    await (await h.app.request(get("/v1/admin/moderation?state=pending", adminCookie))).json(),
+  );
+  assert.equal(byState.items.length, 0);
+});
+
+// `moderated_by` / `moderated_at` and the `audit_log` row are asserted against a real
+// Postgres in packages/db/src/moderation.pg.test.ts: MemoryDatabase.insertAudit is a no-op
+// and keeps no accessor for the two columns, so this test covers the transitions only.
+test("moderating settles the reports, restores the photo, and is staff-only", async () => {
+  const h = await harness({}, {}, { REPORT_AUTO_PENDING: "1" });
+  const anna = await participant(h, "anna@example.com");
+  const bruno = await participant(h, "bruno@example.com");
+  const done = await upload(h, h.crowd.id, anna.cookie, "one");
+  const photoId = String(done.body.photoId);
+  await derive(h, photoId);
+  const report = await h.app.request(
+    json("POST", `/v1/photos/${photoId}/report`, { reason: "inappropriate" }, bruno.cookie),
+  );
+  assert.equal(reportResponseSchema.parse(await report.json()).state, "pending");
+
+  const adminCookie = await cookieFor(h.db, h.admin.id);
+  const approved = await h.app.request(
+    json("POST", `/v1/admin/photos/${photoId}/moderate`, { state: "approved" }, adminCookie),
+  );
+  assert.equal(approved.status, 200);
+  assert.deepEqual(moderateResponseSchema.parse(await approved.json()), {
+    photoId,
+    state: "approved",
+    purged: false,
+  });
+  // The reports that caused it are settled, so the same report cannot re-trigger it.
+  assert.equal(await h.db.countOpenReports(photoId), 0);
+  assert.equal((await h.db.findPhoto(photoId))?.moderationState, "approved");
+  // Visible again.
+  const feed = albumPhotosResponseSchema.parse(
+    await (await h.app.request(get(`/v1/albums/${h.crowd.id}/photos`, anna.cookie))).json(),
+  );
+  assert.equal(feed.photos.length, 1);
+
+  // Only staff may rule, and an unknown photo is a 404.
+  assert.equal(
+    (
+      await h.app.request(
+        json("POST", `/v1/admin/photos/${photoId}/moderate`, { state: "rejected" }, anna.cookie),
+      )
+    ).status,
+    403,
+  );
+  assert.equal(
+    (
+      await h.app.request(
+        json("POST", `/v1/admin/photos/${randomUUID()}/moderate`, { state: "rejected" }, adminCookie),
+      )
+    ).status,
+    404,
+  );
+  // `auto_rejected` is the hook's verdict, never a moderator's.
+  assert.equal(
+    (
+      await h.app.request(
+        json(
+          "POST",
+          `/v1/admin/photos/${photoId}/moderate`,
+          { state: "auto_rejected" },
+          adminCookie,
+        ),
+      )
+    ).status,
+    400,
+  );
+});
+
+test("rejecting purges the object through purgePhoto", async () => {
+  const h = await harness();
+  const anna = await participant(h, "anna@example.com");
+  const done = await upload(h, h.crowd.id, anna.cookie, "one");
+  const photoId = String(done.body.photoId);
+  await derive(h, photoId);
+  const photo = await h.db.findPhoto(photoId);
+  assert.ok(photo);
+  assert.ok(h.objects.objects.has(photo.originalKey));
+
+  const adminCookie = await cookieFor(h.db, h.admin.id);
+  const res = await h.app.request(
+    json("POST", `/v1/admin/photos/${photoId}/moderate`, { state: "rejected" }, adminCookie),
+  );
+  assert.equal(res.status, 200);
+  assert.deepEqual(moderateResponseSchema.parse(await res.json()), {
+    photoId,
+    state: "rejected",
+    purged: true,
+  });
+  // purgePhoto: the row, the original and both derivatives are gone.
+  assert.equal(await h.db.findPhoto(photoId), null);
+  assert.equal(h.objects.objects.has(photo.originalKey), false);
+  assert.equal(h.objects.objects.has(objectKeys.thumb(photoId)), false);
+  assert.equal(h.objects.objects.has(objectKeys.web(photoId)), false);
+});
+
+test("a staff-only album is not readable by a participant", async () => {
+  const h = await harness({}, { visibility: "staff" });
+  const anna = await participant(h, "anna@example.com");
+  const res = await h.app.request(get(`/v1/albums/${h.crowd.id}/photos`, anna.cookie));
+  assert.equal(res.status, 403);
+  // Staff still read it.
+  const adminCookie = await cookieFor(h.db, h.admin.id);
+  assert.equal(
+    (await h.app.request(get(`/v1/albums/${h.crowd.id}/photos`, adminCookie))).status,
+    200,
+  );
+});
+
+// ---- C3: video is out of scope -----------------------------------------------------------
+
+test("the upload route refuses every video content type (decision 4, frozen)", async () => {
+  const h = await harness();
+  const anna = await participant(h, "anna@example.com");
+  for (const contentType of ["video/mp4", "video/quicktime", "video/webm", "image/heic"]) {
+    const res = await h.app.request(
+      json(
+        "POST",
+        `/v1/albums/${h.crowd.id}/uploads/init`,
+        {
+          filename: "clip.mp4",
+          contentType,
+          sha256: sha256(Buffer.from("x")),
+          bytes: 10,
+        },
+        anna.cookie,
+      ),
+    );
+    assert.equal(res.status, 400, contentType);
+    assert.deepEqual(await res.json(), { error: MESSAGES.validation });
+  }
+});
+
+// ---- Section G, hard rule: the personal match galleries are untouched ---------------------
+
+test("a personal match gallery still works, and a withheld photo leaves it", async () => {
+  const h = await harness();
+  const anna = await participant(h, "anna@example.com");
+  const photographer = await h.db.findUserByEmailRole("photographer@rephoto.local", "photographer");
+  assert.ok(photographer);
+
+  const items: Array<{ photoId: string; faceId: string; score: number }> = [];
+  for (let index = 0; index < 3; index += 1) {
+    const photoId = randomUUID();
+    const bytes = Buffer.from(`original-${index}`);
+    const originalKey = objectKeys.original(h.event.id, photoId);
+    await h.db.insertPhoto({
+      id: photoId,
+      eventId: h.event.id,
+      photographerId: photographer.id,
+      sha256: sha256(bytes),
+      originalKey,
+      contentType: "image/jpeg",
+      bytes: bytes.byteLength,
+    });
+    await h.objects.put(originalKey, bytes, "image/jpeg");
+    await derive(h, photoId);
+    items.push({ photoId, faceId: randomUUID(), score: 0.9 - index * 0.1 });
+  }
+  await h.db.replaceGallery(anna.user.id, h.event.id, items, ["anchor-1"]);
+
+  const before = await h.db.listGalleryPage(anna.user.id, h.event.id, { limit: 10 });
+  assert.equal(before.total, 3);
+  assert.equal(before.items.length, 3);
+
+  // C2: a photo withheld by moderation leaves the gallery until a moderator rules.
+  await h.db.setPhotoModeration({ photoId: items[0]!.photoId, state: "pending" });
+  const during = await h.db.listGalleryPage(anna.user.id, h.event.id, { limit: 10 });
+  assert.equal(during.total, 2);
+  assert.equal(during.items.length, 2);
+
+  // And comes back when the moderator approves it: the gallery row itself never moved.
+  await h.db.setPhotoModeration({
+    photoId: items[0]!.photoId,
+    state: "approved",
+    moderatorId: h.admin.id,
+  });
+  const after = await h.db.listGalleryPage(anna.user.id, h.event.id, { limit: 10 });
+  assert.equal(after.total, 3);
+  assert.deepEqual(
+    after.items.map((row) => row.photoId),
+    items.map((row) => row.photoId),
+  );
+});

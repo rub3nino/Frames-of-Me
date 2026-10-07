@@ -60,5 +60,11 @@ export type {
   // v6 (agent B)
   EventCodeRow,
   IdentityProvider,
+  // v6 (agent C): crowd upload and moderation
+  AlbumPhoto,
+  ModerationItem,
+  ModerationState,
+  ReportReason,
+  ReportRow,
 } from "./types.js";
 export { AlbumRecognitionLockedError, AlbumRecognitionNotAllowedError } from "./types.js";

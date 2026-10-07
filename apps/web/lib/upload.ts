@@ -1,6 +1,11 @@
 import { createSHA256 } from "hash-wasm";
 import { ApiError, api } from "@/lib/api";
-import type { UploadCompleteResponse, UploadInitResponse, UploadLookupResponse } from "@/lib/types";
+import type {
+  AlbumUploadDedupeResponse,
+  UploadCompleteResponse,
+  UploadInitResponse,
+  UploadLookupResponse,
+} from "@/lib/types";
 
 export type ImageType = "image/jpeg" | "image/png";
 
@@ -221,10 +226,12 @@ export async function uploadOriginal(
 ): Promise<UploadOutcome> {
   const filename = checkOriginal(file);
   onProgress(0, file.size);
-  const created = await post<UploadInitResponse>(
-    "/v1/uploads/init",
-    { eventId, filename, contentType: type, sha256, bytes: file.size, stage: "original" },
-    signal,
+  const created = throwIfDeduped(
+    await post<UploadInitResponse | AlbumUploadDedupeResponse>(
+      "/v1/uploads/init",
+      { eventId, filename, contentType: type, sha256, bytes: file.size, stage: "original" },
+      signal,
+    ),
   );
   const done = await transfer(created, file, type, onProgress, signal);
   return { photoId: done.photoId };
@@ -247,19 +254,21 @@ export async function uploadWebStage(
   if (web.size < 1) throw new Error("La versione web è vuota.");
   if (web.size > WEB_STAGE_MAX_BYTES) throw new Error("La versione web supera gli 8 MB.");
   onProgress(0, web.size);
-  const created = await post<UploadInitResponse>(
-    "/v1/uploads/init",
-    {
-      eventId,
-      filename,
-      contentType: "image/jpeg",
-      sha256,
-      bytes: web.size,
-      stage: "web",
-      originalContentType: type,
-      originalBytes: file.size,
-    },
-    signal,
+  const created = throwIfDeduped(
+    await post<UploadInitResponse | AlbumUploadDedupeResponse>(
+      "/v1/uploads/init",
+      {
+        eventId,
+        filename,
+        contentType: "image/jpeg",
+        sha256,
+        bytes: web.size,
+        stage: "web",
+        originalContentType: type,
+        originalBytes: file.size,
+      },
+      signal,
+    ),
   );
   const done = await transfer(created, web, "image/jpeg", onProgress, signal);
   return { photoId: done.photoId };
@@ -312,4 +321,22 @@ export async function uploadPhoto(
 ): Promise<string> {
   const outcome = await uploadOriginal(file, eventId, contentType, sha256, onProgress, signal);
   return outcome.photoId;
+}
+
+/**
+ * v6 (agent C): `uploads/init` answers 200 `{ status: "already-uploaded" }` when the same
+ * sha256 is already in the target album — dedup is per album since migration 009, and the
+ * server treats it as an answer rather than an error.
+ *
+ * The upload queue has one well-tested path for "these bytes are already there" and it is
+ * keyed on a 409, so the new shape is translated back into that ApiError here instead of
+ * being threaded through five call sites. Everything downstream is unchanged.
+ */
+function throwIfDeduped(
+  response: UploadInitResponse | AlbumUploadDedupeResponse,
+): UploadInitResponse {
+  if ("status" in response && response.status === "already-uploaded") {
+    throw new ApiError("Questa foto è già stata caricata.", 409);
+  }
+  return response as UploadInitResponse;
 }

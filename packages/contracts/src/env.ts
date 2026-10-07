@@ -1,4 +1,7 @@
 import { z } from "zod";
+// v6 (agent C): the shared default of REPORT_AUTO_PENDING. `http.ts` imports nothing from
+// here, so this direction is the acyclic one.
+import { REPORT_AUTO_PENDING_DEFAULT } from "./http.ts";
 
 function blankToUndefined(value: unknown): unknown {
   if (typeof value !== "string") return value;
@@ -183,6 +186,20 @@ export const envSchema = z
     REGISTER_PER_CODE: z.preprocess(
       blankToUndefined,
       z.coerce.number().int().min(0).default(600),
+    ),
+    // --- v6 crowd upload and moderation (agent C) -----------------------------
+    /**
+     * How many DISTINCT open reports flip a photo to `pending` (C2). Read per request, so
+     * the event-day value can change without a restart of anything but the api process.
+     */
+    REPORT_AUTO_PENDING: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().int().min(1).default(REPORT_AUTO_PENDING_DEFAULT),
+    ),
+    /** Reports one participant may file per hour; 0 disables the limit. */
+    REPORT_PER_USER: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().int().min(0).default(30),
     ),
   })
   .superRefine((env, ctx) => {

@@ -17,11 +17,17 @@ export const MESSAGES = {
   accountExists: "Esiste già un account con questa email. Accedi o reimposta la password.",
   passwordTooShort: "La password deve avere almeno 10 caratteri.",
   googleUnavailable: "Accesso con Google non disponibile.",
+  // v6 (agent C): crowd upload, the uploads_open kill switch and moderation.
+  uploadsClosed: "I caricamenti per questo album sono chiusi.",
+  uploadNotCrowd: "Questo album non accetta caricamenti dai partecipanti.",
+  uploadQuotaReached: "Hai raggiunto il numero massimo di foto per questo album.",
+  photoNotVisible: "Questa foto non è più disponibile.",
 } as const;
 
 export class ApiError extends Error {
   constructor(
-    readonly status: 400 | 401 | 403 | 404 | 409 | 429,
+    // 423 Locked is the `uploads_open = false` kill switch of v6 C2 (agent C).
+    readonly status: 400 | 401 | 403 | 404 | 409 | 423 | 429,
     message: string,
   ) {
     super(message);

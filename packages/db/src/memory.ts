@@ -57,6 +57,12 @@ import type {
   // v6 (agent B)
   EventCodeRow,
   IdentityProvider,
+  // v6 (agent C)
+  AlbumPhoto,
+  ModerationItem,
+  ModerationState,
+  ReportReason,
+  ReportRow,
 } from "./types.js";
 
 /** Same cap as PostgresDatabase.findGalleriesByQueryVector. */
@@ -153,6 +159,10 @@ export class MemoryDatabase implements Database {
   private readonly identities = new Map<string, IdentityStored>();
   private readonly eventCodes = new Map<string, EventCodeRow>();
   private readonly emailVerified = new Map<string, Date>();
+
+  // v6 (agent C): photos.moderation_state/moderated_by/moderated_at and `reports`.
+  private readonly moderation = new Map<string, { moderatedBy: string | null; moderatedAt: Date | null }>();
+  private readonly reports: ReportRow[] = [];
 
   async seedDemo(): Promise<void> {
     if (!(await this.findEventBySlug("demo"))) {
@@ -359,8 +369,12 @@ export class MemoryDatabase implements Database {
     originalBytes?: number | null;
     filename?: string | null;
     tags?: string[];
+    albumId?: string | null;
   }): Promise<void> {
     this.uploads.set(input.id, {
+      // v6 (agent C): the album chosen at init, carried to complete; the event's official
+      // album when the caller gives none, exactly as `insertPhoto` resolves it.
+      albumId: input.albumId ?? this.ensureDefaultAlbum(input.eventId).id,
       filename: input.filename ?? null,
       tags: [...(input.tags ?? [])],
       id: input.id,
@@ -474,6 +488,9 @@ export class MemoryDatabase implements Database {
       error: null,
       createdAt: new Date(),
       albumId,
+      // v6 (agent C): moderation `post` is the default — a photo arrives approved and is
+      // visible at once (`photos.moderation_state default 'approved'`, migration 010).
+      moderationState: "approved",
     };
     this.photos.set(photo.id, photo);
     // The `photos_album_first_upload` trigger of migration 009.
@@ -703,6 +720,9 @@ export class MemoryDatabase implements Database {
         const web = this.derivatives.find((row) => row.photoId === item.photoId && row.kind === "web");
         const photo = this.photos.get(item.photoId);
         if (!thumb || !web || !photo) return [];
+        // v6 (agent C): a photo withheld by moderation leaves every gallery until a
+        // moderator rules. Everything is `approved` by default, so v5 behaviour is unchanged.
+        if (photo.moderationState !== "approved") return [];
         return [
           {
             photoId: item.photoId,
@@ -814,6 +834,11 @@ export class MemoryDatabase implements Database {
     for (let index = this.derivatives.length - 1; index >= 0; index -= 1) {
       if (this.derivatives[index]?.photoId === photoId) this.derivatives.splice(index, 1);
     }
+    // v6 (agent C): `reports.photo_id ... on delete cascade` (migration 010).
+    for (let index = this.reports.length - 1; index >= 0; index -= 1) {
+      if (this.reports[index]?.photoId === photoId) this.reports.splice(index, 1);
+    }
+    this.moderation.delete(photoId);
     this.photos.delete(photoId);
   }
 
@@ -1864,6 +1889,174 @@ export class MemoryDatabase implements Database {
     return [...this.uploads.values()]
       .filter((row) => row.photographerId === photographerId && row.eventId === eventId)
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || compareText(b.id, a.id));
+  }
+
+  // ---- crowd upload and moderation v6 (agent C) -----------------------------------------
+
+  async countAlbumPhotosByUploader(albumId: string, uploaderId: string): Promise<number> {
+    let count = 0;
+    for (const photo of this.photos.values()) {
+      if (photo.albumId !== albumId || photo.photographerId !== uploaderId) continue;
+      if (photo.moderationState === "approved" || photo.moderationState === "pending") count += 1;
+    }
+    return count;
+  }
+
+  async setPhotoModeration(input: {
+    photoId: string;
+    state: ModerationState;
+    moderatorId?: string | null;
+    at?: Date;
+  }): Promise<PhotoRow | null> {
+    const photo = this.photos.get(input.photoId);
+    if (!photo) return null;
+    photo.moderationState = input.state;
+    const human = input.moderatorId ?? null;
+    if (human !== null) {
+      // Only a human ruling stamps the two audit columns; the automatic paths leave them.
+      this.moderation.set(photo.id, { moderatedBy: human, moderatedAt: input.at ?? new Date() });
+    }
+    return photo;
+  }
+
+  async insertReport(input: {
+    photoId: string;
+    reporterId: string;
+    reason: ReportReason;
+    note?: string | null;
+  }): Promise<{ created: boolean; report: ReportRow }> {
+    const existing = this.reports.find(
+      (row) => row.photoId === input.photoId && row.reporterId === input.reporterId,
+    );
+    // `reports unique (photo_id, reporter_id)`: a second tap from the same person changes
+    // nothing, which is what keeps the auto-pending threshold a count of distinct people.
+    if (existing) return { created: false, report: existing };
+    const report: ReportRow = {
+      id: randomUUID(),
+      photoId: input.photoId,
+      reporterId: input.reporterId,
+      reason: input.reason,
+      note: input.note ?? null,
+      state: "open",
+      createdAt: new Date(),
+    };
+    this.reports.push(report);
+    return { created: true, report };
+  }
+
+  async countOpenReports(photoId: string): Promise<number> {
+    const reporters = new Set<string>();
+    for (const row of this.reports) {
+      if (row.photoId === photoId && row.state === "open") reporters.add(row.reporterId);
+    }
+    return reporters.size;
+  }
+
+  async countReportsByUserSince(reporterId: string, since: Date): Promise<number> {
+    return this.reports.filter((row) => row.reporterId === reporterId && row.createdAt >= since)
+      .length;
+  }
+
+  async closeReports(photoId: string): Promise<number> {
+    let closed = 0;
+    for (const row of this.reports) {
+      if (row.photoId === photoId && row.state === "open") {
+        row.state = "closed";
+        closed += 1;
+      }
+    }
+    return closed;
+  }
+
+  async listOpenReports(photoId: string): Promise<ReportRow[]> {
+    return this.reports
+      .filter((row) => row.photoId === photoId && row.state === "open")
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || compareText(a.id, b.id));
+  }
+
+  async listModerationPage(input: {
+    albumId?: string;
+    state?: ModerationState;
+    limit: number;
+    cursor?: UploadCursor;
+  }): Promise<{ items: ModerationItem[]; nextCursor: UploadCursor | null }> {
+    const cursor = input.cursor;
+    const rows: ModerationItem[] = [];
+    for (const photo of this.photos.values()) {
+      if (input.albumId && photo.albumId !== input.albumId) continue;
+      if (input.state && photo.moderationState !== input.state) continue;
+      const open = this.reports.filter((row) => row.photoId === photo.id && row.state === "open");
+      const reporters = new Set(open.map((row) => row.reporterId));
+      // Everything a moderator still has to look at: not approved, or approved with an
+      // open report on it.
+      if (photo.moderationState === "approved" && reporters.size === 0) continue;
+      if (cursor) {
+        const byTime = photo.createdAt.getTime() - cursor.createdAt.getTime();
+        if (!(byTime < 0 || (byTime === 0 && photo.id < cursor.id))) continue;
+      }
+      rows.push({
+        photoId: photo.id,
+        albumId: photo.albumId,
+        eventId: photo.eventId,
+        uploaderId: photo.photographerId,
+        moderationState: photo.moderationState,
+        createdAt: photo.createdAt,
+        openReports: reporters.size,
+        reasons: [...new Set(open.map((row) => row.reason))].sort(compareText),
+        thumbKey: this.derivativeKey(photo.id, "thumb"),
+        webKey: this.derivativeKey(photo.id, "web"),
+      });
+    }
+    rows.sort(
+      (a, b) =>
+        b.createdAt.getTime() - a.createdAt.getTime() || compareText(b.photoId, a.photoId),
+    );
+    const items = rows.slice(0, input.limit);
+    const last = items[items.length - 1];
+    const nextCursor =
+      rows.length > input.limit && last ? { createdAt: last.createdAt, id: last.photoId } : null;
+    return { items, nextCursor };
+  }
+
+  async listAlbumPhotosPage(
+    albumId: string,
+    input: { limit: number; cursor?: UploadCursor },
+  ): Promise<{ items: AlbumPhoto[]; nextCursor: UploadCursor | null }> {
+    const cursor = input.cursor;
+    const rows: AlbumPhoto[] = [];
+    for (const photo of this.photos.values()) {
+      // `approved` only: a photo the report threshold flipped to `pending` leaves the feed.
+      if (photo.albumId !== albumId || photo.moderationState !== "approved") continue;
+      const thumbKey = this.derivativeKey(photo.id, "thumb");
+      const webKey = this.derivativeKey(photo.id, "web");
+      if (!thumbKey || !webKey) continue;
+      if (cursor) {
+        const byTime = photo.createdAt.getTime() - cursor.createdAt.getTime();
+        if (!(byTime < 0 || (byTime === 0 && photo.id < cursor.id))) continue;
+      }
+      rows.push({
+        id: photo.id,
+        albumId: photo.albumId,
+        uploaderId: photo.photographerId,
+        createdAt: photo.createdAt,
+        thumbKey,
+        webKey,
+      });
+    }
+    rows.sort(
+      (a, b) => b.createdAt.getTime() - a.createdAt.getTime() || compareText(b.id, a.id),
+    );
+    const items = rows.slice(0, input.limit);
+    const last = items[items.length - 1];
+    const nextCursor =
+      rows.length > input.limit && last ? { createdAt: last.createdAt, id: last.id } : null;
+    return { items, nextCursor };
+  }
+
+  /** v6 (agent C): the stored key of one derivative, or null when it is not there yet. */
+  private derivativeKey(photoId: string, kind: "thumb" | "web"): string | null {
+    const row = this.derivatives.find((item) => item.photoId === photoId && item.kind === kind);
+    return row ? row.s3Key : null;
   }
 }
 

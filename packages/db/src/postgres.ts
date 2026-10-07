@@ -63,6 +63,12 @@ import type {
   // v6 (agent B)
   EventCodeRow,
   IdentityProvider,
+  // v6 (agent C)
+  AlbumPhoto,
+  ModerationItem,
+  ModerationState,
+  ReportReason,
+  ReportRow,
 } from "./types.js";
 
 const EVENT_ID = "00000000-0000-4000-8000-000000000001";
@@ -73,13 +79,13 @@ const INVITE_ID = "00000000-0000-4000-8000-000000000004";
 const DEFAULT_ALBUM_SLUG = "ufficiale";
 
 const PHOTO_COLUMNS =
-  "id, event_id, photographer_id, sha256, status, original_key, content_type, bytes, original_status, indexed_at, error, created_at, album_id";
+  "id, event_id, photographer_id, sha256, status, original_key, content_type, bytes, original_status, indexed_at, error, created_at, album_id, moderation_state";
 /** v6: `albums` columns, in the order {@link mapAlbum} reads them. */
 const ALBUM_COLUMNS =
   "id, event_id, slug, name, kind, recognition, moderation, visibility, max_photos_per_user, uploads_open, retention_days, first_upload_at, created_at";
 const EVENT_COLUMNS = "id, slug, name, retention_days, access, created_at";
 const UPLOAD_COLUMNS =
-  "id, event_id, photographer_id, s3_upload_id, object_key, sha256, content_type, status, bytes, stage, photo_id, original_content_type, original_bytes, filename, tags, created_at";
+  "id, event_id, photographer_id, s3_upload_id, object_key, sha256, content_type, status, bytes, stage, photo_id, original_content_type, original_bytes, filename, tags, created_at, album_id";
 const PHOTO_ADMIN_COLUMNS = `${PHOTO_COLUMNS}, filename, tags`;
 
 function asContentType(value: string): ImageContentType {
@@ -332,17 +338,26 @@ export class PostgresDatabase implements Database {
     originalBytes?: number | null;
     filename?: string | null;
     tags?: string[];
+    albumId?: string | null;
   }): Promise<void> {
+    // v6 (agent C): without an explicit album the session targets the event's official
+    // album, the same resolution `insertPhoto` does, so `complete` always knows where the
+    // photo belongs (`upload_sessions.album_id`, migration 010).
     await this.sql`
       insert into upload_sessions (
         id, event_id, photographer_id, s3_upload_id, object_key, sha256, content_type, status, bytes,
-        stage, photo_id, original_content_type, original_bytes, filename, tags
+        stage, photo_id, original_content_type, original_bytes, filename, tags, album_id
       ) values (
         ${input.id}, ${input.eventId}, ${input.photographerId}, ${input.s3UploadId},
         ${input.objectKey}, ${input.sha256}, ${input.contentType}, 'open', ${input.bytes},
         ${input.stage ?? "original"}, ${input.photoId ?? null},
         ${input.originalContentType ?? null}, ${input.originalBytes ?? null},
-        ${input.filename ?? null}, ${input.tags ?? []}::text[]
+        ${input.filename ?? null}, ${input.tags ?? []}::text[],
+        coalesce(
+          ${input.albumId ?? null}::uuid,
+          (select a.id from albums a
+            where a.event_id = ${input.eventId} and a.slug = ${DEFAULT_ALBUM_SLUG})
+        )
       )
     `;
   }
@@ -779,6 +794,10 @@ export class PostgresDatabase implements Database {
       join derivatives t on t.photo_id = gi.photo_id and t.kind = 'thumb'
       join derivatives w on w.photo_id = gi.photo_id and w.kind = 'web'
       where g.user_id = ${userId} and g.event_id = ${eventId}
+        -- v6 (agent C): a photo withheld by moderation leaves every gallery until a
+        -- moderator rules (C2, the report threshold). moderation_state defaults to
+        -- 'approved' (migration 010), so this clause changes nothing for v5 data.
+        and p.moderation_state = 'approved'
         ${
           cursor
             ? this.sql`and (gi.score < ${cursor.score} or (gi.score = ${cursor.score} and gi.photo_id > ${cursor.photoId}::uuid))`
@@ -791,9 +810,11 @@ export class PostgresDatabase implements Database {
       select count(*)::int as count
       from gallery_items gi
       join galleries g on g.id = gi.gallery_id
+      join photos p on p.id = gi.photo_id
       join derivatives t on t.photo_id = gi.photo_id and t.kind = 'thumb'
       join derivatives w on w.photo_id = gi.photo_id and w.kind = 'web'
       where g.user_id = ${userId} and g.event_id = ${eventId}
+        and p.moderation_state = 'approved'
     `;
     return {
       total: totals[0]?.count ?? 0,
@@ -2109,6 +2130,173 @@ export class PostgresDatabase implements Database {
     `;
     return rows[0]?.email_verified_at ?? null;
   }
+
+  // ---- crowd upload and moderation v6 (agent C) -----------------------------------------
+
+  async countAlbumPhotosByUploader(albumId: string, uploaderId: string): Promise<number> {
+    const rows = await this.sql<{ count: number }[]>`
+      select count(*)::int as count from photos
+      where album_id = ${albumId}
+        and photographer_id = ${uploaderId}
+        and moderation_state in ('approved', 'pending')
+    `;
+    return rows[0]?.count ?? 0;
+  }
+
+  async setPhotoModeration(input: {
+    photoId: string;
+    state: ModerationState;
+    moderatorId?: string | null;
+    at?: Date;
+  }): Promise<PhotoRow | null> {
+    const human = input.moderatorId ?? null;
+    const at = input.at ?? new Date();
+    // The automatic paths (screening hook, report threshold) leave `moderated_by` /
+    // `moderated_at` untouched: an unruled photo must still read as unruled in the queue.
+    const rows = await this.sql<PhotoSql[]>`
+      update photos set
+        moderation_state = ${input.state},
+        moderated_by = coalesce(${human}::uuid, moderated_by),
+        moderated_at = ${human === null ? this.sql`moderated_at` : this.sql`${at}::timestamptz`}
+      where id = ${input.photoId}
+      returning ${this.sql.unsafe(PHOTO_COLUMNS)}
+    `;
+    return rows[0] ? mapPhoto(rows[0]) : null;
+  }
+
+  async insertReport(input: {
+    photoId: string;
+    reporterId: string;
+    reason: ReportReason;
+    note?: string | null;
+  }): Promise<{ created: boolean; report: ReportRow }> {
+    // `on conflict do nothing` + a read of the existing row: one report per person per
+    // photo, and a repeated tap is an answer rather than an error.
+    const inserted = await this.sql<ReportSql[]>`
+      insert into reports (photo_id, reporter_id, reason, note)
+      values (${input.photoId}, ${input.reporterId}, ${input.reason}, ${input.note ?? null})
+      on conflict (photo_id, reporter_id) do nothing
+      returning ${this.sql.unsafe(REPORT_COLUMNS)}
+    `;
+    const row = inserted[0];
+    if (row) return { created: true, report: mapReport(row) };
+    const existing = await this.sql<ReportSql[]>`
+      select ${this.sql.unsafe(REPORT_COLUMNS)} from reports
+      where photo_id = ${input.photoId} and reporter_id = ${input.reporterId}
+    `;
+    const previous = existing[0];
+    if (!previous) throw new Error("Report insert failed");
+    return { created: false, report: mapReport(previous) };
+  }
+
+  async countOpenReports(photoId: string): Promise<number> {
+    const rows = await this.sql<{ count: number }[]>`
+      select count(distinct reporter_id)::int as count from reports
+      where photo_id = ${photoId} and state = 'open'
+    `;
+    return rows[0]?.count ?? 0;
+  }
+
+  async countReportsByUserSince(reporterId: string, since: Date): Promise<number> {
+    const rows = await this.sql<{ count: number }[]>`
+      select count(*)::int as count from reports
+      where reporter_id = ${reporterId} and created_at >= ${since}
+    `;
+    return rows[0]?.count ?? 0;
+  }
+
+  async closeReports(photoId: string): Promise<number> {
+    const rows = await this.sql<{ id: string }[]>`
+      update reports set state = 'closed'
+      where photo_id = ${photoId} and state = 'open'
+      returning id
+    `;
+    return rows.length;
+  }
+
+  async listOpenReports(photoId: string): Promise<ReportRow[]> {
+    const rows = await this.sql<ReportSql[]>`
+      select ${this.sql.unsafe(REPORT_COLUMNS)} from reports
+      where photo_id = ${photoId} and state = 'open'
+      order by created_at, id
+    `;
+    return rows.map(mapReport);
+  }
+
+  async listModerationPage(input: {
+    albumId?: string;
+    state?: ModerationState;
+    limit: number;
+    cursor?: UploadCursor;
+  }): Promise<{ items: ModerationItem[]; nextCursor: UploadCursor | null }> {
+    const cursor = input.cursor;
+    const albumId = input.albumId ?? null;
+    const state = input.state ?? null;
+    // The queue is "everything a moderator still has to look at": not approved, or approved
+    // but carrying an open report. The ordering mirrors the other admin lists (v6 F3: the
+    // three-argument date_trunc is the indexable one, migration 014).
+    const rows = await this.sql<ModerationSql[]>`
+      select p.id, p.album_id, p.event_id, p.photographer_id, p.moderation_state, p.created_at,
+             coalesce(r.open_reports, 0)::int as open_reports,
+             coalesce(r.reasons, '{}')::text[] as reasons,
+             thumb.s3_key as thumb_key,
+             web.s3_key as web_key
+      from photos p
+      left join (
+        select photo_id,
+               count(distinct reporter_id) as open_reports,
+               array_agg(distinct reason order by reason) as reasons
+        from reports where state = 'open'
+        group by photo_id
+      ) r on r.photo_id = p.id
+      left join derivatives thumb on thumb.photo_id = p.id and thumb.kind = 'thumb'
+      left join derivatives web on web.photo_id = p.id and web.kind = 'web'
+      where (p.moderation_state <> 'approved' or r.open_reports is not null)
+        ${albumId ? this.sql`and p.album_id = ${albumId}::uuid` : this.sql``}
+        ${state ? this.sql`and p.moderation_state = ${state}` : this.sql``}
+        ${
+          cursor
+            ? this.sql`and (date_trunc('milliseconds', p.created_at, 'UTC'), p.id) < (${cursor.createdAt}, ${cursor.id}::uuid)`
+            : this.sql``
+        }
+      order by date_trunc('milliseconds', p.created_at, 'UTC') desc, p.id desc
+      limit ${input.limit + 1}
+    `;
+    const items = rows.slice(0, input.limit).map(mapModerationItem);
+    const last = items[items.length - 1];
+    const nextCursor =
+      rows.length > input.limit && last ? { createdAt: last.createdAt, id: last.photoId } : null;
+    return { items, nextCursor };
+  }
+
+  async listAlbumPhotosPage(
+    albumId: string,
+    input: { limit: number; cursor?: UploadCursor },
+  ): Promise<{ items: AlbumPhoto[]; nextCursor: UploadCursor | null }> {
+    const cursor = input.cursor;
+    // `approved` only: a photo flipped to `pending` by the report threshold leaves the feed
+    // on the next page load, with no second switch to keep in sync.
+    const rows = await this.sql<AlbumPhotoSql[]>`
+      select p.id, p.album_id, p.photographer_id, p.created_at,
+             thumb.s3_key as thumb_key, web.s3_key as web_key
+      from photos p
+      join derivatives thumb on thumb.photo_id = p.id and thumb.kind = 'thumb'
+      join derivatives web on web.photo_id = p.id and web.kind = 'web'
+      where p.album_id = ${albumId} and p.moderation_state = 'approved'
+        ${
+          cursor
+            ? this.sql`and (date_trunc('milliseconds', p.created_at, 'UTC'), p.id) < (${cursor.createdAt}, ${cursor.id}::uuid)`
+            : this.sql``
+        }
+      order by date_trunc('milliseconds', p.created_at, 'UTC') desc, p.id desc
+      limit ${input.limit + 1}
+    `;
+    const items = rows.slice(0, input.limit).map(mapAlbumPhoto);
+    const last = items[items.length - 1];
+    const nextCursor =
+      rows.length > input.limit && last ? { createdAt: last.createdAt, id: last.id } : null;
+    return { items, nextCursor };
+  }
 }
 
 /** Maps the album constraints of migration 009 to their typed errors. */
@@ -2152,6 +2340,7 @@ type PhotoSql = {
   error: string | null;
   created_at: Date;
   album_id: string;
+  moderation_state: ModerationState;
 };
 type AlbumSql = {
   id: string;
@@ -2185,6 +2374,7 @@ type UploadSql = {
   filename: string | null;
   tags: string[] | null;
   created_at: Date;
+  album_id: string | null;
 };
 type PhotoAdminSql = PhotoSql & { filename: string | null; tags: string[] | null };
 
@@ -2244,6 +2434,7 @@ function mapPhoto(row: PhotoSql): PhotoRow {
     error: row.error,
     createdAt: row.created_at,
     albumId: row.album_id,
+    moderationState: row.moderation_state,
   };
 }
 function mapAlbum(row: AlbumSql): AlbumRow {
@@ -2282,6 +2473,7 @@ function mapUpload(row: UploadSql): UploadSessionRow {
     filename: row.filename ?? null,
     tags: row.tags ?? [],
     createdAt: row.created_at,
+    albumId: row.album_id,
   };
 }
 function mapPhotoAdmin(row: PhotoAdminSql): PhotoAdminRow {
@@ -2309,5 +2501,79 @@ function mapEventCode(row: EventCodeSql): EventCodeRow {
     uses: Number(row.uses),
     expiresAt: row.expires_at,
     createdAt: row.created_at,
+  };
+}
+
+// ---- crowd upload and moderation v6 (agent C) ---------------------------------------------
+
+const REPORT_COLUMNS = "id, photo_id, reporter_id, reason, note, state, created_at";
+
+type ReportSql = {
+  id: string;
+  photo_id: string;
+  reporter_id: string;
+  reason: ReportReason;
+  note: string | null;
+  state: "open" | "closed";
+  created_at: Date;
+};
+
+type ModerationSql = {
+  id: string;
+  album_id: string;
+  event_id: string;
+  photographer_id: string;
+  moderation_state: ModerationState;
+  created_at: Date;
+  open_reports: number;
+  reasons: string[] | null;
+  thumb_key: string | null;
+  web_key: string | null;
+};
+
+type AlbumPhotoSql = {
+  id: string;
+  album_id: string;
+  photographer_id: string;
+  created_at: Date;
+  thumb_key: string;
+  web_key: string;
+};
+
+function mapReport(row: ReportSql): ReportRow {
+  return {
+    id: row.id,
+    photoId: row.photo_id,
+    reporterId: row.reporter_id,
+    reason: row.reason,
+    note: row.note,
+    state: row.state,
+    createdAt: row.created_at,
+  };
+}
+
+function mapModerationItem(row: ModerationSql): ModerationItem {
+  return {
+    photoId: row.id,
+    albumId: row.album_id,
+    eventId: row.event_id,
+    uploaderId: row.photographer_id,
+    moderationState: row.moderation_state,
+    createdAt: row.created_at,
+    openReports: Number(row.open_reports),
+    reasons: (row.reasons ?? []) as ReportReason[],
+    thumbKey: row.thumb_key,
+    webKey: row.web_key,
+  };
+}
+
+function mapAlbumPhoto(row: AlbumPhotoSql): AlbumPhoto {
+  return {
+    id: row.id,
+    albumId: row.album_id,
+    uploaderId: row.photographer_id,
+    createdAt: row.created_at,
+    thumbKey: row.thumb_key,
+    webKey: row.web_key,
   };
 }

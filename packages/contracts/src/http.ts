@@ -958,3 +958,128 @@ export const googleCallbackQuerySchema = z.object({
   state: z.string().min(1).max(4096).optional(),
   error: z.string().min(1).max(200).optional(),
 });
+
+// ---- crowd upload and moderation v6 (agent C) ---------------------------------------------
+
+/**
+ * `photos.moderation_state` (migration 010). A column SEPARATE from `photos.status`:
+ * `status` is the processing pipeline, this is the moderation state machine. Never merged.
+ */
+export const moderationStateSchema = z.enum(["pending", "approved", "rejected", "auto_rejected"]);
+export type ModerationState = z.infer<typeof moderationStateSchema>;
+
+export const reportReasonSchema = z.enum(["inappropriate", "not_me", "copyright", "other"]);
+export type ReportReason = z.infer<typeof reportReasonSchema>;
+
+/** How many DISTINCT open reports flip a photo to `pending` when the env var is unset. */
+export const REPORT_AUTO_PENDING_DEFAULT = 3;
+
+export const REPORT_NOTE_MAX = 500;
+
+/** Reports per participant are counted over this window (REPORT_PER_USER). */
+export const REPORT_RATE_LIMIT = { windowSeconds: 60 * 60 } as const;
+
+export const reportBodySchema = z
+  .object({
+    reason: reportReasonSchema,
+    note: z.string().trim().min(1).max(REPORT_NOTE_MAX).optional(),
+  })
+  .strict();
+
+/**
+ * `state` is the photo's moderation state after the report. `status` lets the client tell
+ * "recorded" from "you already reported this" without leaking who else reported.
+ */
+export const reportResponseSchema = z
+  .object({
+    status: z.enum(["recorded", "already-reported"]),
+    state: moderationStateSchema,
+    openReports: z.number().int().nonnegative(),
+  })
+  .strict();
+
+/** A participant upload into a crowd album: the album comes from the path, not the body. */
+export const albumUploadInitBodySchema = z
+  .object({
+    filename: z.string().min(1).max(200),
+    contentType: imageContentTypeSchema,
+    sha256: z.string().regex(/^[a-f0-9]{64}$/),
+    bytes: z.number().int().positive().max(UPLOAD_MAX_BYTES),
+  })
+  .strict();
+
+export const albumPhotosQuerySchema = z
+  .object({
+    limit: z.coerce.number().int().min(1).max(100).default(30),
+    cursor: z.string().min(1).optional(),
+  })
+  .strict();
+
+export const albumPhotoSchema = z
+  .object({
+    id: z.string().uuid(),
+    albumId: z.string().uuid(),
+    uploaderId: z.string().uuid(),
+    createdAt: z.string().datetime(),
+    thumbUrl: z.string().min(1),
+    webUrl: z.string().min(1),
+    /** True when the caller uploaded it: the only photo they may see reported counts for. */
+    mine: z.boolean(),
+  })
+  .strict();
+
+export const albumPhotosResponseSchema = z
+  .object({
+    photos: z.array(albumPhotoSchema),
+    nextCursor: z.string().min(1).nullable(),
+    /** The caller's own approved + pending count and the album cap, for the upload button. */
+    quota: z
+      .object({ used: z.number().int().nonnegative(), max: z.number().int().positive().nullable() })
+      .strict(),
+  })
+  .strict();
+
+export const moderationQuerySchema = z
+  .object({
+    albumId: z.string().uuid().optional(),
+    state: moderationStateSchema.optional(),
+    limit: z.coerce.number().int().min(1).max(100).default(30),
+    cursor: z.string().min(1).optional(),
+  })
+  .strict();
+
+export const moderationItemSchema = z
+  .object({
+    photoId: z.string().uuid(),
+    albumId: z.string().uuid(),
+    eventId: z.string().uuid(),
+    uploaderId: z.string().uuid(),
+    moderationState: moderationStateSchema,
+    createdAt: z.string().datetime(),
+    openReports: z.number().int().nonnegative(),
+    reasons: z.array(reportReasonSchema),
+    thumbUrl: z.string().min(1).nullable(),
+    webUrl: z.string().min(1).nullable(),
+  })
+  .strict();
+
+export const moderationResponseSchema = z
+  .object({
+    items: z.array(moderationItemSchema),
+    nextCursor: z.string().min(1).nullable(),
+  })
+  .strict();
+
+/** A moderator rules on a photo. `auto_rejected` is the screening hook's verdict, never a human's. */
+export const moderateBodySchema = z
+  .object({ state: z.enum(["approved", "pending", "rejected"]) })
+  .strict();
+
+export const moderateResponseSchema = z
+  .object({
+    photoId: z.string().uuid(),
+    state: moderationStateSchema,
+    /** True when the ruling purged the object through `purgePhoto` (a rejection). */
+    purged: z.boolean(),
+  })
+  .strict();
