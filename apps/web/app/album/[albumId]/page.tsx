@@ -23,6 +23,29 @@ const REPORT_LABELS: Record<ReportReason, string> = {
   other: "Altro",
 };
 
+/**
+ * What a CROWD album's report sheet offers — the counting reasons only, i.e. the ones that
+ * can send a photo to a moderator (MODERATION_COUNTING_REASONS in the contracts).
+ *
+ * `not_me` is left out on purpose, for two reasons that point the same way. It is a request
+ * about ONE person ("hide this from my gallery"), while every other button here is a request
+ * about EVERYONE ("a moderator should look at this"), and a sheet that mixes the two invites
+ * the mistake the api then has to absorb silently. And in a crowd album it is meaningless
+ * anyway: crowd photos are in nobody's match gallery, so there is nothing to hide — the api
+ * would record the row and answer `hiddenForYou: false`.
+ *
+ * The per-person action keeps its own, older, better home: the "Non sono io" button next to
+ * the photo in the personal match gallery (components/viewer.tsx for one photo,
+ * components/gallery.tsx for a selection), which writes exactly the same `gallery_feedback`
+ * row this route would have written. The api still accepts `not_me` here — the one-way escalation
+ * from a stored `not_me` to a counting reason depends on it, and someone may want a wrong
+ * match reviewed with a note — this is a UI choice, not a contract change.
+ *
+ * If a second album kind ever needs a different list, this is where it branches on
+ * `album.kind`. One kind offers one list today, so there is no mechanism to build yet.
+ */
+const CROWD_REPORT_REASONS: ReportReason[] = ["inappropriate", "copyright", "other"];
+
 export default function AlbumPage({ params }: { params: Promise<{ albumId: string }> }) {
   const { albumId } = use(params);
   return (
@@ -63,16 +86,13 @@ function CrowdAlbum({ albumId }: { albumId: string }) {
       setReporting(null);
       try {
         const answer = await reportPhoto(photoId, reason);
-        // "Non sono io" is a per-user correction, not a takedown: say so, so nobody taps it
-        // expecting the photo to disappear for everyone.
+        // Every reason this sheet offers counts, so the answer is always the same promise:
+        // a moderator will look. It deliberately does not say "removed" — with
+        // post-moderation the photo stays up until the threshold or a moderator moves it.
         setMessage(
           answer.status === "already-reported"
             ? "Hai già segnalato questa foto."
-            : answer.hiddenForYou
-              ? "Foto nascosta dalla tua galleria. Resta visibile agli altri."
-              : answer.counts
-                ? "Segnalazione inviata. Grazie."
-                : "Segnalazione registrata. Grazie.",
+            : "Segnalazione inviata: un moderatore la controllerà. Grazie.",
         );
         // The threshold may have withheld it: a reload is the single source of truth.
         if (answer.state !== "approved") await load();
@@ -92,6 +112,11 @@ function CrowdAlbum({ albumId }: { albumId: string }) {
         {quota.max === null
           ? "Aggiungi le tue foto all'album."
           : `Hai caricato ${quota.used} foto su ${quota.max}.`}
+      </p>
+      <p className="status">
+        Se una foto non dovrebbe essere qui, segnalala: la controlla un moderatore. Per
+        togliere dalla tua galleria una foto in cui non ci sei, usa «Non sono io» nella
+        galleria.
       </p>
 
       <div className="actions">
@@ -129,7 +154,7 @@ function CrowdAlbum({ albumId }: { albumId: string }) {
             <img src={photo.thumbUrl} alt="" loading="lazy" />
             {reporting === photo.id ? (
               <div className="actions">
-                {(Object.keys(REPORT_LABELS) as ReportReason[]).map((reason) => (
+                {CROWD_REPORT_REASONS.map((reason) => (
                   <button key={reason} type="button" onClick={() => void report(photo.id, reason)}>
                     {REPORT_LABELS[reason]}
                   </button>
