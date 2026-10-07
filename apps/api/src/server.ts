@@ -1,5 +1,5 @@
 import { serve } from "@hono/node-server";
-import { createSql, migrate, PostgresDatabase, seedDemo } from "@rephoto/db";
+import { createSql, PostgresDatabase } from "@rephoto/db";
 import { createApp } from "./app.js";
 import { loadEnv } from "./env.js";
 import { loadFaceEngine } from "./face.js";
@@ -10,9 +10,11 @@ import { createQueue } from "./queue.js";
 
 const env = loadEnv();
 const sql = createSql(env.DATABASE_URL, { max: env.DATABASE_POOL_MAX });
-await migrate(sql);
+// Migrations and demo seeding run in the one-shot `migrate` service (and `pnpm db:seed`
+// in local dev), not here, so the first boot of a multi-replica stack is deterministic.
+// These two are idempotent user upserts (not schema changes) and run against the
+// already-migrated database: BOOTSTRAP_ADMINS, and the local-only dev staff passwords.
 const db = new PostgresDatabase(sql);
-await seedDemo(db);
 await bootstrapAdmins(db, env.BOOTSTRAP_ADMINS);
 await seedStaffCredentials(db);
 const app = createApp({

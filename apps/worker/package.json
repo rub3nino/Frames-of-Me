@@ -11,10 +11,10 @@
   },
   "dependencies": {
     "@aws-sdk/client-cloudwatch": "^3.1147.0",
-    "@rephoto/api": "file:../api",
-    "@rephoto/contracts": "file:../../packages/contracts",
-    "@rephoto/db": "file:../../packages/db",
-    "@rephoto/face-engine": "file:../../packages/face-engine",
+    "@rephoto/api": "workspace:*",
+    "@rephoto/contracts": "workspace:*",
+    "@rephoto/db": "workspace:*",
+    "@rephoto/face-engine": "workspace:*",
     "sharp": "^0.34.4",
     "tsx": "^4.20.5"
   },

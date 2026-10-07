@@ -3,15 +3,12 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "workspaces": [
-    "apps/*",
-    "packages/*"
-  ],
+  "packageManager": "pnpm@12.6.0",
   "scripts": {
-    "dev": "node -e \"console.log('Start three processes:\\n  npm run dev:api\\n  npm run dev:worker\\n  npm run dev:web')\"",
-    "dev:api": "npm run dev -w @rephoto/api",
-    "dev:worker": "npm run dev -w @rephoto/worker",
-    "dev:web": "npm run dev -w @rephoto/web",
+    "dev": "node -e \"console.log('Start three processes:\\n  pnpm dev:api\\n  pnpm dev:worker\\n  pnpm dev:web')\"",
+    "dev:api": "pnpm --filter @rephoto/api dev",
+    "dev:worker": "pnpm --filter @rephoto/worker dev",
+    "dev:web": "pnpm --filter @rephoto/web dev",
     "db:migrate": "node --env-file=.env --import tsx packages/db/src/migrate.ts",
     "db:seed": "node --env-file=.env --import tsx packages/db/src/seed.ts",
     "test": "node --import tsx --test packages/contracts/src/collection-id.test.ts packages/contracts/src/jobs.test.ts packages/face-engine/src/face-engine.test.ts packages/face-engine/src/insightface.test.ts packages/db/src/memory.test.ts apps/worker/test/mvp.test.ts apps/worker/test/v2.test.ts apps/worker/test/v3.test.ts apps/worker/test/v4.test.ts apps/worker/test/v5.test.ts apps/web/lib/resize.worker.test.ts apps/api/test/routes.test.ts apps/api/test/mailer.test.ts",

@@ -1,0 +1,42 @@
+name: CI
+
+# Backend monorepo (apps/api, apps/worker, apps/web + packages/*). The separate frontend/
+# monorepo has its own workflow (frontend-ci.yml).
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths-ignore:
+      - "frontend/**"
+      - "docs/**"
+      - "**/*.md"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Corepack activates the pnpm version pinned in package.json#packageManager.
+      - name: Enable Corepack (pnpm)
+        run: corepack enable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm -r --if-present run typecheck
+
+      - name: Test
+        run: pnpm test
+
+      # Reproducible production build of the three Node images from the Coolify compose.
+      # (face-service is an unchanged Python image, built on the server only when
+      # FACE_ENGINE=insightface.)
+      - name: Build images
+        run: docker compose -f docker-compose.coolify.yml build api worker web

@@ -2,18 +2,19 @@
 
 API (`8787`), worker, and web (`3000`) are three host processes. Compose starts Postgres (`pgvector/pgvector:pg16`), MinIO, Mailpit and the **face-service** (`apps/face-service`, port `8090`) by default. The first `docker compose up -d` builds the face-service image, which downloads the InsightFace `buffalo_l` model pack (~280 MB) and the anti-spoofing weights (~2 MB) into the image: allow a few minutes and network access to GitHub; later starts are instant. The MinIO image is `cgr.dev/chainguard/minio` because `minio/minio` is no longer on Docker Hub; compose sets `MINIO_API_CORS_ALLOW_ORIGIN=http://localhost:3000` so the browser can PUT straight to presigned URLs (the Next.js `/api/s3-put` proxy is only a fallback, and answers `404` in production).
 
+The package manager is **pnpm** (via Corepack — `corepack enable` once; the version is pinned in `package.json`).
+
 ```sh
 cp .env.example .env
-docker compose up -d
-npm install
-npm run db:migrate
-npm run db:seed
-npm run dev:api
-npm run dev:worker
-npm run dev:web
+docker compose up -d        # Postgres, MinIO, Mailpit, face-service
+pnpm install
+pnpm db:seed                # migrate + seed the demo event (run once, before dev:api)
+pnpm dev:api
+pnpm dev:worker
+pnpm dev:web
 ```
 
-`npm run dev` prints those three process commands. The API and the worker also run the migrations (under an advisory lock) and the demo seed at boot, so `db:migrate` / `db:seed` are only needed to prepare the database before the first `dev:web`.
+`pnpm dev` prints those three process commands. Migrations and the demo seed run **once** via `pnpm db:seed`; the API and worker no longer migrate at boot (so a multi-replica/container first boot is deterministic and the worker never migrates). In the full-stack compose `app` profile a one-shot `migrate` service does this and the api/worker wait for it.
 
 | Service | URL |
 | --- | --- |
@@ -77,7 +78,7 @@ With the `frontend/` apps running (admin on `:5192`, fotografi on `:5191`), sign
 
 Participants get, in the gallery, a reason banner when the selfie produced nothing, «Non sono io» in the viewer and on the selection bar (hidden photos move to a collapsed «Nascoste» group, «Sono io» brings them back), and `?debug=1` (remembered in `localStorage rephoto.debug`; `?debug=0` clears it) to see `score · source` on every cell.
 
-**Seed and ingest** (both read `.env`): `npm run seed:test -- --event demo --photographers 2 --participants 20 --out ./seed` creates the event when missing, an admin (`admin@test.rephoto.local` by default), photographers in `event_photographers`, participants with a consent row, and writes pre-minted session cookies (`seed/cookies-*.txt` for k6, `users-demo.csv` mode 0600, `subjects.csv` for `scripts/eval`); `--purge-users` removes them. `npm run ingest -- --dir photo/ --event demo --photographer photographer@rephoto.local --manifest manifest.csv` writes the photos straight into MinIO and `photos` (same rows and `derive` job as `uploads/complete`, `--parallel 8`, `--rate`, `--synth N` copies with real faces and a `synth` tag, `--state` to resume, `--web-first`, `--convert` for HEIC / PNG / TIFF, `--dry-run`): details in `scripts/ingest/README.md`. The evaluation scripts (`scripts/eval/README.md`: `offline-search.py`, `evaluate.py`, `synth.py`, the null-selfie protocol) need a Python venv with `requirements-eval.txt`. Photos ingested with `--tags` are searchable by tag in **Foto**.
+**Seed and ingest** (both read `.env`): `pnpm seed:test -- --event demo --photographers 2 --participants 20 --out ./seed` creates the event when missing, an admin (`admin@test.rephoto.local` by default), photographers in `event_photographers`, participants with a consent row, and writes pre-minted session cookies (`seed/cookies-*.txt` for k6, `users-demo.csv` mode 0600, `subjects.csv` for `scripts/eval`); `--purge-users` removes them. `pnpm ingest -- --dir photo/ --event demo --photographer photographer@rephoto.local --manifest manifest.csv` writes the photos straight into MinIO and `photos` (same rows and `derive` job as `uploads/complete`, `--parallel 8`, `--rate`, `--synth N` copies with real faces and a `synth` tag, `--state` to resume, `--web-first`, `--convert` for HEIC / PNG / TIFF, `--dry-run`): details in `scripts/ingest/README.md`. The evaluation scripts (`scripts/eval/README.md`: `offline-search.py`, `evaluate.py`, `synth.py`, the null-selfie protocol) need a Python venv with `requirements-eval.txt`. Photos ingested with `--tags` are searchable by tag in **Foto**.
 
 To put photos back after a long face-service outage: `curl -X POST localhost:8787/v1/admin/photos/requeue -H 'content-type: application/json' -b "rephoto_session=<admin cookie>" -d '{"eventId":"<uuid>"}'` (photos in `error` go back to `uploaded` / `processing` and get a `derive` or `index` job).
 
@@ -86,7 +87,7 @@ To put photos back after a long face-service outage: `curl -X POST localhost:878
 `/selfie` opens the front camera and runs the challenge (look → left → right → blink → automatic capture) with MediaPipe Face Landmarker, loaded from `/mediapipe/` on our own origin. Two prerequisites, otherwise the page silently falls back to the file picker (`liveness = file` in `audit_log`):
 
 - **A secure context**: `https://` or `http://localhost` (`getUserMedia` is unavailable on a plain `http://<lan-ip>`; to try from a phone use a tunnel with TLS or `next dev --experimental-https`).
-- **The MediaPipe files in `apps/web/public/mediapipe/`** (git-ignored). `npm run build -w @rephoto/web` fetches them through the `prebuild` script; for `dev:web` run it once by hand: `node apps/web/scripts/fetch-mediapipe.mjs` (copies the wasm runtime from `node_modules` and downloads the ~3.6 MB `face_landmarker.task` from Google Storage; idempotent). Offline, the script prints `mediapipe: WARNING model not available` and the build still succeeds with the camera challenge disabled; set `MEDIAPIPE_MODEL_REQUIRED=1` to make that fatal (the web Dockerfile does, so a production image build fails rather than ship without the model).
+- **The MediaPipe files in `apps/web/public/mediapipe/`** (git-ignored). `pnpm --filter @rephoto/web build` fetches them through the `prebuild` script; for `dev:web` run it once by hand: `node apps/web/scripts/fetch-mediapipe.mjs` (copies the wasm runtime from `node_modules` and downloads the ~3.6 MB `face_landmarker.task` from Google Storage; idempotent). Offline, the script prints `mediapipe: WARNING model not available` and the build still succeeds with the camera challenge disabled; set `MEDIAPIPE_MODEL_REQUIRED=1` to make that fatal (the web Dockerfile does, so a production image build fails rather than ship without the model).
 
 Each step has 15 s; a timeout shows «Riprova». «Usa un file invece» is always available. The captured frame is a JPEG (q0.9, long edge 1280) sent as the `selfie` field with `liveness=challenge`; the API stores that flag in `audit_log` (`selfie.submitted`) and nothing else about the challenge.
 
@@ -162,12 +163,12 @@ With that line the browser reaches the same MinIO on port 9000 and the signature
 ## Tests
 
 ```sh
-npm test
+pnpm test
 ```
 
 `node --test` over thirteen files, no Docker needed: `packages/contracts/src/collection-id.test.ts`, `packages/contracts/src/jobs.test.ts` (priorities, `reset` dedupe), `packages/face-engine/src/face-engine.test.ts`, `packages/face-engine/src/insightface.test.ts` (cosine mapping, quality filter, chunked deletes, error names, `searchByVector`, delete-before-insert, the embed timeout, with a stubbed service and a stubbed `sql`), `packages/db/src/memory.test.ts`, `apps/worker/test/mvp.test.ts`, `apps/worker/test/v2.test.ts`, `apps/worker/test/v3.test.ts` (two-stage derive and `verify`), `apps/worker/test/v4.test.ts` (liveness gate in `match`), `apps/worker/test/v5.test.ts` (selfie gate reasons, anchors at `ANCHOR_MIN`, selfie-vector attach, anchor quorum, `MATCH_LOG`, `KEEP_SELFIES`, re-index anchors, `FACE_INDEX_SOURCE`, requeue + breaker, heartbeat and `finished_at`, `index` before `derive`, `LOG_IDS`, `reset`), `apps/web/lib/resize.worker.test.ts` (1600 px render geometry), `apps/api/test/routes.test.ts` (including presigned host = `S3_PUBLIC_ENDPOINT`, the selfie `liveness` audit row, and the v5 admin routes, feedback, CSV exports, env rate limits with exempt IPs), `apps/api/test/mailer.test.ts` (nodemailer options from the SMTP env). They use `MemoryDatabase`, the fake engine with an in-memory store (which also implements `embedSelfie` / `searchByVector` / `faceEmbedding` on a synthetic vector), and in-memory object store / mailer / queue. `scripts/eval/evaluate.py` has a fixture run described in `scripts/eval/README.md`.
 
-**Integration test of the InsightFace engine** (real Postgres + real service), skipped by `npm test` unless both are reachable:
+**Integration test of the InsightFace engine** (real Postgres + real service), skipped by `pnpm test` unless both are reachable:
 
 ```sh
 docker compose up -d
@@ -189,7 +190,7 @@ The stubbed tests (`test_engine.py`, `test_images.py`, `test_liveness.py`, `test
 
 ## Load test
 
-k6 scripts for the two hot paths (photographer upload, participant selfie with polling until `ready`) are in `scripts/loadtest/` with their own README: how to obtain session cookies (`npm run seed:test` writes them ready to use), how to run against local or against a deployed stack, thresholds. The test-campaign stack on a VPS (`deploy/compose.test.yml`, `status.sh`, `reset-event.sh`, the protocol) is in `deploy/README.md` §9 bis.
+k6 scripts for the two hot paths (photographer upload, participant selfie with polling until `ready`) are in `scripts/loadtest/` with their own README: how to obtain session cookies (`pnpm seed:test` writes them ready to use), how to run against local or against a deployed stack, thresholds. The test-campaign stack on a VPS (`deploy/compose.test.yml`, `status.sh`, `reset-event.sh`, the protocol) is in `deploy/README.md` §9 bis.
 
 ## Useful endpoints while developing
 
@@ -201,6 +202,31 @@ k6 scripts for the two hot paths (photographer upload, participant selfie with p
 - `GET http://localhost:8090/metrics`: face-service counters and embed p50 / p95 over the last 500 calls.
 - Worker stdout: one JSON line per job (`{ ts, job, type, ms, outcome, liveness?, match?, reason?, hits? }`, plus the ids with `LOG_IDS=true`).
 - `psql`: `select event_id, count(*) from face_vectors group by 1`; `select user_id, last_match_reason, query_embedding is not null as has_vector, cardinality(anchor_face_ids) from galleries`; `select type, status, count(*), round(avg(duration_ms)) from jobs group by 1, 2`; `select action, meta from audit_log order by created_at desc limit 10` (`selfie.submitted` rows carry `meta.liveness`; v5 adds `magic_link.issued`, `gallery.feedback`, `event.reset`, …).
+
+## Deploy su Coolify (framesofme.com)
+
+The test deployment runs from `docker-compose.coolify.yml` on Coolify. Public exposure is a Cloudflare Tunnel → Coolify's Traefik, so no host ports are published; you map an FQDN per service in the Coolify UI.
+
+1. **New resource**: Coolify → project *RePhoto* → environment *test* → **+ New** → **Docker Compose** → source = the GitHub repo `rub3nino/rephoto`, branch `main`, compose file `docker-compose.coolify.yml`. Enable **automatic deploy on push**.
+2. **Environment variables** (Coolify → the resource → *Environment Variables*): set the values from the *Production / Coolify* block in `.env.example`. At minimum `SESSION_SECRET` (32+ random chars), `S3_ACCESS_KEY` / `S3_SECRET_KEY`, `POSTGRES_PASSWORD`, `WEB_ORIGIN`, `API_ORIGIN`, `S3_ENDPOINT=https://s3.framesofme.com`, `NEXT_PUBLIC_WEB_ORIGIN`, `NEXT_PUBLIC_MEDIA_ORIGINS=https://s3.framesofme.com`, `SMTP_FROM`, `BOOTSTRAP_ADMINS`. The `NEXT_PUBLIC_*` ones are build-time — set them as **Build Variables** too. Do **not** set `SEED_DEMO` on api/worker (it is forced on the one-shot `migrate` service only).
+3. **Domains (FQDN per service)** in each service's *Domains* field:
+   - `web` → `https://framesofme.com` (+ `https://www.framesofme.com`), container port **3000**
+   - `api` → `https://api.framesofme.com`, container port **8787**
+   - `minio` → `https://s3.framesofme.com`, container port **9000**
+   - `mailpit` → `https://mail.framesofme.com`, container port **8025** (keep behind Cloudflare Access)
+4. **Deploy**. On first boot: `migrate` runs once (schema + demo event) and exits 0, then `api` and `worker` start; `minio-init` creates the bucket and the 24 h expiry rule for `selfies/`. `FACE_ENGINE=fake` by default — for real matching set `FACE_ENGINE=insightface` and keep the `face-service` (needs more RAM; first build pulls the ~280 MB model).
+5. **Verify**: `https://api.framesofme.com/health` → 200, `https://framesofme.com/` → 200, `https://framesofme.com/v1/events/demo` → 200.
+
+Cloudflare Tunnel: point the tunnel at Coolify's Traefik (the proxy's `:80`/`:443`), with a public hostname per FQDN above. No inbound ports are opened on the host.
+
+A local smoke test of the same file (host-port-free; a throwaway project name so it does not touch the dev stack, and `--env-file /dev/null` so the repo's local `.env` does not override the in-file defaults — Coolify injects its own env instead):
+
+```sh
+docker compose -p rephoto-coolify --env-file /dev/null -f docker-compose.coolify.yml up -d --build
+docker compose -p rephoto-coolify --env-file /dev/null -f docker-compose.coolify.yml exec -T api \
+  node -e "fetch('http://127.0.0.1:8787/health').then(r=>console.log(r.status))"
+docker compose -p rephoto-coolify --env-file /dev/null -f docker-compose.coolify.yml down -v
+```
 
 ## Production
 
