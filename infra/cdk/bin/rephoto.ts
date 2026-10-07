@@ -13,7 +13,7 @@ const app = new cdk.App();
 
 new RephotoStack(app, "RephotoStack", {
   env: { account, region: "eu-central-1" },
-  description: "RePhoto v2: ECS Fargate api/worker/web, RDS Postgres 16 + Proxy, S3, CloudFront, WAF",
+  description: "Frames of Me v2: ECS Fargate api/worker/web, RDS Postgres 16 + Proxy, S3, CloudFront, WAF",
   // Optional context (-c key=value or cdk.json "context"):
   //   domainName                 public host name served by CloudFront (e.g. foto.example.it)
   //   certificateArn             ACM certificate in eu-central-1 for the ALB (same host name)

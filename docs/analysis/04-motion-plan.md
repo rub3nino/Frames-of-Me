@@ -1,4 +1,4 @@
-# RePhoto — Motion plan
+# Frames of Me — Motion plan
 
 How the whole product moves. Combines two rulebooks: **impeccable** (one authored moment, not
 scattered effects) and **Emil Kowalski** (the decision framework, strong curves, physicality,
@@ -14,7 +14,7 @@ behavior in [`../../design/brand/motion.js`](../../design/brand/motion.js).
 - **Emil:** before any animation, run the gate — *should it animate at all? what is the purpose?*
   If the purpose is only "looks cool" on a frequently-seen element, **write zero lines**.
 
-They agree: RePhoto has **one authored moment (Recognition)** and a small, consistent set of
+They agree: Frames of Me has **one authored moment (Recognition)** and a small, consistent set of
 **functional** micro-interactions. Nothing decorative on anything users see dozens of times a day.
 
 ---

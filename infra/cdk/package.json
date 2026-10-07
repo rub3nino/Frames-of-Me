@@ -2,7 +2,7 @@
   "name": "rephoto-infra",
   "private": true,
   "version": "0.0.0",
-  "description": "RePhoto reference AWS stack (CDK v2, eu-central-1). Not part of the npm workspaces.",
+  "description": "Frames of Me reference AWS stack (CDK v2, eu-central-1). Not part of the npm workspaces.",
   "type": "module",
   "scripts": {
     "synth": "cdk synth",

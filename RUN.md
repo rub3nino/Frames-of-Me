@@ -207,7 +207,7 @@ k6 scripts for the two hot paths (photographer upload, participant selfie with p
 
 The test deployment runs from `docker-compose.coolify.yml` on Coolify. Public exposure is a Cloudflare Tunnel → Coolify's Traefik, so no host ports are published; you map an FQDN per service in the Coolify UI.
 
-1. **New resource**: Coolify → project *RePhoto* → environment *test* → **+ New** → **Docker Compose** → source = the GitHub repo `rub3nino/rephoto`, branch `main`, compose file `docker-compose.coolify.yml`. Enable **automatic deploy on push**.
+1. **New resource**: Coolify → project *Frames of Me* → environment *test* → **+ New** → **Docker Compose** → source = the GitHub repo `rub3nino/rephoto`, branch `main`, compose file `docker-compose.coolify.yml`. Enable **automatic deploy on push**.
 2. **Environment variables** (Coolify → the resource → *Environment Variables*): set the values from the *Production / Coolify* block in `.env.example`. At minimum `SESSION_SECRET` (32+ random chars), `S3_ACCESS_KEY` / `S3_SECRET_KEY`, `POSTGRES_PASSWORD`, `WEB_ORIGIN`, `API_ORIGIN`, `S3_ENDPOINT=https://s3.framesofme.com`, `NEXT_PUBLIC_WEB_ORIGIN`, `NEXT_PUBLIC_MEDIA_ORIGINS=https://s3.framesofme.com`, `SMTP_FROM`, `BOOTSTRAP_ADMINS`. The `NEXT_PUBLIC_*` ones are build-time — set them as **Build Variables** too. Do **not** set `SEED_DEMO` on api/worker (it is forced on the one-shot `migrate` service only).
 3. **Domains (FQDN per service)** in each service's *Domains* field:
    - `web` → `https://framesofme.com` (+ `https://www.framesofme.com`), container port **3000**

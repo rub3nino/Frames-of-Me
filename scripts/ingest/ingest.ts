@@ -1,4 +1,4 @@
-// RePhoto — server-side bulk importer for the test campaign.
+// Frames of Me — server-side bulk importer for the test campaign.
 //
 //   node --env-file=.env --import tsx scripts/ingest/ingest.ts \
 //     --dir /data/photos --event conferenza-2026 --photographer foto1@test.rephoto.local \
@@ -24,7 +24,7 @@ import type { ImageContentType } from "@rephoto/db";
 
 // ------------------------------------------------------------------ CLI
 
-const HELP = `RePhoto ingest — import a folder of photos straight into MinIO + Postgres.
+const HELP = `Frames of Me ingest — import a folder of photos straight into MinIO + Postgres.
 
 Usage:
   node --env-file=.env --import tsx scripts/ingest/ingest.ts --dir <folder> --event <slug> --photographer <email> [options]

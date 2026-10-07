@@ -10,11 +10,11 @@ const sourceSans = Source_Sans_3({
 });
 
 export const metadata: Metadata = {
-  title: "RePhoto",
+  title: "Frames of Me",
   description: "Trova le foto dell'evento in cui compari.",
   // app/manifest.ts is linked automatically; these make the installed uploader look native.
-  applicationName: "RePhoto",
-  appleWebApp: { capable: true, title: "RePhoto Upload", statusBarStyle: "default" },
+  applicationName: "Frames of Me",
+  appleWebApp: { capable: true, title: "Frames of Me Upload", statusBarStyle: "default" },
 };
 
 export const viewport: Viewport = {

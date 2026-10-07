@@ -1,4 +1,4 @@
-# RePhoto v4 — production stack on one VPS (Debian/Ubuntu, Docker + Compose plugin).
+# Frames of Me v4 — production stack on one VPS (Debian/Ubuntu, Docker + Compose plugin).
 #
 #   cd /srv/rephoto/deploy
 #   docker compose --env-file .env.production build

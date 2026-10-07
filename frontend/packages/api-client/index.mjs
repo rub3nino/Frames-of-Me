@@ -1,5 +1,5 @@
 /* ============================================================================
-   RePhoto — shared API client
+   Frames of Me — shared API client
    Framework-agnostic (plain fetch). Used by every frontend app (landing,
    partecipanti, fotografi, admin) so there is ONE place that knows the backend.
    Talks to the existing `apps/api` (Hono). Endpoints mirror CONTRACTS.md.

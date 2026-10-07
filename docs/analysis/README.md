@@ -1,4 +1,4 @@
-# RePhoto — Deep analysis (vetrina, admin, fotografi, motion)
+# Frames of Me — Deep analysis (vetrina, admin, fotografi, motion)
 
 Studio approfondito avviato dopo l'analisi del sito reale dell'evento
 ([conferintaeuropeana.it](https://conferintaeuropeana.it) — *Conferința Europeană de Tineret și
@@ -20,9 +20,9 @@ Precede e completa [`../ux-flows.md`](../ux-flows.md) (i flussi) e [`../../desig
 
 ## 1. Le 5 scoperte che cambiano il prodotto
 
-1. **Il sito reale non ha una galleria foto → RePhoto riempie un vuoto reale.** Posizionamento
+1. **Il sito reale non ha una galleria foto → Frames of Me riempie un vuoto reale.** Posizionamento
    consigliato: **ibrido** — vetrina dell'evento (~40%) che incanala ogni visitatore nell'unica cosa
-   che RePhoto possiede, *«Trova le tue foto»*, declinata in **PRIMA / DURANTE / DOPO** l'evento.
+   che Frames of Me possiede, *«Trova le tue foto»*, declinata in **PRIMA / DURANTE / DOPO** l'evento.
 
 2. **I minori sono il nodo di conformità n.1.** Il pubblico è di famiglie e giovani (dai 14 anni).
    Il contratto attuale **non ha alcun concetto di età né di consenso genitoriale**: oggi un minore

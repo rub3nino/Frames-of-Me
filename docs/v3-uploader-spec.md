@@ -1,4 +1,4 @@
-# RePhoto v3 — continuous uploader spec
+# Frames of Me v3 — continuous uploader spec
 
 Builds on `docs/v2-spec.md` and the current code. Goal: a photographer on Chrome/Edge picks a folder once, presses "Avvia", and the page keeps uploading whatever lands in that folder, adapting to the available bandwidth, surviving browser restarts, and optionally sending a 1600 px "web" version first so matching starts within seconds while the originals trickle in. No desktop app, no browser extension, no Lightroom plugin.
 
@@ -126,7 +126,7 @@ export function scanFolder(handle: FileSystemDirectoryHandle): Promise<File[]>;
 - Mode toggle "Prima il web, poi gli originali" (default ON when supported; stored in localStorage), with a one-line explanation.
 - Wake Lock (`navigator.wakeLock.request("screen")`) while running; re-acquire on `visibilitychange`.
 - `beforeunload` warning while uploads are running.
-- PWA: `app/manifest.ts` (name RePhoto Upload, display standalone, start_url `/upload`, icons from `app/icon.svg` → add 192/512 PNG under `public/`), minimal service worker `public/sw.js` registered from the upload page only (cache nothing except the manifest/icons; it exists only for installability), "Installa come app" hint when `beforeinstallprompt` fires.
+- PWA: `app/manifest.ts` (name Frames of Me Upload, display standalone, start_url `/upload`, icons from `app/icon.svg` → add 192/512 PNG under `public/`), minimal service worker `public/sw.js` registered from the upload page only (cache nothing except the manifest/icons; it exists only for installability), "Installa come app" hint when `beforeinstallprompt` fires.
 - Drag-and-drop stays for Safari/Firefox and goes through the same queue/mode.
 - Keep the windowed list, summary polling (now shows `originalsPending`), history.
 

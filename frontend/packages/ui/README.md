@@ -1,4 +1,4 @@
-# RePhoto — UI & Brand (`design/`)
+# Frames of Me — UI & Brand (`design/`)
 
 Static HTML/CSS/JS prototype of the whole product UI, built on a single brand system.
 This is the **design/brand layer** — the visual source of truth that precedes wiring the real

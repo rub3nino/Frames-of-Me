@@ -1,4 +1,4 @@
-# RePhoto web (Next.js). Build context is the repo root:
+# Frames of Me web (Next.js). Build context is the repo root:
 #   docker build -f apps/web/Dockerfile -t rephoto-web .
 # Requires `output: "standalone"` in apps/web/next.config.ts. Next infers the monorepo
 # root from the root pnpm-lock.yaml, so the standalone bundle lands in

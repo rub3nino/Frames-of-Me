@@ -156,7 +156,7 @@ iteration() {
 
   # --- screen
   clear 2>/dev/null || true
-  printf 'RePhoto status  %s  every %ss  csv: %s%s\n' "$ts" "$INTERVAL" "$OUT" "${EVENT_SLUG:+  event: $EVENT_SLUG}"
+  printf 'Frames of Me status  %s  every %ss  csv: %s%s\n' "$ts" "$INTERVAL" "$OUT" "${EVENT_SLUG:+  event: $EVENT_SLUG}"
   printf '%s\n' "----------------------------------------------------------------------------------------"
   printf 'jobs      queued  derive %-6s index %-6s attach %-6s match %-6s other %-5s | running %-4s error %-5s oldest queued %ss\n' "$q_derive" "$q_index" "$q_attach" "$q_match" "$q_other" "$running" "$errors" "$oldest"
   printf 'photos    uploaded %-7s processing %-7s indexed %-8s error %-6s | face_vectors %-8s galleries %s (with anchors)\n' "$p_uploaded" "$p_processing" "$p_indexed" "$p_error" "$vectors" "$galleries"

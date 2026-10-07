@@ -1,4 +1,4 @@
-# RePhoto v5 — implementation spec for the test campaign
+# Frames of Me v5 — implementation spec for the test campaign
 
 Source analysis: `docs/test-readiness.md`. Everything here is additive to the frozen v4 contract (new columns, new routes, new env vars, new scripts). Code/comments English, UI Italian.
 

@@ -41,7 +41,7 @@ aws sesv2 put-email-identity-dkim-attributes \
 
 `VerifiedForSendingStatus` si controlla sulla stessa `get-email-identity`. Finché il dominio non è verificato non si spedisce da quell'identità.
 
-Mittente previsto, ancora segnaposto: un indirizzo su quel dominio (per esempio `no-reply@photos.example`). Il contratto non fissa l'indirizzo From: fissa i testi. Oggetto del magic link: `Accedi a RePhoto`. Oggetto galleria: `Le tue foto sono pronte`. Corpo: solo l'URL, niente allegati.
+Mittente previsto, ancora segnaposto: un indirizzo su quel dominio (per esempio `no-reply@photos.example`). Il contratto non fissa l'indirizzo From: fissa i testi. Oggetto del magic link: `Accedi a Frames of Me`. Oggetto galleria: `Le tue foto sono pronte`. Corpo: solo l'URL, niente allegati.
 
 ## 2. L'account resta in sandbox finché l'accesso di produzione non è concesso
 
@@ -76,16 +76,16 @@ aws sesv2 get-account --region eu-central-1 \
 `put-account-details` vuole `--mail-type` (`TRANSACTIONAL` o `MARKETING`) e `--website-url`. Qui il tipo è `TRANSACTIONAL`. `--contact-language` accetta solo `EN` o `JA`; si passa `EN`. Il testo d'uso è in italiano e in inglese (limite help: 5000 caratteri).
 
 ```text
-RePhoto, primo evento di una conferenza europea. Inviamo solo email transazionali.
+Frames of Me, primo evento di una conferenza europea. Inviamo solo email transazionali.
 
-1) Link di accesso (magic link) a chi chiede di entrare: oggetto «Accedi a RePhoto», corpo solo l'URL di verifica, scadenza 30 minuti, un solo uso.
+1) Link di accesso (magic link) a chi chiede di entrare: oggetto «Accedi a Frames of Me», corpo solo l'URL di verifica, scadenza 30 minuti, un solo uso.
 2) Avviso di galleria a chi ha dato consenso esplicito al confronto del volto e ha completato la ricerca: oggetto «Le tue foto sono pronte», corpo solo il link alla galleria personale. Nessun allegato, nessuna immagine, nessuna newsletter.
 
 Non è marketing. Non usiamo liste acquistate. Il destinatario è la persona che ha chiesto il link o che ha acconsentito. Volume atteso per il primo evento: sotto i 10.000 messaggi (circa 6.000 interessati). Mittente: dominio verificato in eu-central-1 con DKIM. Bounce e complaint vanno nella suppression list dell'account: chi rimbalza o reclama non riceve altri invii.
 
-RePhoto, first event of a European conference. We send only transactional email.
+Frames of Me, first event of a European conference. We send only transactional email.
 
-1) An access link (magic link) to someone who asks to sign in: subject "Accedi a RePhoto", body only the verification URL, 30-minute expiry, single use.
+1) An access link (magic link) to someone who asks to sign in: subject "Accedi a Frames of Me", body only the verification URL, 30-minute expiry, single use.
 2) A gallery notice to someone who gave explicit consent to face matching and whose search finished: subject "Le tue foto sono pronte", body only the link to their personal gallery. No attachments, no images, no newsletter.
 
 This is not marketing. We do not use purchased lists. The recipient is the person who requested the link or who consented. Expected volume for the first event: under 10,000 messages (about 6,000 data subjects). Sender: a domain verified in eu-central-1 with DKIM. Bounces and complaints go on the account suppression list: a recipient who bounces or complains gets no further mail.
@@ -101,16 +101,16 @@ AWS_REGION=eu-central-1 aws sesv2 put-account-details \
   --contact-language EN \
   --production-access-enabled \
   --use-case-description "$(cat <<'EOF'
-RePhoto, primo evento di una conferenza europea. Inviamo solo email transazionali.
+Frames of Me, primo evento di una conferenza europea. Inviamo solo email transazionali.
 
-1) Link di accesso (magic link) a chi chiede di entrare: oggetto «Accedi a RePhoto», corpo solo l'URL di verifica, scadenza 30 minuti, un solo uso.
+1) Link di accesso (magic link) a chi chiede di entrare: oggetto «Accedi a Frames of Me», corpo solo l'URL di verifica, scadenza 30 minuti, un solo uso.
 2) Avviso di galleria a chi ha dato consenso esplicito al confronto del volto e ha completato la ricerca: oggetto «Le tue foto sono pronte», corpo solo il link alla galleria personale. Nessun allegato, nessuna immagine, nessuna newsletter.
 
 Non è marketing. Non usiamo liste acquistate. Il destinatario è la persona che ha chiesto il link o che ha acconsentito. Volume atteso per il primo evento: sotto i 10.000 messaggi (circa 6.000 interessati). Mittente: dominio verificato in eu-central-1 con DKIM. Bounce e complaint vanno nella suppression list dell'account: chi rimbalza o reclama non riceve altri invii.
 
-RePhoto, first event of a European conference. We send only transactional email.
+Frames of Me, first event of a European conference. We send only transactional email.
 
-1) An access link (magic link) to someone who asks to sign in: subject "Accedi a RePhoto", body only the verification URL, 30-minute expiry, single use.
+1) An access link (magic link) to someone who asks to sign in: subject "Accedi a Frames of Me", body only the verification URL, 30-minute expiry, single use.
 2) A gallery notice to someone who gave explicit consent to face matching and whose search finished: subject "Le tue foto sono pronte", body only the link to their personal gallery. No attachments, no images, no newsletter.
 
 This is not marketing. We do not use purchased lists. The recipient is the person who requested the link or who consented. Expected volume for the first event: under 10,000 messages (about 6,000 data subjects). Sender: a domain verified in eu-central-1 with DKIM. Bounces and complaints go on the account suppression list: a recipient who bounces or complains gets no further mail.

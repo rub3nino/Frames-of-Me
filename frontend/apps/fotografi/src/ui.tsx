@@ -24,7 +24,7 @@ export function AppBar() {
   const user = (() => { try { return sessionStorage.getItem("rephoto.email") || "fotografo"; } catch { return "fotografo"; } })();
   return (
     <header className="appbar">
-      <a className="brand" href="/upload"><Mark /> RePhoto</a>
+      <a className="brand" href="/upload"><Mark /> Frames of Me</a>
       <nav className="fz-nav">
         {NAV.map((n) => (
           <NavLink key={n.to} to={n.to} className={({ isActive }) => "fz-navitem" + (isActive ? " on" : "")}>{n.label}</NavLink>

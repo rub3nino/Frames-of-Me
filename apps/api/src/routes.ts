@@ -1493,7 +1493,7 @@ async function issueMagicLink(
   });
   await deps.mailer.send({
     to: email,
-    subject: "Accedi a RePhoto",
+    subject: "Accedi a Frames of Me",
     text: `${webOrigin(deps.env)}/verifica?token=${encodeURIComponent(token)}`,
   });
 }

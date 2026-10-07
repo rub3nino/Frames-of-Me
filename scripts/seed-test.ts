@@ -1,4 +1,4 @@
-// RePhoto — seed a test campaign: events, admin, photographers, participants, sessions.
+// Frames of Me — seed a test campaign: events, admin, photographers, participants, sessions.
 //
 //   node --env-file=.env --import tsx scripts/seed-test.ts \
 //     --event conferenza-2026 --name "Conferenza 2026" --photographers 12 --participants 200 \
@@ -24,7 +24,7 @@ import { createSql, PostgresDatabase } from "@rephoto/db";
 import type { Role } from "@rephoto/contracts";
 import type { EventAccess, UserRow } from "@rephoto/db";
 
-const HELP = `RePhoto seed-test — events, users, consents and pre-minted sessions for a test campaign.
+const HELP = `Frames of Me seed-test — events, users, consents and pre-minted sessions for a test campaign.
 
 Usage:
   node --env-file=.env --import tsx scripts/seed-test.ts --event <slug> [options]

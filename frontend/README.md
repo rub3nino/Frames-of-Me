@@ -1,6 +1,6 @@
-# RePhoto — Frontend
+# Frames of Me — Frontend
 
-The front-end of RePhoto, organized as **four independently deployable apps** that share one
+The front-end of Frames of Me, organized as **four independently deployable apps** that share one
 design system and one API client, all talking to the existing backend (`../apps/api`).
 
 > This replaces the old `design/` folder. The visual system (the Apple→Notion look, the
@@ -29,10 +29,10 @@ frontend/
 │  └─ api-client/    ← one typed fetch client for ../../apps/api (auth, event, selfie,
 │                      gallery, uploads, admin). Every app imports this.
 ├─ apps/
-│  ├─ landing/       → rephoto.it        · static marketing page (serif + pastel). DONE, deploy-ready.
-│  ├─ partecipanti/  → app.rephoto.it     · guest flow (iscrizione·selfie·galleria·consenso minori)
-│  ├─ fotografi/     → foto.rephoto.it    · photographer portal (upload·album·copertura·…)
-│  └─ admin/         → admin.rephoto.it   · staff console (dashboard·gdpr·cms·…)
+│  ├─ landing/       → framesofme.com        · static marketing page (serif + pastel). DONE, deploy-ready.
+│  ├─ partecipanti/  → app.framesofme.com     · guest flow (iscrizione·selfie·galleria·consenso minori)
+│  ├─ fotografi/     → foto.framesofme.com    · photographer portal (upload·album·copertura·…)
+│  └─ admin/         → admin.framesofme.com   · staff console (dashboard·gdpr·cms·…)
 ├─ emails/           ← transactional email templates (sent by the API/worker)
 └─ _reference/       ← kept for reference, not shipped (old conference "vetrina" pages)
 ```

@@ -1,4 +1,4 @@
-# pnpm workspace for the RePhoto backend monorepo (api, worker, web + shared packages).
+# pnpm workspace for the Frames of Me backend monorepo (api, worker, web + shared packages).
 # The separate frontend/ monorepo (landing + participant/photographer/admin apps) is NOT
 # part of this workspace and keeps its own per-app lockfiles.
 packages:

@@ -1,5 +1,5 @@
 #!/bin/sh
-# RePhoto backup sidecar. Runs inside the `backup` service (postgres:16-alpine + mc).
+# Frames of Me backup sidecar. Runs inside the `backup` service (postgres:16-alpine + mc).
 #
 #   rephoto-backup loop     # default: wait for BACKUP_AT (HH:MM, container TZ) every day
 #   rephoto-backup once     # one backup now (used by scripts/backup.sh)

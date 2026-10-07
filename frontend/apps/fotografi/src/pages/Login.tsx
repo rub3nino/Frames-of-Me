@@ -47,7 +47,7 @@ export default function Login() {
       <div className="card">
         <div className="row" style={{ gap: 8, marginBottom: "var(--s-5)" }}>
           <span style={{ width: 28, height: 28, display: "inline-flex", color: "var(--c-ink)" }}><Mark /></span>
-          <b style={{ fontSize: "1.0625rem", letterSpacing: "-0.01em" }}>RePhoto</b>
+          <b style={{ fontSize: "1.0625rem", letterSpacing: "-0.01em" }}>Frames of Me</b>
         </div>
 
         {sent ? (
