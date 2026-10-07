@@ -3,6 +3,7 @@ import { ApiError, api } from "@/lib/api";
 import type { UploadCompleteResponse, UploadInitResponse, UploadLookupResponse } from "@/lib/types";
 
 export type ImageType = "image/jpeg" | "image/png";
+export type PhotoCollection = "public" | "official";
 
 export type Progress = (loaded: number, total: number) => void;
 export type UploadOutcome = { photoId: string };
@@ -218,12 +219,13 @@ export async function uploadOriginal(
   sha256: string,
   onProgress: Progress,
   signal?: AbortSignal,
+  collection: PhotoCollection = "official",
 ): Promise<UploadOutcome> {
   const filename = checkOriginal(file);
   onProgress(0, file.size);
   const created = await post<UploadInitResponse>(
     "/v1/uploads/init",
-    { eventId, filename, contentType: type, sha256, bytes: file.size, stage: "original" },
+    { eventId, filename, contentType: type, sha256, bytes: file.size, stage: "original", collection },
     signal,
   );
   const done = await transfer(created, file, type, onProgress, signal);

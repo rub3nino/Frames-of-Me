@@ -65,6 +65,14 @@ export default function HomePage() {
             </button>
           </div>
           <p className="note">
+            <Link className="linkish" href="/public-gallery">
+              Galleria pubblica
+            </Link>
+            <br />
+            <Link className="linkish" href="/public-upload">
+              Condividi una foto
+            </Link>
+            <br />
             <Link className="linkish" href="/staff">
               Sei fotografo o staff?
             </Link>
