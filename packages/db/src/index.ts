@@ -60,5 +60,10 @@ export type {
   // v6 (agent B)
   EventCodeRow,
   IdentityProvider,
+  // v6 (agent D): admin console
+  AlbumPhotographerRow,
+  EventCodePatch,
+  EventStatus,
+  EventStatusAlbum,
 } from "./types.js";
 export { AlbumRecognitionLockedError, AlbumRecognitionNotAllowedError } from "./types.js";

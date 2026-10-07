@@ -515,6 +515,41 @@ export interface Database {
   /** Stamps `users.email_verified_at` (idempotent: an already stamped row keeps its first date). */
   markEmailVerified(userId: string, at?: Date): Promise<void>;
   findEmailVerifiedAt(userId: string): Promise<Date | null>;
+
+  // ---- admin console v6 (agent D) -------------------------------------------------------
+  /** Event codes of one event, newest first (`created_at desc, code`). */
+  listEventCodes(eventId: string): Promise<EventCodeRow[]>;
+  /**
+   * Fields left `undefined` are untouched, `null` clears them. Null when the pair is
+   * unknown. Revoking a code is `expiresAt = now()`: `claimEventCode` already refuses an
+   * expired code, so nothing has to learn about a third state.
+   */
+  updateEventCode(
+    eventId: string,
+    code: string,
+    patch: EventCodePatch,
+  ): Promise<EventCodeRow | null>;
+  /**
+   * Revoking: `expires_at = now()` evaluated by the DATABASE, so there is no window in
+   * which an api clock running ahead of the server keeps a revoked code alive. Null when
+   * the pair is unknown. `claimEventCode` refuses an expired code in the same statement
+   * that would increment `uses`, so this is the whole of revocation.
+   */
+  revokeEventCode(eventId: string, code: string): Promise<EventCodeRow | null>;
+  /** Per-album upload authorization (migration 017). Idempotent. */
+  addAlbumPhotographer(albumId: string, userId: string): Promise<void>;
+  /** False when there was no such grant. */
+  removeAlbumPhotographer(albumId: string, userId: string): Promise<boolean>;
+  listAlbumPhotographers(albumId: string): Promise<AlbumPhotographerRow[]>;
+  /**
+   * Whether a photographer may upload to this album. True when the album has no explicit
+   * list — the event-level `event_photographers` grant stands, which is the v5 behaviour —
+   * and otherwise only for the photographers on the list. This is the seam the upload route
+   * calls after `isEventPhotographer`; it never widens that check, only narrows it.
+   */
+  isAlbumPhotographerAllowed(albumId: string, userId: string): Promise<boolean>;
+  /** Everything the live status screen of one event reads, in one call. */
+  eventStatus(eventId: string): Promise<EventStatus>;
 }
 
 // ---- albums and vector isolation v6 (agent A) ---------------------------------------------
@@ -751,4 +786,44 @@ export type EventCodeRow = {
   uses: number;
   expiresAt: Date | null;
   createdAt: Date;
+};
+
+// ---- admin console v6 (agent D) -----------------------------------------------------------
+
+export type EventCodePatch = {
+  label?: string | null;
+  maxUses?: number | null;
+  expiresAt?: Date | null;
+};
+
+export type AlbumPhotographerRow = {
+  albumId: string;
+  userId: string;
+  email: string;
+  createdAt: Date;
+};
+
+export type EventStatusAlbum = {
+  id: string;
+  slug: string;
+  name: string;
+  kind: AlbumKind;
+  recognition: boolean;
+  moderation: AlbumModeration;
+  uploadsOpen: boolean;
+  photos: number;
+  firstUploadAt: Date | null;
+};
+
+/** Per-event counters of the live status screen. Queue and job errors come from `metricsExtras`. */
+export type EventStatus = {
+  photos: number;
+  photosByStatus: PhotosByStatus;
+  originalsPending: number;
+  faces: number;
+  galleries: number;
+  galleriesMatched: number;
+  /** Galleries holding a selfie vector that have not matched yet. */
+  selfiesWaiting: number;
+  albums: EventStatusAlbum[];
 };

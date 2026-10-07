@@ -17,6 +17,14 @@ export const MESSAGES = {
   accountExists: "Esiste già un account con questa email. Accedi o reimposta la password.",
   passwordTooShort: "La password deve avere almeno 10 caratteri.",
   googleUnavailable: "Accesso con Google non disponibile.",
+  // v6 (agent D): admin console. The two album rules are enforced by the database; these
+  // are the messages the console shows when it hits them anyway.
+  albumCrowdNoRecognition:
+    "Un album «di tutti» non può usare il riconoscimento dei volti. Crea un album ufficiale.",
+  albumRecognitionLocked:
+    "Il riconoscimento non è più modificabile: l'album ha già la prima foto. Crea un nuovo album.",
+  eventCodeExists: "Questo codice esiste già per l'evento.",
+  opsLinksMissing: "Nessun collegamento configurato (OPS_LINK_*).",
 } as const;
 
 export class ApiError extends Error {

@@ -184,6 +184,16 @@ export const envSchema = z
       blankToUndefined,
       z.coerce.number().int().min(0).default(600),
     ),
+    // --- v6 admin console (agent D) -------------------------------------------
+    // Operations page: external dashboards, links only. Each one is optional; the console
+    // shows exactly the ones that are set and nothing else. No API integration mirrors
+    // these dashboards (spec D, frozen).
+    OPS_LINK_RESEND: z.preprocess(blankToUndefined, z.string().url().optional()),
+    OPS_LINK_POSTHOG: z.preprocess(blankToUndefined, z.string().url().optional()),
+    OPS_LINK_SENTRY: z.preprocess(blankToUndefined, z.string().url().optional()),
+    OPS_LINK_COOLIFY: z.preprocess(blankToUndefined, z.string().url().optional()),
+    OPS_LINK_AUTHENTIK: z.preprocess(blankToUndefined, z.string().url().optional()),
+    OPS_LINK_R2: z.preprocess(blankToUndefined, z.string().url().optional()),
   })
   .superRefine((env, ctx) => {
     if (env.INSIGHTFACE_SURE_COSINE <= env.INSIGHTFACE_MIN_COSINE) {

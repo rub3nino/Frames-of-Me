@@ -57,6 +57,12 @@ import type {
   // v6 (agent B)
   EventCodeRow,
   IdentityProvider,
+  // v6 (agent D): admin console
+  AlbumPhotographerRow,
+  EventCodePatch,
+  EventStatus,
+  EventStatusAlbum,
+  PhotosByStatus,
 } from "./types.js";
 
 /** Same cap as PostgresDatabase.findGalleriesByQueryVector. */
@@ -1864,6 +1870,113 @@ export class MemoryDatabase implements Database {
     return [...this.uploads.values()]
       .filter((row) => row.photographerId === photographerId && row.eventId === eventId)
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || compareText(b.id, a.id));
+  }
+
+  // ---- admin console v6 (agent D) -------------------------------------------------------
+
+  // `album_photographers` of migration 017: albumId -> (userId -> created_at). A class field
+  // declared here and not at the top of the class so the whole area is one block; field
+  // initializers run in declaration order at construction either way.
+  private readonly albumPhotographers = new Map<string, Map<string, Date>>();
+
+  async listEventCodes(eventId: string): Promise<EventCodeRow[]> {
+    return [...this.eventCodes.values()]
+      .filter((row) => row.eventId === eventId)
+      .sort(
+        (a, b) =>
+          b.createdAt.getTime() - a.createdAt.getTime() || compareText(a.code, b.code),
+      )
+      .map((row) => ({ ...row }));
+  }
+
+  async updateEventCode(
+    eventId: string,
+    code: string,
+    patch: EventCodePatch,
+  ): Promise<EventCodeRow | null> {
+    const row = this.eventCodes.get(eventCodeKey(eventId, code));
+    if (!row) return null;
+    if (patch.label !== undefined) row.label = patch.label;
+    if (patch.maxUses !== undefined) row.maxUses = patch.maxUses;
+    if (patch.expiresAt !== undefined) row.expiresAt = patch.expiresAt;
+    return { ...row };
+  }
+
+  async revokeEventCode(eventId: string, code: string): Promise<EventCodeRow | null> {
+    const row = this.eventCodes.get(eventCodeKey(eventId, code));
+    if (!row) return null;
+    // Postgres evaluates `now()`; here the only clock there is, is this one.
+    row.expiresAt = new Date();
+    return { ...row };
+  }
+
+  async addAlbumPhotographer(albumId: string, userId: string): Promise<void> {
+    const grants = this.albumPhotographers.get(albumId) ?? new Map<string, Date>();
+    if (!grants.has(userId)) grants.set(userId, new Date());
+    this.albumPhotographers.set(albumId, grants);
+  }
+
+  async removeAlbumPhotographer(albumId: string, userId: string): Promise<boolean> {
+    const grants = this.albumPhotographers.get(albumId);
+    if (!grants) return false;
+    const removed = grants.delete(userId);
+    // An empty list is no list: the album goes back to the event-level grant.
+    if (grants.size === 0) this.albumPhotographers.delete(albumId);
+    return removed;
+  }
+
+  async listAlbumPhotographers(albumId: string): Promise<AlbumPhotographerRow[]> {
+    const grants = this.albumPhotographers.get(albumId);
+    if (!grants) return [];
+    const rows: AlbumPhotographerRow[] = [];
+    for (const [userId, createdAt] of grants) {
+      const user = this.users.get(userId);
+      if (!user) continue;
+      rows.push({ albumId, userId, email: user.email, createdAt });
+    }
+    return rows.sort((a, b) => compareText(a.email, b.email));
+  }
+
+  async isAlbumPhotographerAllowed(albumId: string, userId: string): Promise<boolean> {
+    const grants = this.albumPhotographers.get(albumId);
+    if (!grants || grants.size === 0) return true;
+    return grants.has(userId);
+  }
+
+  async eventStatus(eventId: string): Promise<EventStatus> {
+    const photos = [...this.photos.values()].filter((photo) => photo.eventId === eventId);
+    const photosByStatus: PhotosByStatus = { uploaded: 0, processing: 0, indexed: 0, error: 0 };
+    for (const photo of photos) photosByStatus[photo.status] += 1;
+    const galleries = this.galleries.filter((gallery) => gallery.eventId === eventId);
+    const perAlbum = new Map<string, number>();
+    for (const photo of photos) {
+      perAlbum.set(photo.albumId, (perAlbum.get(photo.albumId) ?? 0) + 1);
+    }
+    const albums = (await this.listAlbums(eventId)).map(
+      (album): EventStatusAlbum => ({
+        id: album.id,
+        slug: album.slug,
+        name: album.name,
+        kind: album.kind,
+        recognition: album.recognition,
+        moderation: album.moderation,
+        uploadsOpen: album.uploadsOpen,
+        photos: perAlbum.get(album.id) ?? 0,
+        firstUploadAt: album.firstUploadAt,
+      }),
+    );
+    return {
+      photos: photos.length,
+      photosByStatus,
+      originalsPending: photos.filter((photo) => photo.originalStatus === "pending").length,
+      faces: this.faces.filter((face) => face.eventId === eventId).length,
+      galleries: galleries.length,
+      galleriesMatched: galleries.filter((gallery) => gallery.matchedAt !== null).length,
+      selfiesWaiting: galleries.filter(
+        (gallery) => gallery.queryEmbedding !== null && gallery.matchedAt === null,
+      ).length,
+      albums,
+    };
   }
 }
 

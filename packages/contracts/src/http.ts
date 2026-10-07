@@ -958,3 +958,161 @@ export const googleCallbackQuerySchema = z.object({
   state: z.string().min(1).max(4096).optional(),
   error: z.string().min(1).max(200).optional(),
 });
+
+// ---- admin console v6 (agent D) ------------------------------------------------------------
+//
+// Everything the admin console needs that no other area owns: event codes (minted, listed,
+// labelled, capped, expired, revoked), per-album photographer authorization, the live event
+// status screen and the operations link page. The album schemas above (agent A) are reused
+// as they are — the console adds no second shape for them.
+
+/**
+ * Alphabet of a generated event code: no `I`, `O`, `0`, `1`, so a code read off a badge is
+ * never mistyped into another code. Codes are compared uppercase (`routes.ts` uppercases
+ * what the registration form sends), so they are stored uppercase too.
+ */
+export const EVENT_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+/** Characters per group of a generated code; two groups are printed as `ABCD-EFGH`. */
+export const EVENT_CODE_GROUP = 4;
+
+export const eventCodeStatusSchema = z.enum(["active", "expired", "exhausted"]);
+export type EventCodeStatus = z.infer<typeof eventCodeStatusSchema>;
+
+export const adminEventCodeSchema = z
+  .object({
+    eventId: z.string().uuid(),
+    code: eventCodeSchema,
+    label: z.string().nullable(),
+    maxUses: z.number().int().positive().nullable(),
+    uses: z.number().int().nonnegative(),
+    expiresAt: z.string().datetime().nullable(),
+    createdAt: z.string().datetime(),
+    /** Derived, not stored: what `claimEventCode` would do with it right now. */
+    status: eventCodeStatusSchema,
+  })
+  .strict();
+
+export type AdminEventCode = z.infer<typeof adminEventCodeSchema>;
+
+/** `code` absent → the api mints one. `maxUses`/`expiresAt` null → uncapped / no expiry. */
+export const createEventCodeBodySchema = z
+  .object({
+    code: eventCodeSchema.optional(),
+    label: z.string().trim().min(1).max(120).nullable().default(null),
+    maxUses: z.number().int().positive().max(100_000).nullable().default(null),
+    expiresAt: z.string().datetime().nullable().default(null),
+  })
+  .strict();
+
+/** Every field optional; `maxUses: <uses>` caps a code where it stands. */
+export const updateEventCodeBodySchema = z
+  .object({
+    label: z.string().trim().min(1).max(120).nullable().optional(),
+    maxUses: z.number().int().positive().max(100_000).nullable().optional(),
+    expiresAt: z.string().datetime().nullable().optional(),
+  })
+  .strict();
+
+export const adminEventCodesResponseSchema = z
+  .object({ codes: z.array(adminEventCodeSchema) })
+  .strict();
+
+export const adminEventCodeResponseSchema = z.object({ code: adminEventCodeSchema }).strict();
+
+/** Per-album upload authorization (migration 017). */
+export const adminAlbumPhotographerSchema = z
+  .object({
+    userId: z.string().uuid(),
+    email: z.string().email(),
+    createdAt: z.string().datetime(),
+  })
+  .strict();
+
+export const adminAlbumPhotographersResponseSchema = z
+  .object({
+    photographers: z.array(adminAlbumPhotographerSchema),
+    /**
+     * False while the album has no explicit list: the event-level `event_photographers`
+     * grant still stands and every photographer of the event may upload.
+     */
+    restricted: z.boolean(),
+  })
+  .strict();
+
+export const adminAlbumPhotographerBodySchema = z
+  .object({ email: z.string().trim().email().max(320) })
+  .strict();
+
+/** One auto-refreshing screen for the event day. */
+export const adminEventStatusResponseSchema = z
+  .object({
+    event: z.object({ id: z.string().uuid(), slug: eventSlugSchema, name: z.string() }).strict(),
+    photos: z.number().int().nonnegative(),
+    photosByStatus: photosByStatusSchema,
+    originalsPending: z.number().int().nonnegative(),
+    faces: z.number().int().nonnegative(),
+    galleries: z.number().int().nonnegative(),
+    galleriesMatched: z.number().int().nonnegative(),
+    /** Galleries holding a selfie vector that have not matched yet. */
+    selfiesWaiting: z.number().int().nonnegative(),
+    /** Queued + running `match` jobs, the other half of "selfies waiting". */
+    matchJobsPending: z.number().int().nonnegative(),
+    albums: z.array(
+      z
+        .object({
+          id: z.string().uuid(),
+          slug: albumSlugSchema,
+          name: z.string(),
+          kind: albumKindSchema,
+          recognition: z.boolean(),
+          moderation: albumModerationSchema,
+          uploadsOpen: z.boolean(),
+          photos: z.number().int().nonnegative(),
+          firstUploadAt: z.string().datetime().nullable(),
+        })
+        .strict(),
+    ),
+    jobsByType: z.array(
+      z
+        .object({
+          type: z.string(),
+          queued: z.number().int().nonnegative(),
+          running: z.number().int().nonnegative(),
+          error: z.number().int().nonnegative(),
+          oldestQueuedSeconds: z.number().nullable(),
+        })
+        .strict(),
+    ),
+    oldestQueuedSeconds: z.number().nullable(),
+    lastErrors: z.array(
+      z
+        .object({
+          id: z.string(),
+          type: z.string(),
+          error: z.string(),
+          at: z.string().datetime(),
+        })
+        .strict(),
+    ),
+    faceService: z.object({ ok: z.boolean().nullable(), ms: z.number().nullable() }).strict(),
+    at: z.string().datetime(),
+  })
+  .strict();
+
+/** How often the live status screen re-reads itself. */
+export const ADMIN_STATUS_REFRESH_MS = 5_000;
+
+/**
+ * Operations links come from `OPS_LINK_*` (`env.ts`). Links only: the console never mirrors
+ * those dashboards through their APIs.
+ */
+export const opsLinkKeySchema = z.enum(["resend", "posthog", "sentry", "coolify", "authentik", "r2"]);
+export type OpsLinkKey = z.infer<typeof opsLinkKeySchema>;
+
+export const adminOpsLinksResponseSchema = z
+  .object({
+    links: z.array(
+      z.object({ key: opsLinkKeySchema, label: z.string(), url: z.string().url() }).strict(),
+    ),
+  })
+  .strict();

@@ -1116,3 +1116,116 @@ select {
 @media (max-width: 720px) {
   .photo-debug { grid-template-columns: 1fr; }
 }
+
+/* ---- admin console v6 (agent D) ---------------------------------------------------------- */
+
+.form-grid {
+  display: grid;
+  gap: 16px 24px;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  align-items: end;
+  margin: 8px 0 0;
+}
+
+.form-grid > fieldset {
+  border: 1px solid var(--line);
+  padding: 12px 16px;
+  margin: 0;
+  grid-column: 1 / -1;
+}
+
+.form-grid legend { padding: 0 6px; font-weight: 600; }
+
+.switch { display: flex; align-items: center; gap: 12px; font-weight: 600; }
+
+.switch input { width: 1.4rem; height: 1.4rem; }
+
+/* Decision 2 / 3 made visible: a locked recognition switch is greyed and carries its reason. */
+.recognition[data-locked="crowd"] .switch,
+.recognition[data-locked="first-upload"] .switch {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.note.locked {
+  border-left: 3px solid var(--line-strong);
+  padding-left: 12px;
+  color: var(--muted);
+}
+
+.album-card .face-row h3 { margin: 0; }
+
+.album-photographers { margin-top: 24px; border-top: 1px solid var(--line); padding-top: 16px; }
+
+.list.codes > li {
+  display: grid;
+  gap: 8px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.list.codes > li[data-status="expired"],
+.list.codes > li[data-status="exhausted"] { opacity: 0.6; }
+
+.code-value { margin: 8px 0; }
+
+.code-value code {
+  font-size: clamp(2rem, 8vw, 4rem);
+  letter-spacing: 0.1em;
+  font-weight: 700;
+}
+
+/* The moderation queue: one large photo, the next ones in a strip under it. */
+.moderation-stage {
+  display: grid;
+  gap: 24px;
+  grid-template-columns: minmax(0, 3fr) minmax(16rem, 1fr);
+  align-items: start;
+  margin-top: 16px;
+}
+
+.moderation-photo {
+  display: block;
+  width: 100%;
+  max-height: 70vh;
+  object-fit: contain;
+  background: var(--skeleton);
+}
+
+.moderation-photo.empty {
+  display: grid;
+  place-items: center;
+  min-height: 40vh;
+  color: var(--muted);
+}
+
+.moderation-strip {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 12px 0;
+}
+
+.moderation-strip .thumb-link { flex: 0 0 auto; width: 88px; }
+
+.moderation-strip .thumb-link[aria-current="true"] { outline: 3px solid var(--accent); }
+
+.moderation-strip .thumb-link[data-selected="true"] { outline: 3px solid var(--ink); }
+
+.moderation-strip .thumb.empty { display: block; width: 88px; height: 88px; background: var(--skeleton); }
+
+kbd {
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 0.85em;
+  font-family: inherit;
+}
+
+@media print {
+  .no-print, .tabs, .admin-head { display: none !important; }
+}
+
+@media (max-width: 860px) {
+  .moderation-stage { grid-template-columns: 1fr; }
+}

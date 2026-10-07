@@ -271,3 +271,132 @@ export type AdminMetricsV5 = AdminMetrics & {
   lastErrors: Array<{ id: string; type: string; error: string; at: string }>;
   faceService: { ok: boolean | null; ms: number | null };
 };
+
+// ---- admin console v6 (agent D) -----------------------------------------------------------
+
+export type AlbumKind = "official" | "crowd";
+export type AlbumModeration = "pre" | "post" | "off";
+export type AlbumVisibility = "participants" | "link" | "staff";
+
+export type Album = {
+  id: string;
+  eventId: string;
+  slug: string;
+  name: string;
+  kind: AlbumKind;
+  recognition: boolean;
+  moderation: AlbumModeration;
+  visibility: AlbumVisibility;
+  maxPhotosPerUser: number | null;
+  uploadsOpen: boolean;
+  retentionDays: number | null;
+  /** Set by the album's first photo: `recognition` is read-only from then on. */
+  firstUploadAt: string | null;
+  createdAt: string;
+};
+
+export type AlbumsResponse = { albums: Album[] };
+export type AlbumResponse = { album: Album };
+
+export type EventCodeStatus = "active" | "expired" | "exhausted";
+
+export type AdminEventCode = {
+  eventId: string;
+  code: string;
+  label: string | null;
+  maxUses: number | null;
+  uses: number;
+  expiresAt: string | null;
+  createdAt: string;
+  status: EventCodeStatus;
+};
+
+export type AdminEventCodesResponse = { codes: AdminEventCode[] };
+export type AdminEventCodeResponse = { code: AdminEventCode };
+
+export type AlbumPhotographer = { userId: string; email: string; createdAt: string };
+
+export type AlbumPhotographersResponse = {
+  photographers: AlbumPhotographer[];
+  /** False while the album has no list: every photographer of the event may upload. */
+  restricted: boolean;
+};
+
+export type AdminEventStatus = {
+  event: { id: string; slug: string; name: string };
+  photos: number;
+  photosByStatus: PhotosByStatus;
+  originalsPending: number;
+  faces: number;
+  galleries: number;
+  galleriesMatched: number;
+  selfiesWaiting: number;
+  matchJobsPending: number;
+  albums: Array<{
+    id: string;
+    slug: string;
+    name: string;
+    kind: AlbumKind;
+    recognition: boolean;
+    moderation: AlbumModeration;
+    uploadsOpen: boolean;
+    photos: number;
+    firstUploadAt: string | null;
+  }>;
+  jobsByType: Array<{
+    type: string;
+    queued: number;
+    running: number;
+    error: number;
+    oldestQueuedSeconds: number | null;
+  }>;
+  oldestQueuedSeconds: number | null;
+  lastErrors: Array<{ id: string; type: string; error: string; at: string }>;
+  faceService: { ok: boolean | null; ms: number | null };
+  at: string;
+};
+
+export type AdminParticipantLookup = {
+  user: User & { createdAt: string };
+  consent: { active: boolean; canRevoke: boolean };
+  onParticipantList: boolean;
+  emailVerifiedAt: string | null;
+  gallery: {
+    id: string;
+    matchedAt: string | null;
+    reason: string | null;
+    hasQueryVector: boolean;
+    anchors: number;
+  } | null;
+};
+
+export type OpsLink = { key: string; label: string; url: string };
+export type AdminOpsLinksResponse = { links: OpsLink[] };
+
+/**
+ * Moderation queue — ASSUMED shape of agent C's API (spec section C2):
+ * `GET /v1/admin/moderation?albumId=&state=&cursor=` and
+ * `POST /v1/admin/photos/:id/moderate { state }`. Every field but `id` is read defensively
+ * by the console (see components/admin/moderation.tsx), so a different field name from C
+ * degrades the screen instead of breaking it.
+ */
+export type ModerationState = "pending" | "approved" | "rejected" | "auto_rejected";
+
+export type ModerationQueueItem = {
+  id: string;
+  albumId?: string;
+  moderationState?: ModerationState;
+  createdAt?: string;
+  thumbUrl?: string | null;
+  webUrl?: string | null;
+  filename?: string | null;
+  photographerId?: string;
+  reports?: Array<{ reason: string; note?: string | null; createdAt?: string }>;
+  reportCount?: number;
+};
+
+export type ModerationQueueResponse = {
+  photos?: ModerationQueueItem[];
+  items?: ModerationQueueItem[];
+  nextCursor?: string | null;
+};

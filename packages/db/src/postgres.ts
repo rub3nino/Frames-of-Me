@@ -63,6 +63,11 @@ import type {
   // v6 (agent B)
   EventCodeRow,
   IdentityProvider,
+  // v6 (agent D): admin console
+  AlbumPhotographerRow,
+  EventCodePatch,
+  EventStatus,
+  EventStatusAlbum,
 } from "./types.js";
 
 const EVENT_ID = "00000000-0000-4000-8000-000000000001";
@@ -2108,6 +2113,183 @@ export class PostgresDatabase implements Database {
       select email_verified_at from users where id = ${userId}
     `;
     return rows[0]?.email_verified_at ?? null;
+  }
+
+  // ---- admin console v6 (agent D) -------------------------------------------------------
+
+  async listEventCodes(eventId: string): Promise<EventCodeRow[]> {
+    const rows = await this.sql<EventCodeSql[]>`
+      select event_id, code, label, max_uses, uses, expires_at, created_at
+      from event_codes
+      where event_id = ${eventId}
+      order by created_at desc, code
+    `;
+    return rows.map(mapEventCode);
+  }
+
+  async updateEventCode(
+    eventId: string,
+    code: string,
+    patch: EventCodePatch,
+  ): Promise<EventCodeRow | null> {
+    // `coalesce` is wrong here: every field is nullable and null means "clear it", so the
+    // untouched case has to be the column itself (same shape as `updateAlbum`).
+    const rows = await this.sql<EventCodeSql[]>`
+      update event_codes set
+        label = ${patch.label === undefined ? this.sql`label` : this.sql`${patch.label}::text`},
+        max_uses = ${
+          patch.maxUses === undefined ? this.sql`max_uses` : this.sql`${patch.maxUses}::int`
+        },
+        expires_at = ${
+          patch.expiresAt === undefined
+            ? this.sql`expires_at`
+            : this.sql`${patch.expiresAt}::timestamptz`
+        }
+      where event_id = ${eventId} and code = ${code}
+      returning event_id, code, label, max_uses, uses, expires_at, created_at
+    `;
+    return rows[0] ? mapEventCode(rows[0]) : null;
+  }
+
+  async revokeEventCode(eventId: string, code: string): Promise<EventCodeRow | null> {
+    const rows = await this.sql<EventCodeSql[]>`
+      update event_codes set expires_at = now()
+      where event_id = ${eventId} and code = ${code}
+      returning event_id, code, label, max_uses, uses, expires_at, created_at
+    `;
+    return rows[0] ? mapEventCode(rows[0]) : null;
+  }
+
+  async addAlbumPhotographer(albumId: string, userId: string): Promise<void> {
+    await this.sql`
+      insert into album_photographers (album_id, user_id)
+      values (${albumId}, ${userId})
+      on conflict (album_id, user_id) do nothing
+    `;
+  }
+
+  async removeAlbumPhotographer(albumId: string, userId: string): Promise<boolean> {
+    const rows = await this.sql<{ album_id: string }[]>`
+      delete from album_photographers
+      where album_id = ${albumId} and user_id = ${userId}
+      returning album_id
+    `;
+    return rows.length > 0;
+  }
+
+  async listAlbumPhotographers(albumId: string): Promise<AlbumPhotographerRow[]> {
+    const rows = await this.sql<
+      { album_id: string; user_id: string; email: string; created_at: Date }[]
+    >`
+      select ap.album_id, ap.user_id, u.email, ap.created_at
+      from album_photographers ap join users u on u.id = ap.user_id
+      where ap.album_id = ${albumId}
+      order by u.email
+    `;
+    return rows.map((row) => ({
+      albumId: row.album_id,
+      userId: row.user_id,
+      email: row.email,
+      createdAt: row.created_at,
+    }));
+  }
+
+  async isAlbumPhotographerAllowed(albumId: string, userId: string): Promise<boolean> {
+    // One statement: an album with no list is unrestricted (v5 behaviour), an album with a
+    // list only lets through the users on it.
+    const rows = await this.sql<{ allowed: boolean }[]>`
+      select (
+        not exists (select 1 from album_photographers where album_id = ${albumId})
+        or exists (
+          select 1 from album_photographers
+          where album_id = ${albumId} and user_id = ${userId}
+        )
+      ) as allowed
+    `;
+    return rows[0]?.allowed === true;
+  }
+
+  async eventStatus(eventId: string): Promise<EventStatus> {
+    // Event-scoped and exact: unlike `metrics()` these numbers are read while two people
+    // watch the screen on the event day, so an approximation from pg_stat is not enough.
+    const counters = await this.sql<{
+      photos: number;
+      photos_uploaded: number;
+      photos_processing: number;
+      photos_indexed: number;
+      photos_error: number;
+      originals_pending: number;
+      faces: number;
+      galleries: number;
+      galleries_matched: number;
+      selfies_waiting: number;
+    }[]>`
+      select
+        (select count(*)::int from photos where event_id = ${eventId}) as photos,
+        (select count(*)::int from photos where event_id = ${eventId} and status = 'uploaded')
+          as photos_uploaded,
+        (select count(*)::int from photos where event_id = ${eventId} and status = 'processing')
+          as photos_processing,
+        (select count(*)::int from photos where event_id = ${eventId} and status = 'indexed')
+          as photos_indexed,
+        (select count(*)::int from photos where event_id = ${eventId} and status = 'error')
+          as photos_error,
+        (select count(*)::int from photos
+          where event_id = ${eventId} and original_status = 'pending') as originals_pending,
+        (select count(*)::int from faces where event_id = ${eventId}) as faces,
+        (select count(*)::int from galleries where event_id = ${eventId}) as galleries,
+        (select count(*)::int from galleries
+          where event_id = ${eventId} and matched_at is not null) as galleries_matched,
+        (select count(*)::int from galleries
+          where event_id = ${eventId} and query_embedding is not null and matched_at is null)
+          as selfies_waiting
+    `;
+    const albums = await this.sql<{
+      id: string;
+      slug: string;
+      name: string;
+      kind: AlbumKind;
+      recognition: boolean;
+      moderation: AlbumModeration;
+      uploads_open: boolean;
+      first_upload_at: Date | null;
+      photos: number;
+    }[]>`
+      select a.id, a.slug, a.name, a.kind, a.recognition, a.moderation, a.uploads_open,
+             a.first_upload_at,
+             (select count(*)::int from photos p where p.album_id = a.id) as photos
+      from albums a
+      where a.event_id = ${eventId}
+      order by a.created_at, a.id
+    `;
+    const row = counters[0];
+    return {
+      photos: row?.photos ?? 0,
+      photosByStatus: {
+        uploaded: row?.photos_uploaded ?? 0,
+        processing: row?.photos_processing ?? 0,
+        indexed: row?.photos_indexed ?? 0,
+        error: row?.photos_error ?? 0,
+      },
+      originalsPending: row?.originals_pending ?? 0,
+      faces: row?.faces ?? 0,
+      galleries: row?.galleries ?? 0,
+      galleriesMatched: row?.galleries_matched ?? 0,
+      selfiesWaiting: row?.selfies_waiting ?? 0,
+      albums: albums.map(
+        (album): EventStatusAlbum => ({
+          id: album.id,
+          slug: album.slug,
+          name: album.name,
+          kind: album.kind,
+          recognition: album.recognition,
+          moderation: album.moderation,
+          uploadsOpen: album.uploads_open,
+          photos: Number(album.photos),
+          firstUploadAt: album.first_upload_at,
+        }),
+      ),
+    };
   }
 }
 

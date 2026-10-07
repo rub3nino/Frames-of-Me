@@ -90,6 +90,7 @@ import {
   verifyCallbackState,
 } from "./oauth.js";
 import { purgePhoto } from "./purge.js";
+import { registerAdminV6Routes } from "./routes.admin-v6.js";
 
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -1360,6 +1361,8 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     await startSession(c, deps, user);
     return c.json({ user: publicUser(user) });
   });
+
+  registerAdminV6Routes(app, deps); // v6 D (agent D): admin console, routes.admin-v6.ts
 }
 
 // ---- admin and participant tooling v5 (agent D) helpers --------------------------------------
