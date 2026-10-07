@@ -123,9 +123,10 @@ export type WorkerDeps = {
   /** How often an in-flight job refreshes `claimed_at`. Default 2 minutes. */
   heartbeatMs?: number;
   /**
-   * v6 hardening H2 (agent H): standing refusal to claim `index` when the face service's
-   * build cannot serve what the worker will ask of it (see src/face-compat.ts). Unlike the
-   * breaker this does not close by itself — only a new deploy clears it.
+   * v6 hardening H2 (agent H): standing refusal to claim the jobs that post to
+   * `/v1/embed?max_faces=` (`index` and `match`) when the face service's build cannot serve
+   * what the worker will ask of it (see src/face-compat.ts). Unlike the breaker this does
+   * not close by itself — only a new deploy clears it.
    */
   faceGate?: FaceServiceGate;
 };

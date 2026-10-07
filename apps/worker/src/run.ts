@@ -101,7 +101,7 @@ export async function processJob(claimed: ClaimedJob, deps: WorkerDeps): Promise
  * v6 hardening H2 (agent H): and the face-service compatibility gate, whose exclusions are
  * merged in. The two are different things — the breaker is a transient pause that closes on
  * the next success, the gate is a standing refusal for a service whose build cannot serve
- * what `index` asks of it (src/face-compat.ts) — so neither may hide the other.
+ * what `index` and `match` ask of it (src/face-compat.ts) — so neither may hide the other.
  */
 export function claimOptions(deps: WorkerDeps): ClaimOptions | undefined {
   const breaker = deps.breaker?.excludedTypes();

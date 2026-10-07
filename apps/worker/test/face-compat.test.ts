@@ -10,8 +10,10 @@
  * `/health` is stubbed here: no face service, no network.
  */
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import { createQueue, type JobQueue } from "@rephoto/api/queue";
+import { objectKeys } from "@rephoto/contracts";
 import { MemoryDatabase } from "@rephoto/db";
 import { FaceServiceBreaker } from "../src/breaker.ts";
 import {
@@ -160,7 +162,7 @@ test("the gate logs one loud line and excludes index", async () => {
   assert.equal(lines.length, 1, "one line, not one per job");
   const logged = JSON.parse(lines[0] ?? "{}") as Record<string, unknown>;
   assert.equal(logged.faceService, "incompatible");
-  assert.deepEqual(logged.paused, ["index"]);
+  assert.deepEqual(logged.paused, ["index", "match"]);
   assert.equal(logged.maxFacesCap, 50);
   assert.equal(logged.requiredMaxFaces, 100);
   assert.equal(logged.version, "1.0.0");
@@ -209,9 +211,12 @@ test("the claim filter merges the gate with the circuit breaker", async () => {
     }),
     () => undefined,
   );
-  assert.deepEqual(claimOptions({ ...base, faceGate: gate })?.excludeTypes, ["index"]);
+  assert.deepEqual([...(claimOptions({ ...base, faceGate: gate })?.excludeTypes ?? [])].sort(), [
+    "index",
+    "match",
+  ]);
 
-  // An open breaker pauses all three face types; the gate's `index` must not be lost in the
+  // An open breaker pauses all three face types; the gate's types must not be lost in the
   // union, and must not be dropped when the breaker closes.
   const breaker = new FaceServiceBreaker({ threshold: 1, pauseMs: 60_000 });
   breaker.recordUnavailable();
@@ -221,17 +226,22 @@ test("the claim filter merges the gate with the circuit breaker", async () => {
   breaker.recordSuccess();
 });
 
-test("an incompatible service leaves index queued while other work drains", async () => {
+test("an incompatible service leaves index AND match queued while other work drains", async () => {
   const db = new MemoryDatabase();
   await db.seedDemo();
   const event = await db.findEventBySlug("demo");
   assert.ok(event);
   const photographer = await db.createUser({ email: "shooter@example.com", role: "photographer" });
+  const participant = await db.createUser({ email: "guest@example.com", role: "participant" });
   const objects = new MemoryObjectStore();
   const queue = createQueue(db);
-  // The engine would be reached only by an index job: if one is ever claimed, this throws
-  // the way the stale image did.
-  let embedCalls = 0;
+  // Every engine method that posts to `/v1/embed?max_faces=` throws the way the stale image
+  // made it throw. If the gate lets either job through, the count moves and we know.
+  const embedCalls = { photo: 0, selfie: 0 };
+  const reject = (kind: "photo" | "selfie") => async (): Promise<never> => {
+    embedCalls[kind] += 1;
+    throw new Error("Face service answered 422");
+  };
   const deps: WorkerDeps = {
     env,
     db,
@@ -239,10 +249,11 @@ test("an incompatible service leaves index queued while other work drains", asyn
     mailer: new RecordingMailer(),
     queue,
     faces: stubEngine({
-      indexPhoto: async () => {
-        embedCalls += 1;
-        throw new Error("Face service answered 422");
-      },
+      // `index` -> indexPhoto; `match` -> embedSelfie (or `search` when the engine has no
+      // vector path). All three are the same `embed()` call underneath.
+      indexPhoto: reject("photo"),
+      embedSelfie: reject("selfie"),
+      search: reject("selfie"),
     }),
     log: quiet,
     faceGate: new FaceServiceGate(),
@@ -262,29 +273,49 @@ test("an incompatible service leaves index queued while other work drains", asyn
     photographerId: photographer.id,
     bytes,
   });
+  // The web derivative `index` reads before it embeds (FACE_INDEX_SOURCE=web with `fake`),
+  // so the index job really does get as far as the engine once nothing stops it.
+  await objects.put(objectKeys.web(photoId), bytes, "image/jpeg");
+  const selfieKey = objectKeys.selfie(event.id, participant.id, randomUUID());
+  await objects.put(selfieKey, bytes, "image/png");
   await queue.enqueue("index", { photoId });
+  await queue.enqueue("match", { userId: participant.id, eventId: event.id, selfieKey });
   await queue.enqueue("retention", { eventId: event.id });
 
   // Every claim the worker can make, until it finds nothing it is willing to do.
   let claimed = 0;
   while (await pollOnce(deps)) claimed += 1;
   assert.equal(claimed, 1, "only the retention job was claimed");
-  assert.equal(embedCalls, 0, "the face service was never asked to embed anything");
+  assert.deepEqual(embedCalls, { photo: 0, selfie: 0 }, "the service was never asked to embed");
 
-  // The index job is untouched: still queued, zero attempts, no error on the photo. When
-  // the right image is deployed and the worker restarts, it runs.
-  const depth = (await db.metricsExtras()).jobsByType;
-  const index = depth.find((row) => row.type === "index");
-  assert.equal(index?.queued, 1);
-  assert.equal(index?.error, 0);
-  assert.equal(index?.running, 0);
+  // Both jobs are untouched: still queued, zero errors, nothing running. When the right
+  // image is deployed and the worker restarts, they run.
+  const byType = (await db.metricsExtras()).jobsByType;
+  for (const type of ["index", "match"]) {
+    const row = byType.find((job) => job.type === type);
+    assert.equal(row?.queued, 1, `${type} is still queued`);
+    assert.equal(row?.error, 0, `${type} has no error`);
+    assert.equal(row?.running, 0, `${type} is not running`);
+  }
+  // The photo never reached `error` ...
   const photo = await db.findPhoto(photoId);
   assert.equal(photo?.status, "uploaded");
   assert.equal(photo?.error, null);
+  // ... and — the part the participant sees — no gallery was written at all. Before this,
+  // a selfie on an event day with a wrong image produced five failed attempts and then an
+  // empty gallery with an error, on the one screen the participant is watching.
+  assert.equal(await db.findGalleryByUser(participant.id, event.id), null);
+  assert.ok(await objects.get(selfieKey), "the selfie is still there for the retry");
 
-  // And the moment the gate is not there, the same job IS claimed — so what the assertions
-  // above measure is the gate, not an empty queue. (It then fails inside the handler, which
-  // is the point: this is the work that used to burn five attempts per photo.)
+  // And the moment the gate is not there, both jobs ARE claimed — so what the assertions
+  // above measure is the gate, not an empty queue. (They then fail inside the handler,
+  // which is the point: this is the work that used to burn five attempts each.)
   const ungated: WorkerDeps = { ...deps, faceGate: undefined };
   assert.equal(await pollOnce(ungated), true, "without the gate the index job is claimed");
+  assert.equal(await pollOnce(ungated), true, "without the gate the match job is claimed");
+  assert.deepEqual(
+    embedCalls,
+    { photo: 1, selfie: 1 },
+    "both jobs posted to /v1/embed once the gate was gone — that is the 422 the gate prevents",
+  );
 });

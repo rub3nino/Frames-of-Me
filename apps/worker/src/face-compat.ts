@@ -1,6 +1,6 @@
 /**
- * v6 hardening H2 (agent H): read the face service's build at start and refuse `index` work
- * it cannot do.
+ * v6 hardening H2 (agent H): read the face service's build at start and refuse the work it
+ * cannot do (`index` and `match`; see FACE_INCOMPATIBLE_JOB_TYPES).
  *
  * The incident this exists for: during wave 1 a stale `rephoto-face-service` image enforced
  * `max_faces <= 50` while the source said `MAX_FACES_CAP = 150` and the worker asked for
@@ -12,8 +12,8 @@
  * So `/health` now reports `version` and the real `max_faces_cap` (apps/face-service), and
  * the worker compares that cap with what it is about to ask for (`INSIGHTFACE_INDEX_MAX_FACES`,
  * the `max_faces` of every `/v1/embed` call). If the service cannot serve it, the worker
- * stops claiming `index` and says so once, loudly. Failing fast beats failing 150 000 times
- * silently.
+ * stops claiming the jobs that would send that request and says so once, loudly. Failing
+ * fast beats failing 150 000 times silently.
  *
  * What is deliberately NOT treated as incompatible: a service that does not answer. It may
  * be loading its model (a 503 during the ~60 s model load is normal, and that 503 still
@@ -23,8 +23,33 @@
  */
 import type { JobType } from "@rephoto/contracts";
 
-/** Paused when the service cannot serve what `index` will ask of it. */
-export const FACE_INCOMPATIBLE_JOB_TYPES: readonly JobType[] = ["index"];
+/**
+ * Paused when the service cannot serve the `max_faces` the worker will ask for.
+ *
+ * Exactly the job types that reach `POST /v1/embed?max_faces=…`, which is the request the
+ * cap applies to. `embed()` (insightface.ts) is the only caller of that endpoint, and it is
+ * reached from three engine methods:
+ *
+ *   `indexPhoto`                 -> the `index` job   (handlers.ts, indexPhoto)
+ *   `embedSelfie`, `search`      -> the `match` job   (handlers.ts, matchSelfie)
+ *
+ * `match` matters more than `index`, not less: on an event day with a wrong image, `index`
+ * being paused is invisible bulk work waiting, while every participant who sends a selfie
+ * gets five failed attempts and then an error — on the one path they actually watch. A job
+ * sitting `queued` until someone rebuilds the image is strictly better than telling a
+ * participant their selfie failed.
+ *
+ * Deliberately NOT here:
+ *   - `verify` — it is a sha256 integrity check of the original object in the store and
+ *     never touches the engine (`verifyOriginal` makes zero `deps.faces` calls). Pausing it
+ *     would stop unrelated work and leave originals stuck in `pending` for no benefit.
+ *   - `attach` — `searchFaces` / `faceEmbedding` are pgvector-only; no HTTP, no `max_faces`.
+ *   - `retention` / `reset` — `deleteFaces` / `deleteCollection`, pgvector-only.
+ *
+ * (`/v1/liveness` carries no `max_faces` at all, and is only ever called from `match`,
+ * which is paused anyway.)
+ */
+export const FACE_INCOMPATIBLE_JOB_TYPES: readonly JobType[] = ["index", "match"];
 
 export const COMPAT_TIMEOUT_MS = 10_000;
 

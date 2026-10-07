@@ -33,10 +33,11 @@ const deps: WorkerDeps = {
 
 // v6 hardening H2: before claiming anything, ask the face service which build it is. A
 // service whose `max_faces_cap` is below what every `/v1/embed` call will ask for would
-// reject each `index` job with an HTTP 422 — five attempts and a photo in `error`, times
-// however many photos the event has — while `/health` answered `ok`. One probe, one loud
-// line, and `index` stays queued until the image is right. Only the insightface engine
-// talks to the service; `fake` and `rekognition` have nothing to check.
+// reject each `index` and `match` job with an HTTP 422 — five attempts and a photo in
+// `error`, times however many photos the event has, plus a failed gallery for every
+// participant who sends a selfie — while `/health` answered `ok`. One probe, one loud line,
+// and that work stays queued until the image is right. Only the insightface engine talks to
+// the service; `fake` and `rekognition` have nothing to check.
 if (env.FACE_ENGINE === "insightface") {
   deps.faceGate?.apply(
     await checkFaceServiceCompat({

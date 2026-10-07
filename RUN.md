@@ -82,19 +82,29 @@ Thresholds (`INSIGHTFACE_MIN_COSINE=0.50`, `INSIGHTFACE_SURE_COSINE=0.70`, v5 de
 
 **Test-campaign switches** (all `false` by default, `.env.example` lists them): `MATCH_LOG=true` writes every `match` run and all its hits, down to cosine 0.25, into `match_runs` / `match_hits` (then `/admin#esporta` → «match-hits.csv», or `select cosine, kept from match_hits order by cosine desc`); `KEEP_SELFIES=true` keeps the selfie object and records its key in `galleries.selfie_key`, which enables «Rifai il confronto» on an admin gallery; `LOG_IDS=true` adds `photoId` / `userId` / `eventId` to the worker log lines. Restart `dev:worker` after changing them. With the face-service stopped (`docker compose stop face-service`) the worker now **requeues** `index` / `attach` / `match` without burning attempts and, after five in a row, prints one `{ breaker: "open", pauseMs: 30000 }` line and stops claiming those types for 30 s; `docker compose start face-service` and the queue resumes with nothing in `error`.
 
-### The worker checks the face-service build before it claims any `index` job (v6 hardening)
+### The worker checks the face-service build before it claims `index` or `match` (v6 hardening)
 
-`GET /health` reports `version` and `max_faces_cap` — the real cap its `/v1/embed?max_faces=` validator enforces — and with `FACE_ENGINE=insightface` the worker reads it once at start and compares it with `INSIGHTFACE_INDEX_MAX_FACES` (default 100, the `max_faces` of every embed call). If the service cannot serve that, the worker prints one line and **stops claiming `index`**:
+`GET /health` reports `version` and `max_faces_cap` — the real cap its `/v1/embed?max_faces=` validator enforces — and with `FACE_ENGINE=insightface` the worker reads it once at start and compares it with `INSIGHTFACE_INDEX_MAX_FACES` (default 100, the `max_faces` of every embed call). If the service cannot serve that, the worker prints one line and **stops claiming `index` and `match`**:
 
 ```json
-{"ts":"…","faceService":"incompatible","paused":["index"],"requiredMaxFaces":100,"maxFacesCap":50,"version":"1.0.0","error":"face service at http://face-service:8090 accepts max_faces<=50 but the worker asks for 100 …"}
+{"ts":"…","faceService":"incompatible","paused":["index","match"],"requiredMaxFaces":100,"maxFacesCap":50,"version":"1.0.0","error":"face service at http://face-service:8090 accepts max_faces<=50 but the worker asks for 100 …"}
 ```
 
-The jobs stay `queued` with zero attempts and no photo reaches `error`: rebuild the image (`docker compose build face-service`, or `docker build -t rephoto-face-service apps/face-service`), restart the worker, and the queue drains. The check is a standing refusal, not the circuit breaker — only a restart clears it — and the two are independent, so an open breaker cannot hide it.
+Those two are exactly the job types that post to `/v1/embed?max_faces=`: `index` through `indexPhoto`, `match` through `embedSelfie` / `search`. **`match` is the one that matters on an event day** — a paused `index` is invisible bulk work waiting, while a participant who sends a selfie against a wrong image gets five failed attempts and then an error, on the one screen they are watching. A job sitting `queued` until someone rebuilds the image is strictly better than that. `attach` (pgvector only), `verify` (a sha256 check of the stored original, it never calls the engine) and `retention` / `reset` keep flowing.
+
+The paused jobs stay `queued` with zero attempts, no photo reaches `error` and no gallery is written: rebuild the image (`docker compose build face-service`, or `docker build -t rephoto-face-service apps/face-service`), restart the worker, and the queue drains — the selfie is still in the object store, so the match just runs. The check is a standing refusal, not the circuit breaker — only a restart clears it — and the two are independent, so an open breaker cannot hide it.
 
 Why it exists: during v6 a stale `rephoto-face-service` image enforced `max_faces <= 50` while the source said 150 and the worker asked for 100. FastAPI's query validator answered `422` before decoding any image, so every `index` job failed five times and its photo ended in `error` — while `/health` answered `{"ok": true}`, because `ok` only ever meant "the model object exists". A health check that cannot say which build answered it cannot catch a wrong build. A service that does **not** answer is deliberately not treated as incompatible: that is the breaker's job (it may simply be loading its model, and even that `503` now carries `version` and `max_faces_cap`).
 
 Also log-worthy: a build from before this change reports no `max_faces_cap` at all, and is refused for that reason alone — it cannot be verified, and it is the exact class of image that caused the incident. Bump `SERVICE_VERSION` in `apps/face-service/app/main.py` whenever the `/v1/embed` or `/v1/liveness` contract changes.
+
+> **Your local `rephoto-face-service:latest` is almost certainly that stale image.** The one in this checkout reports `{"ok": true, "model": "buffalo_l", "providers": […]}` with no `version` and no `max_faces_cap`, and answers `422` to `POST /v1/embed?max_faces=100`. So with `FACE_ENGINE=insightface` the worker will now refuse `index` and `match` and print the `faceService: "incompatible"` line — loudly, instead of silently failing every photo. One command fixes it:
+>
+> ```bash
+> docker compose build face-service && docker compose up -d face-service
+> ```
+>
+> Then restart `pnpm dev:worker`. Check it with `curl -s localhost:8090/health`: you want `"version":"1.1.0","max_faces_cap":150` in the answer. Nothing to do with `FACE_ENGINE=fake` (the default), which never talks to the service.
 
 Running the Python service outside Docker (venv, `MODEL_ROOT`, `uvicorn`) is described in `apps/face-service/README.md`.
 
