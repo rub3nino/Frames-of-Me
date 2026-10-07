@@ -91,6 +91,7 @@ import {
 } from "./oauth.js";
 import { purgePhoto } from "./purge.js";
 import { registerAdminV6Routes } from "./routes.admin-v6.js";
+import { registerCrowdRoutes } from "./routes.crowd.js";
 
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -406,11 +407,23 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     }
     const input = body.data;
     const uploadId = randomUUID();
+    // v6 (agent C): dedup and the photo row are per album since migration 009
+    // (`photos unique (album_id, sha256)`). This route knows only an event, so it targets
+    // the event's official album — the one every event has, and the one v5 wrote into.
+    const album = await deps.db.findDefaultAlbum(event.id);
+    if (!album) throw new ApiError(404, MESSAGES.notFound);
     if (input.stage === "web") {
       // Web stage: the 1600 px JPEG goes straight to the web derivative key; the photo row
       // is created at complete with the original's sha256/bytes and original_status = pending.
-      const existing = await deps.db.findPhotoBySha(event.id, input.sha256);
-      if (existing) throw new ApiError(409, MESSAGES.conflict);
+      // Same bytes already in this album: an answer, not an error (v6 A2). The client
+      // marks the file as deduped instead of showing a failure.
+      const existing = await deps.db.findPhotoByAlbumSha(album.id, input.sha256);
+      if (existing) {
+        return c.json(
+          { status: "already-uploaded" as const, photoId: existing.id, albumId: album.id },
+          200,
+        );
+      }
       const photoId = randomUUID();
       const objectKey = objectKeys.web(photoId);
       await deps.db.insertUploadSession({
@@ -427,6 +440,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
         originalBytes: input.originalBytes,
         filename: input.filename,
         tags: input.tags ?? [],
+        albumId: album.id,
       });
       return c.json(
         {
@@ -454,8 +468,13 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       objectKey = photo.originalKey;
       photoId = photo.id;
     } else {
-      const existing = await deps.db.findPhotoBySha(event.id, input.sha256);
-      if (existing) throw new ApiError(409, MESSAGES.conflict);
+      const existing = await deps.db.findPhotoByAlbumSha(album.id, input.sha256);
+      if (existing) {
+        return c.json(
+          { status: "already-uploaded" as const, photoId: existing.id, albumId: album.id },
+          200,
+        );
+      }
       objectKey = objectKeys.original(event.id, randomUUID());
     }
     const multipart = input.bytes > MULTIPART_THRESHOLD_BYTES;
@@ -475,6 +494,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       photoId,
       filename: input.filename,
       tags: input.tags ?? [],
+      albumId: album.id,
     });
     if (multipart) {
       return c.json(
@@ -587,6 +607,10 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
         originalStatus: web ? "pending" : "present",
         filename: session.filename,
         tags: session.tags,
+        // v6 (agent C): the album chosen at init, carried on the session
+        // (`upload_sessions.album_id`, migration 010). Null only for a session written
+        // before that migration, where the official album is the right answer.
+        albumId: session.albumId ?? undefined,
       });
     } catch (error) {
       if (!(error instanceof DuplicateKeyError)) throw error;
@@ -643,6 +667,11 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     requireRole(user, ["photographer"]);
     const query = uploadLookupQuerySchema.safeParse(c.req.query());
     if (!query.success) throw new ApiError(400, MESSAGES.validation);
+    // v6 (agent C): this lookup is still EVENT-wide while dedup moved to
+    // `unique (album_id, sha256)` (migration 009), so with several albums per event the same
+    // bytes can exist more than once and this returns an arbitrary one. Harmless today --
+    // this route and the photographer upload above both target the event's official album --
+    // but an exact lookup needs an album id in the query.
     const photo = await deps.db.findOwnPhotoBySha(user.id, query.data.eventId, query.data.sha256);
     if (!photo) throw new ApiError(404, MESSAGES.notFound);
     return c.json({ photoId: photo.id, originalStatus: photo.originalStatus, status: photo.status });
@@ -1363,6 +1392,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
   });
 
   registerAdminV6Routes(app, deps); // v6 D (agent D): admin console, routes.admin-v6.ts
+  registerCrowdRoutes(app, deps);
 }
 
 // ---- admin and participant tooling v5 (agent D) helpers --------------------------------------

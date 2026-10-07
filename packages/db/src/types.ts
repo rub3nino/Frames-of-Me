@@ -49,6 +49,8 @@ export type PhotoRow = {
   createdAt: Date;
   /** v6: the album the photo belongs to (`photos.album_id`, migration 009). */
   albumId: string;
+  /** v6 (agent C): `photos.moderation_state`, migration 010. Separate from `status`. */
+  moderationState: ModerationState;
 };
 
 export type UploadSessionRow = {
@@ -71,6 +73,11 @@ export type UploadSessionRow = {
   filename: string | null;
   tags: string[];
   createdAt: Date;
+  /**
+   * v6 (agent C): `upload_sessions.album_id`, migration 010 — the album chosen at `init` and
+   * carried to `complete`. Null only for sessions written before that migration.
+   */
+  albumId: string | null;
 };
 
 export type GalleryItemRow = {
@@ -212,6 +219,8 @@ export interface Database {
     /** v5: carried to the photo row at complete. */
     filename?: string | null;
     tags?: string[];
+    /** v6 (agent C): the album the bytes are destined for; the official album when absent. */
+    albumId?: string | null;
   }): Promise<void>;
   findUploadSession(id: string): Promise<UploadSessionRow | null>;
   markUploadSession(id: string, status: "completed" | "aborted"): Promise<boolean>;
@@ -550,6 +559,77 @@ export interface Database {
   isAlbumPhotographerAllowed(albumId: string, userId: string): Promise<boolean>;
   /** Everything the live status screen of one event reads, in one call. */
   eventStatus(eventId: string): Promise<EventStatus>;
+  // ---- crowd upload and moderation v6 (agent C) -----------------------------------------
+  /**
+   * The per-user cap of C2: how many photos this uploader already holds in the album with
+   * `moderation_state in ('approved', 'pending')`. A rejected photo frees a slot, an
+   * `auto_rejected` one too; a pending one does not.
+   */
+  countAlbumPhotosByUploader(albumId: string, uploaderId: string): Promise<number>;
+  /**
+   * Writes `moderation_state` and, for a human ruling, `moderated_by` / `moderated_at`.
+   * `moderatorId` null is the automatic path (the screening hook, the report threshold):
+   * the state moves but the two audit columns stay empty, so a queue row still reads as
+   * "nobody has ruled". Null when there is no such photo.
+   */
+  setPhotoModeration(input: {
+    photoId: string;
+    state: ModerationState;
+    moderatorId?: string | null;
+    at?: Date;
+  }): Promise<PhotoRow | null>;
+  /**
+   * One report per (photo, reporter) — `reports unique (photo_id, reporter_id)`. A second
+   * report from the same person is `created: false` and changes nothing, which is what makes
+   * the threshold count distinct people.
+   *
+   * The one exception: a stored `not_me` is escalated to a counting reason (`created: true`),
+   * one-way. Otherwise tapping "non sono io" would silently spend the person's only report on
+   * that photo; a counting reason is never replaced, so this cannot un-report anything.
+   */
+  insertReport(input: {
+    photoId: string;
+    reporterId: string;
+    reason: ReportReason;
+    note?: string | null;
+  }): Promise<{ created: boolean; report: ReportRow }>;
+  /**
+   * How many DISTINCT people have an open report on the photo **whose reason counts**
+   * (`MODERATION_COUNTING_REASONS`). This is the number the auto-pending threshold compares
+   * against, and `not_me` is deliberately not in it — see that constant for why.
+   */
+  countOpenReports(photoId: string): Promise<number>;
+  /** How many DISTINCT people said `not_me`. Shown to moderators, never counted. */
+  countOpenNotMeReports(photoId: string): Promise<number>;
+  /** Reports filed by this user since `since` (the per-user report rate limit). */
+  countReportsByUserSince(reporterId: string, since: Date): Promise<number>;
+  /** A moderator ruled: every open report on the photo is closed. Returns how many. */
+  closeReports(photoId: string): Promise<number>;
+  /** Open reports of the photo, oldest first. */
+  listOpenReports(photoId: string): Promise<ReportRow[]>;
+  /**
+   * The staff moderation queue: photos that are not `approved`, or that carry an open report
+   * **whose reason counts**, newest first (`created_at desc, id desc`). `state` narrows to
+   * one moderation state, `albumId` to one album, `includeNotMe` adds the wrong-match
+   * reports that are otherwise kept out so they cannot bury the queue.
+   */
+  listModerationPage(input: {
+    albumId?: string;
+    state?: ModerationState;
+    /** Also queue approved photos whose only open reports are `not_me`. Off by default. */
+    includeNotMe?: boolean;
+    limit: number;
+    cursor?: UploadCursor;
+  }): Promise<{ items: ModerationItem[]; nextCursor: UploadCursor | null }>;
+  /**
+   * A crowd album feed: `approved` photos with both derivatives, newest first. Nothing
+   * pending, rejected or auto-rejected is ever returned — that is how a photo that reached
+   * the report threshold leaves the gallery.
+   */
+  listAlbumPhotosPage(
+    albumId: string,
+    input: { limit: number; cursor?: UploadCursor },
+  ): Promise<{ items: AlbumPhoto[]; nextCursor: UploadCursor | null }>;
 }
 
 // ---- albums and vector isolation v6 (agent A) ---------------------------------------------
@@ -826,4 +906,53 @@ export type EventStatus = {
   /** Galleries holding a selfie vector that have not matched yet. */
   selfiesWaiting: number;
   albums: EventStatusAlbum[];
+};
+
+// ---- crowd upload and moderation v6 (agent C) ---------------------------------------------
+
+/**
+ * `photos.moderation_state` (migration 010). SEPARATE from {@link PhotoRow.status}, which is
+ * the processing pipeline: a photo can be `indexed` and `rejected`, or `error` and `approved`.
+ * The two state machines are never merged.
+ */
+export type ModerationState = "pending" | "approved" | "rejected" | "auto_rejected";
+
+export type ReportReason = "inappropriate" | "not_me" | "copyright" | "other";
+
+export type ReportRow = {
+  id: string;
+  photoId: string;
+  reporterId: string;
+  reason: ReportReason;
+  note: string | null;
+  state: "open" | "closed";
+  createdAt: Date;
+};
+
+/** One row of the staff moderation queue, with the open reports already counted. */
+export type ModerationItem = {
+  photoId: string;
+  albumId: string;
+  eventId: string;
+  uploaderId: string;
+  moderationState: ModerationState;
+  createdAt: Date;
+  /** Counting reasons only (`MODERATION_COUNTING_REASONS`): `not_me` is not in here. */
+  openReports: number;
+  /** Distinct reasons of every open report, `not_me` included: the moderator sees it all. */
+  reasons: ReportReason[];
+  /** Distinct people who said `not_me`. Shown, never counted. */
+  notMeReports: number;
+  thumbKey: string | null;
+  webKey: string | null;
+};
+
+/** One row of a crowd album feed: only `approved` photos with both derivatives are returned. */
+export type AlbumPhoto = {
+  id: string;
+  albumId: string;
+  uploaderId: string;
+  createdAt: Date;
+  thumbKey: string;
+  webKey: string;
 };

@@ -5,6 +5,7 @@ import type { Mailer } from "./mailer.js";
 import type { GoogleTokenExchange } from "./oauth.js";
 import type { ObjectStore } from "./object-store.js";
 import type { JobQueue } from "./queue.js";
+import type { Screening } from "./screening.js";
 
 export type AppDeps = {
   env: Env;
@@ -18,6 +19,11 @@ export type AppDeps = {
    * without reaching accounts.google.com; `createApp` falls back to the real endpoint.
    */
   googleTokenExchange?: GoogleTokenExchange;
+  /**
+   * v6 (agent C): the screening hook that runs before a crowd upload is published. Absent
+   * means `noopScreening` (everything passes), which is the v6 default.
+   */
+  screening?: Screening;
 };
 
 export type AppEnv = {

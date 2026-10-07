@@ -271,7 +271,6 @@ export type AdminMetricsV5 = AdminMetrics & {
   lastErrors: Array<{ id: string; type: string; error: string; at: string }>;
   faceService: { ok: boolean | null; ms: number | null };
 };
-
 // ---- admin console v6 (agent D) -----------------------------------------------------------
 
 export type AlbumKind = "official" | "crowd";
@@ -399,4 +398,77 @@ export type ModerationQueueResponse = {
   photos?: ModerationQueueItem[];
   items?: ModerationQueueItem[];
   nextCursor?: string | null;
+};
+
+// ---- crowd upload and moderation v6 (agent C) --------------------------------------------
+
+/**
+ * `POST /v1/uploads/init` and `POST /v1/albums/:id/uploads/init` answer this with 200 when
+ * the same sha256 is already in the target album. Dedup is per album since migration 009,
+ * and a re-forwarded WhatsApp image is an answer, not an error.
+ */
+export type AlbumUploadDedupeResponse = {
+  status: "already-uploaded";
+  photoId: string;
+  albumId: string;
+};
+
+export type ReportReason = "inappropriate" | "not_me" | "copyright" | "other";
+
+export type AlbumPhoto = {
+  id: string;
+  albumId: string;
+  uploaderId: string;
+  createdAt: string;
+  thumbUrl: string;
+  webUrl: string;
+  mine: boolean;
+};
+
+export type AlbumPhotosResponse = {
+  photos: AlbumPhoto[];
+  nextCursor: string | null;
+  quota: { used: number; max: number | null };
+};
+
+export type CrowdUploadCompleteResponse = {
+  photoId: string;
+  status: "uploaded" | "auto_rejected";
+  moderationState?: ModerationState;
+};
+
+export type ReportResponse = {
+  status: "recorded" | "already-reported";
+  state: ModerationState;
+  /** Counting reasons only: a `not_me` report never moves this number. */
+  openReports: number;
+  /** False for `not_me`: recorded and shown to moderators, never counted. */
+  counts: boolean;
+  /** True when the report hid the photo in the caller's own match gallery. */
+  hiddenForYou: boolean;
+};
+
+export type ModerationItem = {
+  photoId: string;
+  albumId: string;
+  eventId: string;
+  uploaderId: string;
+  moderationState: ModerationState;
+  createdAt: string;
+  openReports: number;
+  reasons: ReportReason[];
+  notMeReports: number;
+  thumbUrl: string | null;
+  webUrl: string | null;
+};
+
+export type ModerationResponse = {
+  items: ModerationItem[];
+  nextCursor: string | null;
+};
+
+export type ModerateResponse = {
+  photoId: string;
+  state: ModerationState;
+  purged: boolean;
 };

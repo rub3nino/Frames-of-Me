@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { test } from "node:test";
 import {
+  albumUploadDedupeResponseSchema,
   API_BODY_MAX_BYTES,
   CONSENT_TEXT_VERSION,
   envSchema,
@@ -990,7 +991,10 @@ test("web stage creates a pending photo with its web derivative and queues deriv
   assert.deepEqual(job?.payload, { photoId });
   assert.equal(await h.db.claimJob(), null);
 
-  // The same original again (any stage) is a conflict while the photo exists.
+  // v6 (agent C): the same original again is "already uploaded" — an answer, not an error.
+  // Dedup moved from `unique (event_id, sha256)` to `unique (album_id, sha256)` (migration
+  // 009) precisely because people re-upload the same forwarded image, and this route targets
+  // the event's official album.
   const again = await h.app.request(
     json(
       "POST",
@@ -1005,7 +1009,14 @@ test("web stage creates a pending photo with its web derivative and queues deriv
       { cookie },
     ),
   );
-  assert.equal(again.status, 409);
+  assert.equal(again.status, 200);
+  const official = await h.db.findDefaultAlbum(h.event.id);
+  assert.ok(official);
+  assert.deepEqual(albumUploadDedupeResponseSchema.parse(await again.json()), {
+    status: "already-uploaded",
+    photoId,
+    albumId: official.id,
+  });
 
   const summary = await h.app.request(
     new Request(`http://api.local/v1/uploads/summary?eventId=${h.event.id}`, {
