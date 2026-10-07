@@ -1,0 +1,15 @@
+.git
+.env
+.env.*
+!.env.example
+node_modules
+**/node_modules
+**/.next
+**/dist
+**/coverage
+**/tsconfig.tsbuildinfo
+infra/cdk/cdk.out
+infra/cdk/node_modules
+docker-compose.override.yml
+uploads
+*.pem

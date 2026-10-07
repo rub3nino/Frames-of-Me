@@ -1,0 +1,27 @@
+{
+  "name": "rephoto-infra",
+  "private": true,
+  "version": "0.0.0",
+  "description": "RePhoto reference AWS stack (CDK v2, eu-central-1). Not part of the npm workspaces.",
+  "type": "module",
+  "scripts": {
+    "synth": "cdk synth",
+    "diff": "cdk diff",
+    "deploy": "cdk deploy",
+    "bootstrap": "cdk bootstrap",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.200.0",
+    "constructs": "^10.4.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.0",
+    "aws-cdk": "^2.1000.0",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
