@@ -54,6 +54,9 @@ import type {
   AlbumInsert,
   AlbumPatch,
   AlbumRow,
+  // v6 (agent B)
+  EventCodeRow,
+  IdentityProvider,
 } from "./types.js";
 
 /** Same cap as PostgresDatabase.findGalleriesByQueryVector. */
@@ -145,6 +148,11 @@ export class MemoryDatabase implements Database {
   // v6 (agent A): albums. Migration 009 gives every event an official album and a
   // trigger adds one to each new event; `ensureDefaultAlbum` is that trigger here.
   private readonly albums = new Map<string, AlbumRow>();
+
+  // v6 (agent B): user_identities, event_codes, users.email_verified_at.
+  private readonly identities = new Map<string, IdentityStored>();
+  private readonly eventCodes = new Map<string, EventCodeRow>();
+  private readonly emailVerified = new Map<string, Date>();
 
   async seedDemo(): Promise<void> {
     if (!(await this.findEventBySlug("demo"))) {
@@ -1648,6 +1656,92 @@ export class MemoryDatabase implements Database {
     return id;
   }
 
+  // ---- auth v6 (agent B): identities, event codes, lazy e-mail verification -------------
+
+  async findUserByIdentity(
+    provider: IdentityProvider,
+    subject: string,
+  ): Promise<UserRow | null> {
+    const identity = this.identities.get(identityKey(provider, subject));
+    if (!identity) return null;
+    return this.findUserById(identity.userId);
+  }
+
+  async insertIdentity(input: {
+    userId: string;
+    provider: IdentityProvider;
+    subject: string;
+    email: string | null;
+  }): Promise<void> {
+    const key = identityKey(input.provider, input.subject);
+    if (this.identities.has(key)) throw new DuplicateKeyError();
+    this.identities.set(key, {
+      userId: input.userId,
+      provider: input.provider,
+      subject: input.subject,
+      email: input.email,
+      createdAt: new Date(),
+    });
+  }
+
+  async createEventCode(input: {
+    eventId: string;
+    code: string;
+    label?: string | null;
+    maxUses?: number | null;
+    expiresAt?: Date | null;
+  }): Promise<EventCodeRow> {
+    const key = eventCodeKey(input.eventId, input.code);
+    if (this.eventCodes.has(key)) throw new DuplicateKeyError();
+    const row: EventCodeRow = {
+      eventId: input.eventId,
+      code: input.code,
+      label: input.label ?? null,
+      maxUses: input.maxUses ?? null,
+      uses: 0,
+      expiresAt: input.expiresAt ?? null,
+      createdAt: new Date(),
+    };
+    this.eventCodes.set(key, row);
+    return { ...row };
+  }
+
+  async findEventCode(eventId: string, code: string): Promise<EventCodeRow | null> {
+    const row = this.eventCodes.get(eventCodeKey(eventId, code));
+    return row ? { ...row } : null;
+  }
+
+  async claimEventCode(code: string): Promise<EventCodeRow | null> {
+    const now = new Date();
+    // Same tie-break as Postgres (`order by created_at, event_id limit 1`): the same code
+    // string in two events claims exactly one row, the oldest valid one.
+    const candidates = [...this.eventCodes.values()]
+      .filter(
+        (row) =>
+          row.code === code &&
+          (row.expiresAt === null || row.expiresAt > now) &&
+          (row.maxUses === null || row.uses < row.maxUses),
+      )
+      .sort(
+        (a, b) =>
+          a.createdAt.getTime() - b.createdAt.getTime() || compareText(a.eventId, b.eventId),
+      );
+    const row = candidates[0];
+    if (!row) return null;
+    row.uses += 1;
+    return { ...row };
+  }
+
+  async markEmailVerified(userId: string, at: Date = new Date()): Promise<void> {
+    if (!this.users.has(userId)) return;
+    if (this.emailVerified.has(userId)) return;
+    this.emailVerified.set(userId, at);
+  }
+
+  async findEmailVerifiedAt(userId: string): Promise<Date | null> {
+    return this.emailVerified.get(userId) ?? null;
+  }
+
   private adminPhoto(photo: PhotoRow): PhotoAdminRow {
     const meta = this.photoMeta.get(photo.id);
     return { ...photo, filename: meta?.filename ?? null, tags: [...(meta?.tags ?? [])] };
@@ -1843,4 +1937,22 @@ function compareText(a: string, b: string): number {
 
 export function seedInviteHash(): string {
   return createHash("sha256").update("seed-invite").digest("hex");
+}
+
+// ---- auth v6 (agent B) --------------------------------------------------------------------
+
+type IdentityStored = {
+  userId: string;
+  provider: IdentityProvider;
+  subject: string;
+  email: string | null;
+  createdAt: Date;
+};
+
+function identityKey(provider: IdentityProvider, subject: string): string {
+  return `${provider}\u0000${subject}`;
+}
+
+function eventCodeKey(eventId: string, code: string): string {
+  return `${eventId}\u0000${code}`;
 }

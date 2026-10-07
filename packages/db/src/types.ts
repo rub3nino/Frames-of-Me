@@ -486,6 +486,35 @@ export interface Database {
   markAlbumFirstUpload(albumId: string, at?: Date): Promise<void>;
   /** Album-scoped dedup: the same bytes in another album are a different photo. */
   findPhotoByAlbumSha(albumId: string, sha256: string): Promise<PhotoRow | null>;
+
+  // ---- auth v6 (agent B): identities, event codes, lazy e-mail verification -------------
+  /** The user behind an external identity (`user_identities`), or null when it is unknown. */
+  findUserByIdentity(provider: IdentityProvider, subject: string): Promise<UserRow | null>;
+  /** Links an external identity to a user. `email` is stored only when the provider verified it. */
+  insertIdentity(input: {
+    userId: string;
+    provider: IdentityProvider;
+    subject: string;
+    email: string | null;
+  }): Promise<void>;
+  /** Throws DuplicateKeyError when the (eventId, code) pair exists. */
+  createEventCode(input: {
+    eventId: string;
+    code: string;
+    label?: string | null;
+    maxUses?: number | null;
+    expiresAt?: Date | null;
+  }): Promise<EventCodeRow>;
+  findEventCode(eventId: string, code: string): Promise<EventCodeRow | null>;
+  /**
+   * Atomically takes one use of a code that exists, has not expired and is below `max_uses`.
+   * Null when there is no such code — expired, exhausted and absent are indistinguishable
+   * on purpose, the caller answers with one generic message.
+   */
+  claimEventCode(code: string): Promise<EventCodeRow | null>;
+  /** Stamps `users.email_verified_at` (idempotent: an already stamped row keeps its first date). */
+  markEmailVerified(userId: string, at?: Date): Promise<void>;
+  findEmailVerifiedAt(userId: string): Promise<Date | null>;
 }
 
 // ---- albums and vector isolation v6 (agent A) ---------------------------------------------
@@ -707,4 +736,19 @@ export type MatchHitInsert = {
   cosine: number;
   similarity: number;
   kept: boolean;
+};
+
+// ---- auth v6 (agent B) --------------------------------------------------------------------
+
+/** One provider today (`user_identities.provider` check constraint, migration 012). */
+export type IdentityProvider = "google";
+
+export type EventCodeRow = {
+  eventId: string;
+  code: string;
+  label: string | null;
+  maxUses: number | null;
+  uses: number;
+  expiresAt: Date | null;
+  createdAt: Date;
 };

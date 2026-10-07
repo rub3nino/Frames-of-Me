@@ -166,6 +166,24 @@ export const envSchema = z
     ),
     /** Host the browser uses for presigned URLs (MinIO behind a proxy); S3_ENDPOINT stays internal. */
     S3_PUBLIC_ENDPOINT: z.preprocess(blankToUndefined, z.string().url().optional()),
+    // --- v6 auth (agent B) ----------------------------------------------------
+    /** Google OIDC client. The three GOOGLE_* vars go together; without them the Google routes 404. */
+    GOOGLE_CLIENT_ID: optionalText,
+    GOOGLE_CLIENT_SECRET: optionalText,
+    /** Must match the redirect URI registered in the Google console, e.g. https://host/v1/auth/google/callback. */
+    GOOGLE_REDIRECT_URL: z.preprocess(blankToUndefined, z.string().url().optional()),
+    /** HMAC key for the short-lived state/PKCE cookie. Defaults to SESSION_SECRET when unset. */
+    OAUTH_STATE_SECRET: z.preprocess(blankToUndefined, z.string().min(16).optional()),
+    /** Self-registrations per client IP per hour; 0 disables the limit. */
+    REGISTER_PER_IP: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().int().min(0).default(20),
+    ),
+    /** Self-registrations per event code per hour; 0 disables the limit. */
+    REGISTER_PER_CODE: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().int().min(0).default(600),
+    ),
   })
   .superRefine((env, ctx) => {
     if (env.INSIGHTFACE_SURE_COSINE <= env.INSIGHTFACE_MIN_COSINE) {
@@ -207,6 +225,16 @@ export const envSchema = z
         });
       }
     }
+    // v6 (agent B): a half-configured Google client is a deploy mistake, not a feature.
+    const google = [env.GOOGLE_CLIENT_ID, env.GOOGLE_CLIENT_SECRET, env.GOOGLE_REDIRECT_URL];
+    if (google.some(Boolean) && !google.every(Boolean)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["GOOGLE_CLIENT_ID"],
+        message:
+          "GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET and GOOGLE_REDIRECT_URL must be set together",
+      });
+    }
   })
   .transform((env) => ({
     ...env,
@@ -224,6 +252,7 @@ export const envSchema = z
     MATCH_LOG: env.MATCH_LOG === "true",
     KEEP_SELFIES: env.KEEP_SELFIES === "true",
     LOG_IDS: env.LOG_IDS === "true",
+    OAUTH_STATE_SECRET: env.OAUTH_STATE_SECRET ?? env.SESSION_SECRET,
   }));
 
 export type Env = z.infer<typeof envSchema>;

@@ -167,9 +167,13 @@ describe("keyset pagination over colliding milliseconds (v6 F3)", { skip }, () =
     // created_at = BASE + slot ms + offset µs. Every millisecond holds PHOTOS_PER_MS rows, so a
     // page boundary at any limit that is not a multiple of PHOTOS_PER_MS lands inside a group.
     await client`
-      insert into photos (event_id, photographer_id, sha256, status, original_key, content_type,
-                          bytes, created_at, filename)
-      select ${eventId}, ${photographerId},
+      insert into photos (event_id, album_id, photographer_id, sha256, status, original_key,
+                          content_type, bytes, created_at, filename)
+      -- album_id is not null since migration 009; every event gets its official album from
+      -- the events_default_album trigger, which is where these fixture rows belong.
+      select ${eventId},
+             (select id from albums where event_id = ${eventId} and slug = 'ufficiale'),
+             ${photographerId},
              encode(sha256((${eventId} || i)::bytea), 'hex'), 'indexed',
              'originals/' || ${eventId} || '/' || i, 'image/jpeg', 1000,
              ${BASE}::timestamptz

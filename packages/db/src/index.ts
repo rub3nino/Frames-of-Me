@@ -57,5 +57,8 @@ export type {
   AlbumPatch,
   AlbumRow,
   AlbumVisibility,
+  // v6 (agent B)
+  EventCodeRow,
+  IdentityProvider,
 } from "./types.js";
 export { AlbumRecognitionLockedError, AlbumRecognitionNotAllowedError } from "./types.js";

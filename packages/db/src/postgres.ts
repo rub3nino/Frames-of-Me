@@ -60,6 +60,9 @@ import type {
   AlbumPatch,
   AlbumRow,
   AlbumVisibility,
+  // v6 (agent B)
+  EventCodeRow,
+  IdentityProvider,
 } from "./types.js";
 
 const EVENT_ID = "00000000-0000-4000-8000-000000000001";
@@ -1997,6 +2000,115 @@ export class PostgresDatabase implements Database {
     if (rows[0]?.present !== true) return;
     await this.sql`select face_vectors_album_index(${albumId})`;
   }
+
+  // ---- auth v6 (agent B): identities, event codes, lazy e-mail verification -------------
+
+  async findUserByIdentity(
+    provider: IdentityProvider,
+    subject: string,
+  ): Promise<UserRow | null> {
+    const rows = await this.sql<UserSql[]>`
+      select u.id, u.email, u.role, u.created_at
+      from user_identities i join users u on u.id = i.user_id
+      where i.provider = ${provider} and i.subject = ${subject}
+    `;
+    return rows[0] ? mapUser(rows[0]) : null;
+  }
+
+  async insertIdentity(input: {
+    userId: string;
+    provider: IdentityProvider;
+    subject: string;
+    email: string | null;
+  }): Promise<void> {
+    try {
+      await this.sql`
+        insert into user_identities (user_id, provider, subject, email)
+        values (${input.userId}, ${input.provider}, ${input.subject}, ${input.email})
+      `;
+    } catch (error) {
+      if (isUniqueViolation(error)) throw new DuplicateKeyError();
+      throw error;
+    }
+  }
+
+  async createEventCode(input: {
+    eventId: string;
+    code: string;
+    label?: string | null;
+    maxUses?: number | null;
+    expiresAt?: Date | null;
+  }): Promise<EventCodeRow> {
+    try {
+      const rows = await this.sql<EventCodeSql[]>`
+        insert into event_codes (event_id, code, label, max_uses, expires_at)
+        values (
+          ${input.eventId},
+          ${input.code},
+          ${input.label ?? null},
+          ${input.maxUses ?? null},
+          ${input.expiresAt ?? null}
+        )
+        returning event_id, code, label, max_uses, uses, expires_at, created_at
+      `;
+      const row = rows[0];
+      if (!row) throw new Error("Event code insert failed");
+      return mapEventCode(row);
+    } catch (error) {
+      if (isUniqueViolation(error)) throw new DuplicateKeyError();
+      throw error;
+    }
+  }
+
+  async findEventCode(eventId: string, code: string): Promise<EventCodeRow | null> {
+    const rows = await this.sql<EventCodeSql[]>`
+      select event_id, code, label, max_uses, uses, expires_at, created_at
+      from event_codes where event_id = ${eventId} and code = ${code}
+    `;
+    return rows[0] ? mapEventCode(rows[0]) : null;
+  }
+
+  async claimEventCode(code: string): Promise<EventCodeRow | null> {
+    // One statement: the `uses < max_uses` test and the increment cannot interleave, so a
+    // code with `max_uses = 1` is handed out once even under concurrent registrations
+    // (Postgres re-evaluates the where clause against the row the other writer committed).
+    //
+    // The primary key is (event_id, code) and registration only sends the code, so the
+    // subselect pins one event: without it an update would touch the same code in every
+    // event at once. The subselect filters on validity as well, so the usual case — one
+    // event owning the code — behaves exactly as the plain update did.
+    const rows = await this.sql<EventCodeSql[]>`
+      update event_codes
+      set uses = uses + 1
+      where code = ${code}
+        and (expires_at is null or expires_at > now())
+        and (max_uses is null or uses < max_uses)
+        and event_id = (
+          select event_id from event_codes
+          where code = ${code}
+            and (expires_at is null or expires_at > now())
+            and (max_uses is null or uses < max_uses)
+          order by created_at, event_id
+          limit 1
+        )
+      returning event_id, code, label, max_uses, uses, expires_at, created_at
+    `;
+    return rows[0] ? mapEventCode(rows[0]) : null;
+  }
+
+  async markEmailVerified(userId: string, at: Date = new Date()): Promise<void> {
+    await this.sql`
+      update users set email_verified_at = ${at}
+      where id = ${userId} and email_verified_at is null
+    `;
+  }
+
+  async findEmailVerifiedAt(userId: string): Promise<Date | null> {
+    const rows = await this.sql<{ email_verified_at: Date | null }[]>`
+      select email_verified_at from users where id = ${userId}
+    `;
+    return rows[0]?.email_verified_at ?? null;
+  }
 }
 
 /** Maps the album constraints of migration 009 to their typed errors. */
@@ -2174,4 +2286,28 @@ function mapUpload(row: UploadSql): UploadSessionRow {
 }
 function mapPhotoAdmin(row: PhotoAdminSql): PhotoAdminRow {
   return { ...mapPhoto(row), filename: row.filename ?? null, tags: row.tags ?? [] };
+}
+
+// ---- auth v6 (agent B) --------------------------------------------------------------------
+
+type EventCodeSql = {
+  event_id: string;
+  code: string;
+  label: string | null;
+  max_uses: number | null;
+  uses: number;
+  expires_at: Date | null;
+  created_at: Date;
+};
+
+function mapEventCode(row: EventCodeSql): EventCodeRow {
+  return {
+    eventId: row.event_id,
+    code: row.code,
+    label: row.label,
+    maxUses: row.max_uses === null ? null : Number(row.max_uses),
+    uses: Number(row.uses),
+    expiresAt: row.expires_at,
+    createdAt: row.created_at,
+  };
 }
