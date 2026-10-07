@@ -1370,28 +1370,42 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     if (await deps.db.findUserByEmailRole(email, "participant")) {
       throw new ApiError(409, MESSAGES.accountExists);
     }
-    // One statement in Postgres: expiry and `max_uses` are checked and `uses` incremented
-    // atomically. Absent, expired and exhausted are one answer on purpose.
-    const claimed = await deps.db.claimEventCode(eventCode);
-    if (!claimed) throw new ApiError(403, MESSAGES.eventCodeInvalid);
-    const user = await deps.db.insertUser(email, "participant");
-    await deps.db.setUserPassword(user.id, hashPassword(body.data.password));
-    // v6 E (agent E): the non-biometric membership record. The claimed code already resolved
-    // the event; before this row existed that fact was thrown away into the audit line below,
-    // and "is this person a participant of this event?" had no answer for anyone who never
-    // consented to face recognition and is not on an allowlist. `claimEventCode` keeps its
-    // semantics; this only persists what it already knew.
-    await deps.db.addEventMember({ userId: user.id, eventId: claimed.eventId, source: "event_code" });
-    // Lazy verification (v6): no e-mail is sent here and `email_verified_at` stays null.
-    // The address is proven later, by a password-reset link or a Google token.
-    await deps.db.insertAudit({
-      actorId: user.id,
-      action: "auth.registered",
-      target: `event:${claimed.eventId}`,
-      meta: { eventCode: claimed.code, uses: claimed.uses },
+    // scrypt, ~100ms of CPU: done before the transaction opens, so a registration holds a
+    // pooled connection for the four writes and nothing else.
+    const passwordHash = hashPassword(body.data.password);
+    // v6 (integration): one transaction, because a badge code is single use. Interrupted
+    // between the claim and the membership write, the old code left the use spent, the
+    // account created and the person with no membership — registered and locked out of the
+    // event, with no way to repair it themselves. Either all four rows land or none do.
+    const registered = await deps.db.transaction(async (tx) => {
+      // One statement in Postgres: expiry and `max_uses` are checked and `uses` incremented
+      // atomically. Absent, expired and exhausted are one answer on purpose.
+      const claimed = await tx.claimEventCode(eventCode);
+      // Returned, not thrown: an invalid code is an answer, not a failed transaction.
+      if (!claimed) return null;
+      const user = await tx.insertUser(email, "participant");
+      await tx.setUserPassword(user.id, passwordHash);
+      // v6 E (agent E): the non-biometric membership record. The claimed code already resolved
+      // the event; before this row existed that fact was thrown away into the audit line below,
+      // and "is this person a participant of this event?" had no answer for anyone who never
+      // consented to face recognition and is not on an allowlist. `claimEventCode` keeps its
+      // semantics; this only persists what it already knew.
+      await tx.addEventMember({ userId: user.id, eventId: claimed.eventId, source: "event_code" });
+      // Lazy verification (v6): no e-mail is sent here and `email_verified_at` stays null.
+      // The address is proven later, by a password-reset link or a Google token.
+      await tx.insertAudit({
+        actorId: user.id,
+        action: "auth.registered",
+        target: `event:${claimed.eventId}`,
+        meta: { eventCode: claimed.code, uses: claimed.uses },
+      });
+      return user;
     });
-    await startSession(c, deps, user);
-    return c.json({ user: publicUser(user) }, 201);
+    if (!registered) throw new ApiError(403, MESSAGES.eventCodeInvalid);
+    // Outside the transaction on purpose: a session is a cookie, and failing to mint one
+    // leaves a complete account the person can simply log into.
+    await startSession(c, deps, registered);
+    return c.json({ user: publicUser(registered) }, 201);
   });
 
   registerAdminV6Routes(app, deps); // v6 D (agent D): admin console, routes.admin-v6.ts

@@ -161,6 +161,24 @@ export type FaceInsert = {
 export interface Database {
   seedDemo(): Promise<void>;
   ping(): Promise<void>;
+  /**
+   * Runs `fn` as one unit of work: everything written through the handle `fn` is given
+   * either commits together or leaves no trace. `PostgresDatabase` opens a real
+   * transaction on a single connection; `MemoryDatabase` snapshots its own state and
+   * restores it if `fn` throws.
+   *
+   * Narrow on purpose (v6 integration): the only call site is `POST /v1/auth/register`,
+   * where a half-finished write burns a use of a single-use badge code and locks the
+   * person out of the event they just paid to be in. Every other write keeps going
+   * straight to the handle it already holds — nothing was refactored for this.
+   *
+   * Write only through `tx`. A call made on the outer database inside `fn` runs on
+   * another connection, outside the transaction, and does not roll back with it. Methods
+   * that open a transaction of their own (`setUserPassword` and the album, moderation and
+   * retention writers) are safe inside `fn`: they go through `inTransaction`, which turns
+   * their scope into a savepoint when a transaction is already open.
+   */
+  transaction<T>(fn: (tx: Database) => Promise<T>): Promise<T>;
   findEventBySlug(slug: string): Promise<EventRow | null>;
   findEventById(id: string): Promise<EventRow | null>;
   updateEvent(

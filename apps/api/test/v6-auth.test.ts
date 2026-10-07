@@ -338,6 +338,56 @@ test("register with a valid event code creates the participant, a session and no
   assert.equal(wrong.status, 401);
 });
 
+test("a registration interrupted between the code claim and the membership write leaves nothing behind", async () => {
+  const h = await harness();
+  // One single-use badge code, the way they are printed for an event day.
+  await googleEventCode(h, "BADGE-UNICO", { maxUses: 1 });
+
+  // The interruption: the process dies after the claim, the user and the password, with
+  // the membership still unwritten. That window is the one that used to leave a person
+  // registered and locked out of the event, with the code's only use already spent.
+  const intact = h.db.addEventMember.bind(h.db);
+  h.db.addEventMember = async () => {
+    throw new Error("the process died before the membership write");
+  };
+  const interrupted = await h.app.request(
+    json("POST", "/v1/auth/register", {
+      email: "in.coda@example.com",
+      password: "dieci-caratteri-almeno",
+      eventCode: "BADGE-UNICO",
+    }),
+  );
+  h.db.addEventMember = intact;
+  assert.equal(interrupted.status, 500);
+
+  // Nothing was consumed and nothing was half-created: no account, no audit line, and the
+  // code still has its use.
+  assert.equal(await h.db.findUserByEmailRole("in.coda@example.com", "participant"), null);
+  assert.equal((await h.db.findEventCode(h.event.id, "BADGE-UNICO"))?.uses, 0);
+  assert.equal((await h.db.listAuditForTarget(`event:${h.event.id}`)).length, 0);
+
+  // So the person taps "Registrati" again and gets in, with the membership.
+  const retry = await h.app.request(
+    json("POST", "/v1/auth/register", {
+      email: "in.coda@example.com",
+      password: "dieci-caratteri-almeno",
+      eventCode: "BADGE-UNICO",
+    }),
+  );
+  assert.equal(retry.status, 201);
+  const { user } = (await retry.json()) as { user: { id: string } };
+  assert.equal(await h.db.isEventMember(user.id, h.event.id), true);
+  assert.equal((await h.db.findEventCode(h.event.id, "BADGE-UNICO"))?.uses, 1);
+  const login = await h.app.request(
+    json("POST", "/v1/auth/login", {
+      email: "in.coda@example.com",
+      password: "dieci-caratteri-almeno",
+      role: "participant",
+    }),
+  );
+  assert.equal(login.status, 200);
+});
+
 test("register refuses an exhausted, an expired and an absent event code", async () => {
   const h = await harness();
   await googleEventCode(h, "ONE-SHOT", { maxUses: 1 });

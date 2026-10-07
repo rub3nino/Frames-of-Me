@@ -165,6 +165,61 @@ type JobRow = {
   durationMs: number | null;
 };
 
+/**
+ * `MemoryDatabase.transaction` support. The store keeps its rows in maps, sets and
+ * arrays of plain objects and mutates some of them in place (`row.uses += 1` in
+ * `claimEventCode` is the one that matters here), so a snapshot has to copy the
+ * containers *and* the plain rows inside them. Anything that is not a map, set, array
+ * or plain object — a `Date`, a number, a string — is kept by reference: those are never
+ * mutated in place by this class.
+ */
+function cloneStored<T>(value: T): T {
+  if (value instanceof Map) {
+    return new Map([...value].map(([key, item]) => [key, cloneStored(item)])) as unknown as T;
+  }
+  if (value instanceof Set) return new Set(value) as unknown as T;
+  if (Array.isArray(value)) return value.map((item) => cloneStored(item)) as unknown as T;
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    Object.getPrototypeOf(value) === Object.prototype
+  ) {
+    const copy: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) copy[key] = cloneStored(item);
+    return copy as T;
+  }
+  return value;
+}
+
+type MemorySnapshot = Array<[string, unknown]>;
+
+/** Copies every collection field of the store, rows included. */
+function snapshotCollections(store: object): MemorySnapshot {
+  return Object.entries(store).map(([key, value]) => [key, cloneStored(value)]);
+}
+
+/**
+ * Puts a snapshot back. The fields are `readonly`, so each container is emptied and
+ * refilled in place rather than reassigned — which also keeps any reference another
+ * object holds to a collection valid.
+ */
+function restoreCollections(store: object, snapshot: MemorySnapshot): void {
+  const target = store as unknown as Record<string, unknown>;
+  for (const [key, saved] of snapshot) {
+    const current = target[key];
+    if (current instanceof Map && saved instanceof Map) {
+      current.clear();
+      for (const [k, v] of saved) current.set(k, v);
+    } else if (current instanceof Set && saved instanceof Set) {
+      current.clear();
+      for (const v of saved) current.add(v);
+    } else if (Array.isArray(current) && Array.isArray(saved)) {
+      current.length = 0;
+      current.push(...saved);
+    }
+  }
+}
+
 export class MemoryDatabase implements Database {
   private readonly users = new Map<string, UserRow>();
   private readonly passwords = new Map<string, string>();
@@ -244,6 +299,30 @@ export class MemoryDatabase implements Database {
 
   async ping(): Promise<void> {
     return undefined;
+  }
+
+  /**
+   * The in-memory mirror of `PostgresDatabase.transaction`: snapshot every collection,
+   * run `fn` against this same store, and put the snapshot back if `fn` throws. That is
+   * enough to prove the property the real transaction gives us — an interrupted
+   * registration leaves no claimed event code — without a database.
+   *
+   * Two honest limits, neither of which the tests depend on:
+   *  - it is not isolated. A second caller writing while `fn` is awaited would see the
+   *    uncommitted rows, and a rollback would discard its writes too. The test suite is
+   *    sequential, and this class is a test double.
+   *  - the snapshot clones the stored graph one container at a time (maps, sets, arrays
+   *    and plain rows), so an in-place field write like `row.uses += 1` is undone, but a
+   *    `Date` or a typed array held inside a row is shared with the snapshot.
+   */
+  async transaction<T>(fn: (tx: Database) => Promise<T>): Promise<T> {
+    const snapshot = snapshotCollections(this);
+    try {
+      return await fn(this);
+    } catch (error) {
+      restoreCollections(this, snapshot);
+      throw error;
+    }
   }
 
   async findEventBySlug(slug: string): Promise<EventRow | null> {

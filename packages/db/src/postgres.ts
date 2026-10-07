@@ -9,7 +9,7 @@ import {
   STALE_RUNNING_MS,
   THROTTLE_REQUEUE_SECONDS,
 } from "@rephoto/contracts";
-import { isUniqueViolation, type Sql } from "./sql.js";
+import { inTransaction, isUniqueViolation, type Sql } from "./sql.js";
 import {
   AlbumRecognitionLockedError,
   AlbumRecognitionNotAllowedError,
@@ -166,6 +166,19 @@ export class PostgresDatabase implements Database {
     await this.sql`select 1`;
   }
 
+  /**
+   * One `begin`/`commit` on one pooled connection. The handle handed to `fn` is another
+   * `PostgresDatabase` over the transaction's `sql`, so every existing method works
+   * inside it unchanged; nothing else in this class knows a transaction exists.
+   *
+   * `postgres` rolls back and re-throws if `fn` throws, and a connection that dies
+   * mid-transaction is rolled back by Postgres itself — which is the whole point: an
+   * interrupted registration cannot leave a claimed event code behind.
+   */
+  async transaction<T>(fn: (tx: Database) => Promise<T>): Promise<T> {
+    return await inTransaction(this.sql, (tx) => fn(new PostgresDatabase(tx)));
+  }
+
   async findEventBySlug(slug: string): Promise<EventRow | null> {
     const rows = await this.sql<EventSql[]>`
       select ${this.sql.unsafe(EVENT_COLUMNS)} from events where slug = ${slug}
@@ -231,7 +244,7 @@ export class PostgresDatabase implements Database {
     // v6 hardening (agent H): a new password retires every outstanding reset link of that
     // user, in the same transaction. Doing it here rather than at the call sites means no
     // future password-changing route can forget it. See migration 016.
-    await this.sql.begin(async (tx) => {
+    await inTransaction(this.sql, async (tx) => {
       await tx`update users set password_hash = ${passwordHash} where id = ${userId}`;
       await tx`
         update password_reset_tokens set used_at = now()
@@ -668,7 +681,7 @@ export class PostgresDatabase implements Database {
   }
 
   async replaceFaces(photoId: string, eventId: string, faces: FaceInsert[]): Promise<void> {
-    await this.sql.begin(async (tx) => {
+    await inTransaction(this.sql, async (tx) => {
       await tx`delete from gallery_items where face_id in (select id from faces where photo_id = ${photoId})`;
       await tx`delete from faces where photo_id = ${photoId}`;
       for (const face of faces) {
@@ -739,7 +752,7 @@ export class PostgresDatabase implements Database {
     items: Array<{ photoId: string; faceId: string; score: number }>,
     anchors: string[],
   ): Promise<void> {
-    await this.sql.begin(async (tx) => {
+    await inTransaction(this.sql, async (tx) => {
       const rows = await tx<{ id: string }[]>`
         insert into galleries (user_id, event_id, anchor_face_ids, matched_at, notified_at)
         values (${userId}, ${eventId}, ${anchors}::text[], now(), now())
@@ -970,7 +983,7 @@ export class PostgresDatabase implements Database {
   }
 
   async deletePhoto(photoId: string): Promise<void> {
-    await this.sql.begin(async (tx) => {
+    await inTransaction(this.sql, async (tx) => {
       await tx`delete from gallery_items where photo_id = ${photoId}`;
       await tx`delete from faces where photo_id = ${photoId}`;
       await tx`delete from face_index where photo_id = ${photoId}`;
@@ -981,7 +994,7 @@ export class PostgresDatabase implements Database {
   async deleteParticipant(userId: string): Promise<boolean> {
     const user = await this.findUserById(userId);
     if (!user || user.role !== "participant") return false;
-    await this.sql.begin(async (tx) => {
+    await inTransaction(this.sql, async (tx) => {
       await tx`delete from gallery_items where gallery_id in (select id from galleries where user_id = ${userId})`;
       await tx`delete from galleries where user_id = ${userId}`;
       await tx`delete from consents where user_id = ${userId}`;
@@ -1156,7 +1169,7 @@ export class PostgresDatabase implements Database {
   async claimJob(options: ClaimOptions = {}): Promise<ClaimedJob | null> {
     const staleSeconds = STALE_RUNNING_MS / 1000;
     const excluded = [...(options.excludeTypes ?? [])];
-    return this.sql.begin(async (tx) => {
+    return inTransaction(this.sql, async (tx) => {
       await tx`
         update jobs
         set status = 'queued', claimed_at = null
@@ -1352,7 +1365,7 @@ export class PostgresDatabase implements Database {
   }
 
   async deleteGalleriesByEvent(eventId: string): Promise<number> {
-    return this.sql.begin(async (tx) => {
+    return inTransaction(this.sql, async (tx) => {
       await tx`
         delete from gallery_items
         where gallery_id in (select id from galleries where event_id = ${eventId})
@@ -1687,7 +1700,7 @@ export class PostgresDatabase implements Database {
   }
 
   async deleteGallery(userId: string, eventId: string): Promise<boolean> {
-    return this.sql.begin(async (tx) => {
+    return inTransaction(this.sql, async (tx) => {
       const rows = await tx<{ id: string }[]>`
         delete from galleries where user_id = ${userId} and event_id = ${eventId} returning id
       `;
@@ -2297,7 +2310,7 @@ export class PostgresDatabase implements Database {
   async withdrawConsent(input: { userId: string; eventId: string }): Promise<ConsentWithdrawal> {
     const vectors = await this.queryVectorAvailable();
     const faceVectorsTable = await this.faceVectorsAvailable();
-    return this.sql.begin(async (tx) => {
+    return inTransaction(this.sql, async (tx) => {
       const consents = await tx<{ id: string }[]>`
         update consents set withdrawn_at = now()
         where user_id = ${input.userId} and event_id = ${input.eventId} and withdrawn_at is null
