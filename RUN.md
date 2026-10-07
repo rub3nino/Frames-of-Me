@@ -28,6 +28,44 @@ Seeded data: event slug `demo` (`access = open`), admin `admin@rephoto.local`, p
 
 Flow to try: open http://localhost:3000/staff, ask a link as `photographer@rephoto.local` with role «Fotografo» (`/` is the participant form; photographers and admins use `/staff` since v5, same magic link with their role, see `CONTRACTS.md`), read it in Mailpit, click **Entra** on `/verify`, upload on `/upload`; then register a participant on `/registrati` with an event code (`insert into event_codes (event_id, code) select id, 'DEMO-2026' from events where slug = 'demo'`), give consent and send a selfie on `/selfie`, open `/e/demo` — or, for a pre-v6 account, mint a magic link and open `/verify?token=…`. With the fake engine two images with the same average colour are the same person; with the InsightFace engine (below) it is real face matching. The admin console (`admin@rephoto.local` on `/staff` with role «Amministratore», then `/admin`) is described further down.
 
+## MinIO credentials: api and worker are not root (v6 hardening)
+
+`docker-compose.yml` used to hand api and worker `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` as `S3_ACCESS_KEY` / `S3_SECRET_KEY`, and `.env.example` said the same. The credentials sitting in two long-running Node processes — the ones that sign every presigned URL a browser gets — were the MinIO superuser: create and delete any bucket, read the backup copy, add users, rewrite policies. Production stopped doing that (v6 F2); local dev now matches, through the same script.
+
+| | user | may do |
+| --- | --- | --- |
+| api, worker, `pnpm seed:test`, `pnpm ingest` | `rephoto-app` / `rephoto-app-secret` | get / put / delete objects **inside `rephoto` only**, plus the multipart commands |
+| `minio-init`, console on :9001, `mc` | `rephoto` / `rephoto-secret` (root) | everything |
+
+`minio-init` now runs `deploy/scripts/minio-provision.sh` — one provisioning path, shared with production — which creates the bucket, the `rephoto-app` policy (objects of that bucket, no `s3:ListBucket`, no `admin:*`) and the user, and is idempotent on every `up`.
+
+### What to do to an existing local stack
+
+Your `.env` is not in the repo, so nothing broke when you pulled: your api and worker keep working with the root credentials until you do this.
+
+```bash
+# 1. create the application user and policy on the MinIO volume you already have
+#    (idempotent; it does not touch the bucket's objects or the root credentials)
+docker compose up -d --force-recreate minio-init
+docker compose logs minio-init          # ends with "minio-init: done"
+
+# 2. in .env, replace the two S3 lines (they were rephoto / rephoto-secret)
+#    S3_ACCESS_KEY=rephoto-app
+#    S3_SECRET_KEY=rephoto-app-secret
+
+# 3. restart the host processes that read .env
+#    (Ctrl-C and re-run `pnpm dev:api` and `pnpm dev:worker`; `pnpm dev:web` does not use S3)
+```
+
+Then check it: upload a photo on `/upload` and open its thumbnail. Nothing else changes — same bucket, same objects, same presigned URLs.
+
+Notes:
+- **Keep root for the console.** http://localhost:9001 and any `mc` alias stay on `rephoto` / `rephoto-secret`.
+- **`mc ls` / `mc stat` fail as `rephoto-app`**, on purpose: the policy grants no `s3:ListBucket`, so a leaked application key cannot enumerate the bucket. The application never lists — it addresses every object by key — and a Get/Head of a missing key still answers `NoSuchKey`, so `store.get()` / `store.head()` keep returning `null` instead of throwing.
+- **To rotate the key**: set `S3_APP_SECRET_KEY` in the shell (or in a `.env` compose reads), `docker compose up -d --force-recreate minio-init`, put the same value in `.env` as `S3_SECRET_KEY`, restart api and worker.
+- With the `app` profile (`docker compose --profile app up --build`) there is nothing to do: api, worker and migrate read the application user from compose and wait for `minio-init`.
+- `docker-compose.coolify.yml` is **not** covered by this change: there `MINIO_ROOT_USER` is still `S3_ACCESS_KEY`, i.e. the api's own key is root. It is a live deployment and a separate decision.
+
 ## Face engine: `fake` or `insightface`
 
 `fake` needs nothing and is what the tests use. `insightface` is the production engine (`docs/v4-selfhost-spec.md`, `CONTRACTS.md` → *`FACE_ENGINE=insightface`*) and runs locally as soon as compose is up:
