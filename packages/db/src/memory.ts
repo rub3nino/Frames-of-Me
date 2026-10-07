@@ -311,7 +311,10 @@ export class MemoryDatabase implements Database {
 
   async countUploadsSince(userId: string, eventId: string, since: Date): Promise<number> {
     return [...this.uploads.values()].filter(
-      (upload) => upload.photographerId === userId && upload.eventId === eventId && upload.createdAt >= since,
+      (upload) =>
+        (upload.uploaderId ?? upload.photographerId) === userId &&
+        upload.eventId === eventId &&
+        upload.createdAt >= since,
     ).length;
   }
 
@@ -548,14 +551,16 @@ export class MemoryDatabase implements Database {
       .filter((photo) => photo.eventId === eventId && photo.collection === "public" && photo.status === "indexed")
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id))
       .filter((photo) => !input.cursor || photo.createdAt < input.cursor.createdAt || (photo.createdAt.getTime() === input.cursor.createdAt.getTime() && photo.id < input.cursor.photoId))
-      .slice(0, input.limit)
+      // Mirror the postgres JOIN: drop photos without both derivatives BEFORE limiting, so a
+      // page holds up to `limit` renderable items rather than fewer.
       .flatMap((photo) => {
         const thumb = this.derivatives.find((row) => row.photoId === photo.id && row.kind === "thumb");
         const web = this.derivatives.find((row) => row.photoId === photo.id && row.kind === "web");
         return thumb && web
           ? [{ photoId: photo.id, createdAt: photo.createdAt, thumbKey: thumb.s3Key, webKey: web.s3Key, originalReady: photo.originalStatus === "present" }]
           : [];
-      });
+      })
+      .slice(0, input.limit);
   }
 
   async listOwnedPhotos(userId: string, eventId: string, photoIds: string[]): Promise<PhotoRow[]> {

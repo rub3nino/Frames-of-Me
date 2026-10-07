@@ -322,12 +322,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const body = galleryDownloadBodySchema.safeParse(await readJson(c));
     if (!body.success) throw new ApiError(400, MESSAGES.validation);
     const photos = await ownedPhotos(deps, user, event, body.data.photoIds);
-    const urls = await Promise.all(
-      photos.map(async (photo) => ({
-        photoId: photo.id,
-        url: await deps.objects.presignGet(variantKey(photo, body.data.variant)),
-      })),
-    );
+    const urls = await presignVariantUrls(deps, photos, body.data.variant);
     return c.json({ urls });
   });
 
@@ -340,12 +335,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     if (!body.success) throw new ApiError(400, MESSAGES.validation);
     const photos = await deps.db.listPublicPhotosByIds(event.id, body.data.photoIds);
     if (photos.length !== new Set(body.data.photoIds).size) throw new ApiError(404, MESSAGES.notFound);
-    const urls = await Promise.all(
-      photos.map(async (photo) => ({
-        photoId: photo.id,
-        url: await deps.objects.presignGet(variantKey(photo, body.data.variant)),
-      })),
-    );
+    const urls = await presignVariantUrls(deps, photos, body.data.variant);
     return c.json({ urls });
   });
 
@@ -1395,9 +1385,11 @@ async function requireParticipantAccess(
   }
 }
 
-async function ownUpload(deps: AppDeps, id: string, photographerId: string) {
+async function ownUpload(deps: AppDeps, id: string, userId: string) {
   const session = await deps.db.findUploadSession(parseUuid(id));
-  if (!session || session.photographerId !== photographerId) {
+  // Ownership follows uploader_id (the actor who started the upload); photographer_id is kept
+  // only for backwards compatibility and equals uploader_id for rows created before 010.
+  if (!session || (session.uploaderId ?? session.photographerId) !== userId) {
     throw new ApiError(404, MESSAGES.notFound);
   }
   return session;
@@ -1438,6 +1430,20 @@ async function ownedPhotos(
 function variantKey(photo: PhotoRow, variant: DownloadVariant): string {
   if (variant === "web" || photo.originalStatus === "pending") return objectKeys.web(photo.id);
   return photo.originalKey;
+}
+
+/** Presigned download URLs for the given photos, in request order. */
+function presignVariantUrls(
+  deps: AppDeps,
+  photos: PhotoRow[],
+  variant: DownloadVariant,
+): Promise<Array<{ photoId: string; url: string }>> {
+  return Promise.all(
+    photos.map(async (photo) => ({
+      photoId: photo.id,
+      url: await deps.objects.presignGet(variantKey(photo, variant)),
+    })),
+  );
 }
 
 /** The extension follows the object actually served (see `variantKey`). */

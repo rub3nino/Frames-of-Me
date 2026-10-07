@@ -334,6 +334,8 @@ type AttachCandidate = { faceId: string; score: number };
 async function attachPhoto(photoId: string, deps: WorkerDeps): Promise<void> {
   const photo = await deps.db.findPhoto(photoId);
   if (!photo) return;
+  // Defensive: `index` never enqueues `attach` for a public photo (it short-circuits first), so
+  // this only matters if a reprocess path ever schedules one — public photos have no faces.
   if (photo.collection === "public") return;
   const faces = await deps.db.findFaceRowsByPhoto(photo.id);
   if (faces.length === 0) return;

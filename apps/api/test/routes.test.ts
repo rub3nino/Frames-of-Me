@@ -8,6 +8,7 @@ import {
   envSchema,
   galleryResponseSchema,
   objectKeys,
+  PUBLIC_UPLOAD_RATE_LIMIT,
   SESSION_COOKIE_NAME,
   UPLOAD_MAX_BYTES,
   uploadCompleteResponseSchema,
@@ -2158,4 +2159,132 @@ test("BOOTSTRAP_ADMINS upserts admins at boot", async () => {
   assert.equal(parsed.BOOTSTRAP_ADMINS, "x@example.com");
   assert.equal(parsed.RATE_LIMIT_EXEMPT_IPS, "10.0.0.0/8");
   assert.equal(parsed.MAGIC_LINK_PER_IP, 0);
+});
+
+// ---- public collection ----------------------------------------------------------------------
+
+/** Inserts an indexed public photo (with thumb+web derivatives) owned by the seeded photographer. */
+async function seedPublicPhoto(h: Harness): Promise<string> {
+  const photographer = await h.db.findUserByEmailRole("photographer@rephoto.local", "photographer");
+  assert.ok(photographer);
+  const photoId = randomUUID();
+  const bytes = Buffer.from(`pub-${photoId}`);
+  await h.db.insertPhoto({
+    id: photoId,
+    eventId: h.event.id,
+    photographerId: photographer.id,
+    collection: "public",
+    sha256: sha256(bytes),
+    originalKey: objectKeys.original(h.event.id, photoId),
+    contentType: "image/jpeg",
+    bytes: bytes.byteLength,
+  });
+  await h.db.upsertDerivative({ photoId, kind: "thumb", s3Key: objectKeys.thumb(photoId) });
+  await h.db.upsertDerivative({ photoId, kind: "web", s3Key: objectKeys.web(photoId) });
+  await h.db.setPhotoIndexed(photoId);
+  return photoId;
+}
+
+test("public-gallery lists only indexed public photos and paginates by cursor without gaps", async () => {
+  const h = await harness();
+  const { cookie } = await participantCookie(h, "viewer@example.com");
+  const publicIds = new Set([await seedPublicPhoto(h), await seedPublicPhoto(h), await seedPublicPhoto(h)]);
+
+  // An official indexed photo and a public-but-not-indexed photo must never show up.
+  const official = await seedGallery(h, (await participantCookie(h, "owner@example.com")).id, 1);
+  const pendingPublic = randomUUID();
+  const pb = Buffer.from(`pending-${pendingPublic}`);
+  await h.db.insertPhoto({
+    id: pendingPublic,
+    eventId: h.event.id,
+    photographerId: (await h.db.findUserByEmailRole("photographer@rephoto.local", "photographer"))!.id,
+    collection: "public",
+    sha256: sha256(pb),
+    originalKey: objectKeys.original(h.event.id, pendingPublic),
+    contentType: "image/jpeg",
+    bytes: pb.byteLength,
+  });
+
+  type Page = { items: Array<{ photoId: string }>; nextCursor: string | null; limit: number };
+  const full = (await (await h.app.request(get(`/v1/events/${h.event.slug}/public-gallery?limit=50`, cookie))).json()) as Page;
+  assert.equal(full.items.length, 3, "only the three indexed public photos");
+  assert.deepEqual(new Set(full.items.map((i) => i.photoId)), publicIds);
+  assert.equal(full.items.some((i) => i.photoId === official[0]?.photoId), false, "official photo excluded");
+  assert.equal(full.items.some((i) => i.photoId === pendingPublic), false, "non-indexed public photo excluded");
+  assert.equal(full.nextCursor, null);
+
+  // Cursor paging must reproduce the canonical order in chunks, with no overlap or dropped rows.
+  const page1 = (await (await h.app.request(get(`/v1/events/${h.event.slug}/public-gallery?limit=2`, cookie))).json()) as Page;
+  assert.equal(page1.items.length, 2);
+  assert.ok(page1.nextCursor);
+  const page2 = (await (await h.app.request(
+    get(`/v1/events/${h.event.slug}/public-gallery?limit=2&cursor=${encodeURIComponent(page1.nextCursor!)}`, cookie),
+  )).json()) as Page;
+  assert.equal(page2.items.length, 1);
+  assert.equal(page2.nextCursor, null);
+  assert.deepEqual(
+    [...page1.items, ...page2.items].map((i) => i.photoId),
+    full.items.map((i) => i.photoId),
+  );
+});
+
+test("public-gallery/download presigns public photos but 404s on any non-public id (no IDOR)", async () => {
+  const h = await harness();
+  const { cookie } = await participantCookie(h, "viewer@example.com");
+  const a = await seedPublicPhoto(h);
+  const b = await seedPublicPhoto(h);
+  // An official photo id must not be reachable through the public download route.
+  const official = (await seedGallery(h, (await participantCookie(h, "owner@example.com")).id, 1))[0]!.photoId;
+
+  const leak = await h.app.request(
+    json("POST", `/v1/events/${h.event.slug}/public-gallery/download`, { photoIds: [a, official], variant: "web" }, { cookie }),
+  );
+  assert.equal(leak.status, 404, "mixing in an official id is refused wholesale");
+
+  const ok = await h.app.request(
+    json("POST", `/v1/events/${h.event.slug}/public-gallery/download`, { photoIds: [a, b], variant: "web" }, { cookie }),
+  );
+  assert.equal(ok.status, 200);
+  const body = (await ok.json()) as { urls: Array<{ photoId: string; url: string }> };
+  assert.deepEqual(new Set(body.urls.map((u) => u.photoId)), new Set([a, b]));
+});
+
+test("uploads/init: a participant may start a public upload but not an official one", async () => {
+  const h = await harness();
+  const { cookie } = await participantCookie(h, "contributor@example.com");
+  const base = {
+    eventId: h.event.id,
+    filename: "a.jpg",
+    contentType: "image/jpeg" as const,
+    sha256: "a".repeat(64),
+    bytes: 1234,
+  };
+
+  const official = await h.app.request(json("POST", "/v1/uploads/init", base, { cookie }));
+  assert.equal(official.status, 403, "official (default) uploads stay photographer-only");
+
+  const pub = await h.app.request(json("POST", "/v1/uploads/init", { ...base, collection: "public" }, { cookie }));
+  assert.equal(pub.status, 201);
+  const session = await h.db.findUploadSession(((await pub.json()) as { id: string }).id);
+  assert.equal(session?.collection, "public");
+});
+
+test("public uploads are rate limited per participant per event", async () => {
+  const h = await harness();
+  const { cookie } = await participantCookie(h, "burst@example.com");
+  const body = (n: number) => ({
+    eventId: h.event.id,
+    filename: `f${n}.jpg`,
+    contentType: "image/jpeg" as const,
+    sha256: "b".repeat(64),
+    bytes: 1000 + n,
+    collection: "public" as const,
+  });
+  for (let n = 0; n < PUBLIC_UPLOAD_RATE_LIMIT.max; n += 1) {
+    const res = await h.app.request(json("POST", "/v1/uploads/init", body(n), { cookie }));
+    assert.equal(res.status, 201, `init ${n} within the window`);
+  }
+  const blocked = await h.app.request(json("POST", "/v1/uploads/init", body(999), { cookie }));
+  assert.equal(blocked.status, 429);
+  assert.deepEqual(await blocked.json(), { error: MESSAGES.rateLimited });
 });

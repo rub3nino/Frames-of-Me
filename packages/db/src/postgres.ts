@@ -573,8 +573,8 @@ export class PostgresDatabase implements Database {
       join derivatives t on t.photo_id = p.id and t.kind = 'thumb'
       join derivatives w on w.photo_id = p.id and w.kind = 'web'
       where p.event_id = ${eventId} and p.collection = 'public' and p.status = 'indexed'
-        ${input.cursor ? this.sql`and (p.created_at, p.id) < (${input.cursor.createdAt}, ${input.cursor.photoId}::uuid)` : this.sql``}
-      order by p.created_at desc, p.id desc
+        ${input.cursor ? this.sql`and (date_trunc('milliseconds', p.created_at), p.id) < (${input.cursor.createdAt}, ${input.cursor.photoId}::uuid)` : this.sql``}
+      order by date_trunc('milliseconds', p.created_at) desc, p.id desc
       limit ${input.limit}
     `;
     return rows.map((row) => ({
