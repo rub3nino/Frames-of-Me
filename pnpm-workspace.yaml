@@ -5,11 +5,12 @@ packages:
   - "apps/*"
   - "packages/*"
 
-# Dependency install/build scripts pnpm is allowed to run (pnpm blocks all by default).
-# esbuild backs tsx (the api/worker TypeScript runtime); sharp is the worker's native image codec.
-onlyBuiltDependencies:
-  - esbuild
-  - sharp
+# Dependency install/build scripts pnpm is allowed to run (pnpm blocks all by default and
+# fails the install on any unlisted one). esbuild backs tsx (the api/worker TypeScript
+# runtime); sharp is the worker's native image codec. Both must build or the images break.
+allowBuilds:
+  esbuild: true
+  sharp: true
 
 minimumReleaseAgeExclude:
   - '@aws-sdk/client-cloudwatch@3.1147.0'

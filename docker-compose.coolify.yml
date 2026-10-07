@@ -1,0 +1,260 @@
+name: rephoto
+
+# RePhoto on Coolify (project "RePhoto", environment "test"). Public exposure is through a
+# Cloudflare Tunnel -> Coolify's Traefik, so NO service publishes a host port: each one only
+# `expose`s its internal port and you map the FQDN in Coolify's UI (Service -> Domains).
+#
+#   FQDN mapping to set in Coolify:
+#     web          framesofme.com, www.framesofme.com   -> container port 3000
+#     api          api.framesofme.com                   -> container port 8787
+#     minio        s3.framesofme.com                    -> container port 9000   (browser presigned URLs)
+#     mailpit      mail.framesofme.com                  -> container port 8025   (behind Cloudflare Access)
+#
+# Secrets and URLs come from Coolify's Environment Variables (see .env.example). The ${VAR:-default}
+# defaults are non-secret dev values so `docker compose -f docker-compose.coolify.yml up` also works
+# locally for a smoke test; override every secret (SESSION_SECRET, S3_SECRET_KEY, POSTGRES_PASSWORD)
+# in Coolify. No real secret is committed here.
+
+x-app-env: &app_env
+  DATABASE_URL: ${DATABASE_URL:-postgres://rephoto:rephoto@postgres:5432/rephoto}
+  DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-10}
+  # The api signs presigned URLs against S3_ENDPOINT; it must be the public host the BROWSER uses
+  # (SigV4 includes the host), i.e. https://s3.framesofme.com in Coolify.
+  S3_ENDPOINT: ${S3_ENDPOINT:-http://minio:9000}
+  S3_BUCKET: ${S3_BUCKET:-rephoto}
+  S3_ACCESS_KEY: ${S3_ACCESS_KEY:-rephoto}
+  S3_SECRET_KEY: ${S3_SECRET_KEY:-rephoto-secret}
+  S3_REGION: ${S3_REGION:-eu-central-1}
+  S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE:-true}
+  SESSION_SECRET: ${SESSION_SECRET:-dev-only-change-me-please-32chars}
+  FACE_ENGINE: ${FACE_ENGINE:-fake}
+  FACE_SERVICE_URL: ${FACE_SERVICE_URL:-http://face-service:8090}
+  AWS_REGION: ${AWS_REGION:-eu-central-1}
+  REKOGNITION_COLLECTION_PREFIX: ${REKOGNITION_COLLECTION_PREFIX:-rephoto-}
+  MAIL_TRANSPORT: ${MAIL_TRANSPORT:-smtp}
+  SMTP_HOST: ${SMTP_HOST:-mailpit}
+  SMTP_PORT: ${SMTP_PORT:-1025}
+  SMTP_FROM: ${SMTP_FROM:-noreply@framesofme.com}
+  WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:3000}
+  API_ORIGIN: ${API_ORIGIN:-http://api:8787}
+  # Cloudflare + Traefik sit in front of the api: the client IP is 2 hops from the end of x-forwarded-for.
+  TRUSTED_PROXY_HOPS: ${TRUSTED_PROXY_HOPS:-2}
+  BOOTSTRAP_ADMINS: ${BOOTSTRAP_ADMINS:-}
+
+services:
+  postgres:
+    # pgvector-enabled Postgres 16 (needed when FACE_ENGINE=insightface; harmless otherwise).
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-rephoto}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rephoto}
+      POSTGRES_DB: ${POSTGRES_DB:-rephoto}
+    expose:
+      - "5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rephoto} -d ${POSTGRES_DB:-rephoto}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
+
+  minio:
+    # FQDN in Coolify: s3.framesofme.com -> 9000 (the browser PUTs/GETs presigned URLs here).
+    image: cgr.dev/chainguard/minio:latest
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-rephoto}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-rephoto-secret}
+      # Allow the browser on the web origin to PUT directly to presigned URLs.
+      MINIO_API_CORS_ALLOW_ORIGIN: ${WEB_ORIGIN:-http://localhost:3000}
+    expose:
+      - "9000"
+      - "9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "/usr/bin/mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
+
+  minio-init:
+    # Creates the bucket and a lifecycle rule that expires selfie objects (selfies/*) after 1 day,
+    # so any kept selfie (KEEP_SELFIES) is deleted automatically. Runs once and exits.
+    image: cgr.dev/chainguard/minio:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        /usr/bin/mc alias set local http://minio:9000 "${S3_ACCESS_KEY:-rephoto}" "${S3_SECRET_KEY:-rephoto-secret}"
+        /usr/bin/mc mb --ignore-existing local/${S3_BUCKET:-rephoto}
+        /usr/bin/mc ilm rule add --expire-days 1 --prefix "selfies/" local/${S3_BUCKET:-rephoto} || \
+        /usr/bin/mc ilm rule add --expiry-days 1 --prefix "selfies/" local/${S3_BUCKET:-rephoto} || true
+    restart: "no"
+
+  mailpit:
+    # FQDN in Coolify: mail.framesofme.com -> 8025 (UI, behind Cloudflare Access). SMTP is 1025 (internal).
+    # Swap for a real SMTP provider in production (set MAIL_* / SMTP_* and drop this service).
+    image: axllent/mailpit:latest
+    expose:
+      - "1025"
+      - "8025"
+    volumes:
+      - mailpit_data:/data
+    environment:
+      MP_DATA_FILE: /data/mailpit.db
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 256m
+
+  migrate:
+    # One-shot: runs the schema migrations and seeds the demo event, then exits 0. api and worker
+    # wait for it (service_completed_successfully), so the first boot is deterministic and the
+    # worker never migrates. SEED_DEMO=true is set HERE ONLY (creates the demo event + passwordless
+    # demo users); it is left unset on api/worker so no known demo password is seeded on a public site.
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    command: ["node", "--import", "tsx", "/app/packages/db/src/seed.ts"]
+    environment:
+      <<: *app_env
+      NODE_ENV: development
+      SEED_DEMO: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512m
+
+  api:
+    # FQDN in Coolify: api.framesofme.com -> 8787. /health must return 200.
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    environment: *app_env
+    expose:
+      - "8787"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
+
+  worker:
+    # No FQDN: not a server. Processes jobs; Docker/Coolify restart it on exit.
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    environment:
+      <<: *app_env
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
+      WORKER_PUBLISH_METRICS: ${WORKER_PUBLISH_METRICS:-false}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2g
+
+  web:
+    # FQDN in Coolify: framesofme.com + www.framesofme.com -> 3000. The web app proxies /v1/* to the api.
+    # NEXT_PUBLIC_* are inlined at build time: set them as build args (Coolify: Build Variables).
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        NEXT_PUBLIC_EVENT_SLUG: ${NEXT_PUBLIC_EVENT_SLUG:-demo}
+        NEXT_PUBLIC_MEDIA_ORIGINS: ${NEXT_PUBLIC_MEDIA_ORIGINS:-http://localhost:9000}
+        NEXT_PUBLIC_WEB_ORIGIN: ${NEXT_PUBLIC_WEB_ORIGIN:-http://localhost:3000}
+    environment:
+      API_PROXY_TARGET: ${API_PROXY_TARGET:-http://api:8787}
+      NEXT_PUBLIC_EVENT_SLUG: ${NEXT_PUBLIC_EVENT_SLUG:-demo}
+      NEXT_PUBLIC_MEDIA_ORIGINS: ${NEXT_PUBLIC_MEDIA_ORIGINS:-http://localhost:9000}
+      NEXT_PUBLIC_WEB_ORIGIN: ${NEXT_PUBLIC_WEB_ORIGIN:-http://localhost:3000}
+    expose:
+      - "3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
+
+  # Optional: self-hosted face engine (InsightFace on CPU). Only needed when FACE_ENGINE=insightface.
+  # The first build downloads the model pack (~280 MB). Remove this service when using FACE_ENGINE=fake.
+  face-service:
+    build:
+      context: apps/face-service
+    expose:
+      - "8090"
+    environment:
+      ONNX_THREADS: ${ONNX_THREADS:-4}
+      DET_SIZE: ${FACE_DET_SIZE:-1024}
+      DET_LONG_EDGE: ${FACE_DET_LONG_EDGE:-2560}
+      UVICORN_WORKERS: ${FACE_SERVICE_WORKERS:-1}
+      MODEL_CONCURRENCY: ${FACE_MODEL_CONCURRENCY:-2}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=4).status == 200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 3g
+
+volumes:
+  postgres_data:
+  minio_data:
+  mailpit_data:

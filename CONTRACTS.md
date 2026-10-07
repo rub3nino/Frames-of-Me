@@ -8,19 +8,21 @@ Primary deployment: one self-hosted VPS (`deploy/`), no AWS: InsightFace on CPU 
 
 ## Monorepo
 
-npm workspaces (`apps/*`, `packages/*`):
+pnpm workspaces (`apps/*`, `packages/*`; the package manager is pnpm, pinned in `package.json#packageManager` and run through Corepack — the separate `frontend/` monorepo is not part of this workspace):
 
 | Path | Package | Role |
 | --- | --- | --- |
-| `apps/api` | `@rephoto/api` | Hono on Node, port **8787**. HTTP only. Runs migrations and the demo seed at boot. |
-| `apps/worker` | `@rephoto/worker` | Polls Postgres `jobs`, `WORKER_CONCURRENCY` jobs in flight. No HTTP server. Runs migrations and the demo seed at boot. |
+| `apps/api` | `@rephoto/api` | Hono on Node, port **8787**. HTTP only. Upserts `BOOTSTRAP_ADMINS` at boot; does **not** migrate or seed (see below). |
+| `apps/worker` | `@rephoto/worker` | Polls Postgres `jobs`, `WORKER_CONCURRENCY` jobs in flight. No HTTP server. Never migrates or seeds. |
 | `apps/web` | `@rephoto/web` | Next.js, port **3000**, Italian UI, `output: "standalone"`. Proxies `/v1/*` to the API. |
 | `packages/contracts` | `@rephoto/contracts` | Zod schemas (HTTP, jobs, env), `FaceEngine` input **types**, `objectKeys`, `rekognitionCollectionId`, `DEFAULT_MATCH_THRESHOLD`. No AWS SDK. |
 | `packages/db` | `@rephoto/db` | SQL migrations, `migrate`, `seedDemo`, `PostgresDatabase`, `MemoryDatabase` (tests). |
 | `packages/face-engine` | `@rephoto/face-engine` | `FaceEngine` implementations (`fake`, `rekognition`, `insightface`) and the per-process rate limiter. The only package that imports the Rekognition SDK; the only one that talks to `face_vectors`. |
-| `apps/face-service` | (Python, not an npm workspace) | FastAPI + onnxruntime + insightface on CPU, port **8090**. Embeddings and the optional silent-face liveness check. No persistence. See *`FACE_ENGINE=insightface`*. |
+| `apps/face-service` | (Python, not a pnpm workspace) | FastAPI + onnxruntime + insightface on CPU, port **8090**. Embeddings and the optional silent-face liveness check. No persistence. See *`FACE_ENGINE=insightface`*. |
 
-Outside the workspaces: `deploy/` (production Compose stack, Caddyfile, scripts; `compose.test.yml` + `scripts/status.sh` + `scripts/reset-event.sh` for the test campaign), `infra/cdk` (AWS stack, kept as an alternative, own `package.json`), `scripts/loadtest` (k6), `scripts/ingest` (server-side importer, `npm run ingest`), `scripts/seed-test.ts` (`npm run seed:test`), `scripts/eval` (Python: `offline-search.py`, `evaluate.py`, `synth.py`, the null-selfie protocol).
+Outside the workspaces: `deploy/` (production Compose stack, Caddyfile, scripts; `compose.test.yml` + `scripts/status.sh` + `scripts/reset-event.sh` for the test campaign), `infra/cdk` (AWS stack, kept as an alternative, own `package.json`), `scripts/loadtest` (k6), `scripts/ingest` (server-side importer, `pnpm ingest`), `scripts/seed-test.ts` (`pnpm seed:test`), `scripts/eval` (Python: `offline-search.py`, `evaluate.py`, `synth.py`, the null-selfie protocol).
+
+**Migrations and the demo seed run once, outside the long-running processes** (so a multi-replica/container first boot is deterministic and the worker never migrates): in local dev via `pnpm db:seed`, and in the container stacks via the one-shot `migrate` service (`docker-compose.yml` `app` profile and `docker-compose.coolify.yml`) that runs `packages/db/src/seed.ts` (migrate + `seedDemo`) and exits; api and worker start only after it completes (`service_completed_successfully`). `migrate()` is still advisory-locked and idempotent.
 
 Callers depend on `FaceEngine` from `@rephoto/face-engine` (`packages/face-engine/src/types.ts`). Swapping another engine in later means a new class in that package plus a `FACE_ENGINE` value. `@rephoto/contracts` does not declare a second engine interface.
 
@@ -311,7 +313,7 @@ No AWS calls.
 | `MAGIC_LINK_PER_IP` | `20` | v5. Integer ≥ 0. Magic links per client IP per hour; `0` disables the check |
 | `SELFIE_MAX_PER_HOUR` | `5` | v5. Integer ≥ 0. Selfies per participant per hour; `0` disables the check |
 | `RATE_LIMIT_EXEMPT_IPS` | empty | v5. Comma-separated IPs or CIDRs (IPv4, IPv4-mapped IPv6, IPv6) whose requests skip both limits above. An entry that does not parse never matches |
-| `BOOTSTRAP_ADMINS` | empty | v5. Comma-separated e-mails upserted as `admin` users when the **API** boots (after the demo seed; entries without `@` are skipped). The worker does not read it |
+| `BOOTSTRAP_ADMINS` | empty | v5. Comma-separated e-mails upserted as `admin` users when the **API** boots (against the already-migrated database; entries without `@` are skipped). The worker does not read it |
 | `SEED_DEMO` | unset locally | `false`, or `NODE_ENV=production`, skips the demo seed |
 | `WEB_ORIGIN` | `http://localhost:3000` | Base of e-mailed links; CORS allow-origin; `Origin` check on ZIP; cookie `Secure` when `https:` |
 | `API_ORIGIN` | `http://localhost:8787` | |
@@ -492,7 +494,7 @@ Clarifications (column names unchanged):
 - `magic_links.ip` is null when the client IP is `unknown`.
 - `events.access = 'list'` restricts the selfie to e-mails in `event_participants`.
 
-Seed (`npm run db:seed`, idempotent):
+Seed (`pnpm db:seed`, idempotent):
 
 - Event slug `demo`, name `Demo`, `retention_days` 90, `access` `open`, id `00000000-0000-4000-8000-000000000001`.
 - Admin user `admin@rephoto.local`, id `00000000-0000-4000-8000-000000000002`.
@@ -500,7 +502,7 @@ Seed (`npm run db:seed`, idempotent):
 - Invite for that photographer e-mail + demo event, role `photographer`, `used_at` set (already accepted), id `00000000-0000-4000-8000-000000000004`.
 - `event_photographers (demo event, seeded photographer)`.
 
-API and worker boot call `seedDemo()`. That insert is skipped when `NODE_ENV=production` or `SEED_DEMO=false`. Local compose does not set either, so the seed still runs. `npm run db:seed` uses the same guard. The API then calls `bootstrapAdmins(db, BOOTSTRAP_ADMINS)` (idempotent upsert of admin users). `npm run seed:test` (`scripts/seed-test.ts`, v5) is the test-campaign seed: events, an admin, N photographers in `event_photographers`, M participants with a consent row, and pre-minted 30-day sessions written as cookie files (`cookies-*.txt`, `users-<slug>.csv` mode 0600, `subjects.csv`); `--purge-users` removes what it created.
+The one-shot `migrate` service (and `pnpm db:seed`) call `seedDemo()`; the api and worker boot do **not**. That insert is skipped when `NODE_ENV=production` or `SEED_DEMO=false`, so the container stacks set `SEED_DEMO=true` (and a non-production `NODE_ENV`) on the `migrate` service only. The API still calls `bootstrapAdmins(db, BOOTSTRAP_ADMINS)` at boot (idempotent upsert of admin users). `pnpm seed:test` (`scripts/seed-test.ts`, v5) is the test-campaign seed: events, an admin, N photographers in `event_photographers`, M participants with a consent row, and pre-minted 30-day sessions written as cookie files (`cookies-*.txt`, `users-<slug>.csv` mode 0600, `subjects.csv`); `--purge-users` removes what it created.
 
 ## HTTP
 
