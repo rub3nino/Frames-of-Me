@@ -1,16 +1,28 @@
 import { inflateSync } from "node:zlib";
 import type {
+  EmbedSelfieInput,
+  EmbedSelfieResult,
   FaceEngine,
   ImageContentType,
   IndexedFace,
   IndexPhotoInput,
+  SearchByVectorInput,
   SearchFacesInput,
   SearchHit,
   SearchInput,
+  VectorHit,
 } from "./types.ts";
 
 const FULL_FRAME = { left: 0, top: 0, width: 1, height: 1 } as const;
 const PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10];
+/**
+ * Fake embeddings are one-hot over 512 dimensions: the colour key quantized to 8 levels per
+ * channel (`(r>>5)*64 + (g>>5)*8 + (b>>5)`). Two keys in the same bucket have cosine 1, any
+ * other pair has cosine 0, so the worker's thresholds behave like with a real engine.
+ */
+export const FAKE_EMBEDDING_DIMENSIONS = 512;
+/** Pixel frame the fake reports for a selfie: large enough for every size gate. */
+const FAKE_SELFIE_FRAME = 1024;
 
 export interface FaceIndexRecord {
   externalFaceId: string;
@@ -266,6 +278,7 @@ export class FakeFaceEngine implements FaceEngine {
       externalFaceId: row.externalFaceId,
       photoId: row.photoId,
       similarity: 99,
+      cosine: 1,
     }));
   }
 
@@ -279,7 +292,51 @@ export class FakeFaceEngine implements FaceEngine {
         externalFaceId: row.externalFaceId,
         photoId: row.photoId,
         similarity: 99,
+        cosine: 1,
       }));
+  }
+
+  /** One full-frame face per image (none for an empty image), with the colour-key embedding. */
+  async embedSelfie(input: EmbedSelfieInput): Promise<EmbedSelfieResult> {
+    const color = readQuantizedColor(input.imageBytes, input.contentType);
+    if (!color) return { faces: [], width: FAKE_SELFIE_FRAME, height: FAKE_SELFIE_FRAME };
+    return {
+      width: FAKE_SELFIE_FRAME,
+      height: FAKE_SELFIE_FRAME,
+      faces: [
+        {
+          bbox: { ...FULL_FRAME },
+          score: 0.99,
+          quality: 1,
+          embedding: fakeEmbedding(color.r, color.g, color.b),
+        },
+      ],
+    };
+  }
+
+  /** Every indexed face whose colour key falls in the vector's bucket (cosine 1). */
+  async searchByVector(input: SearchByVectorInput): Promise<VectorHit[]> {
+    const bucket = fakeBucket(input.embedding);
+    if (bucket === null || (input.minCosine ?? 0) > 1) return [];
+    const hits: VectorHit[] = [];
+    for (const key of bucketKeys(bucket)) {
+      const rows = await this.store.findByColor(input.eventId, key.r, key.g, key.b);
+      for (const row of rows) {
+        hits.push({
+          externalFaceId: row.externalFaceId,
+          photoId: row.photoId,
+          similarity: 99,
+          cosine: 1,
+        });
+      }
+    }
+    return input.maxFaces === undefined ? hits : hits.slice(0, input.maxFaces);
+  }
+
+  async faceEmbedding(input: SearchFacesInput): Promise<number[] | null> {
+    const row = await this.store.findById(input.externalFaceId);
+    if (!row || row.eventId !== input.eventId) return null;
+    return fakeEmbedding(row.r, row.g, row.b);
   }
 
   async deleteFaces(eventId: string, externalFaceIds: string[]): Promise<void> {
@@ -290,6 +347,41 @@ export class FakeFaceEngine implements FaceEngine {
   async deleteCollection(eventId: string): Promise<void> {
     await this.store.deleteEvent(eventId);
   }
+}
+
+/** See {@link FAKE_EMBEDDING_DIMENSIONS}. */
+export function fakeEmbedding(r: number, g: number, b: number): number[] {
+  const vector = new Array<number>(FAKE_EMBEDDING_DIMENSIONS).fill(0);
+  vector[((r >> 5) << 6) + ((g >> 5) << 3) + (b >> 5)] = 1;
+  return vector;
+}
+
+/** Index of the largest component, or null for an empty / zero vector. */
+function fakeBucket(embedding: readonly number[]): number | null {
+  let best = -1;
+  let bestValue = 0;
+  for (let index = 0; index < Math.min(embedding.length, FAKE_EMBEDDING_DIMENSIONS); index += 1) {
+    const value = embedding[index] ?? 0;
+    if (value > bestValue) {
+      bestValue = value;
+      best = index;
+    }
+  }
+  return best < 0 ? null : best;
+}
+
+/** The eight 16-level colour keys (the store's granularity) inside one 32-level bucket. */
+function bucketKeys(bucket: number): Array<{ r: number; g: number; b: number }> {
+  const r = (bucket >> 6) << 5;
+  const g = ((bucket >> 3) & 7) << 5;
+  const b = (bucket & 7) << 5;
+  const keys: Array<{ r: number; g: number; b: number }> = [];
+  for (const dr of [0, 16]) {
+    for (const dg of [0, 16]) {
+      for (const db of [0, 16]) keys.push({ r: r + dr, g: g + dg, b: b + db });
+    }
+  }
+  return keys;
 }
 
 type FaceIndexSql = {

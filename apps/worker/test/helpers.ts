@@ -13,8 +13,10 @@ import type {
 import { envSchema, objectKeys, SESSION_COOKIE_NAME, type Env } from "@rephoto/contracts";
 import type { MemoryDatabase } from "@rephoto/db";
 import type {
+  EmbedSelfieInput,
   FaceEngine,
   IndexPhotoInput,
+  SearchByVectorInput,
   SearchFacesInput,
   SearchInput,
 } from "../../../packages/face-engine/src/types.ts";
@@ -126,10 +128,14 @@ export class RecordingMailer implements Mailer {
 export type TrackingEngine = FaceEngine & {
   indexedPhotoIds: string[];
   indexedBytes: Uint8Array[];
+  /** Selfie bytes the engine received, through `search` or `embedSelfie`. */
   searchBytes: Uint8Array[];
   searchedFaceIds: string[];
   deletedFaceIds: string[][];
   deletedCollections: string[];
+  /** v5: `embedSelfie` calls and `searchByVector` inputs, when the inner engine has them. */
+  selfieEmbeds: number;
+  vectorSearches: SearchByVectorInput[];
 };
 
 export function trackingEngine(inner: FaceEngine): TrackingEngine {
@@ -139,13 +145,19 @@ export function trackingEngine(inner: FaceEngine): TrackingEngine {
   const searchedFaceIds: string[] = [];
   const deletedFaceIds: string[][] = [];
   const deletedCollections: string[] = [];
-  return {
+  const vectorSearches: SearchByVectorInput[] = [];
+  const embedSelfie = inner.embedSelfie?.bind(inner);
+  const searchByVector = inner.searchByVector?.bind(inner);
+  const faceEmbedding = inner.faceEmbedding?.bind(inner);
+  const engine: TrackingEngine = {
     indexedPhotoIds,
     indexedBytes,
     searchBytes,
     searchedFaceIds,
     deletedFaceIds,
     deletedCollections,
+    selfieEmbeds: 0,
+    vectorSearches,
     indexPhoto(input: IndexPhotoInput) {
       indexedPhotoIds.push(input.photoId);
       indexedBytes.push(input.imageBytes);
@@ -155,6 +167,24 @@ export function trackingEngine(inner: FaceEngine): TrackingEngine {
       searchBytes.push(input.imageBytes);
       return inner.search(input);
     },
+    ...(embedSelfie
+      ? {
+          embedSelfie(input: EmbedSelfieInput) {
+            engine.selfieEmbeds += 1;
+            searchBytes.push(input.imageBytes);
+            return embedSelfie(input);
+          },
+        }
+      : {}),
+    ...(searchByVector
+      ? {
+          searchByVector(input: SearchByVectorInput) {
+            vectorSearches.push(input);
+            return searchByVector(input);
+          },
+        }
+      : {}),
+    ...(faceEmbedding ? { faceEmbedding } : {}),
     searchFaces(input: SearchFacesInput) {
       searchedFaceIds.push(input.externalFaceId);
       return inner.searchFaces(input);
@@ -168,6 +198,7 @@ export function trackingEngine(inner: FaceEngine): TrackingEngine {
       return inner.deleteCollection(eventId);
     },
   };
+  return engine;
 }
 
 /** A face engine whose every method rejects, for tests that must not touch it. */

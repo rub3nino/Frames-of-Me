@@ -1,12 +1,16 @@
 import type {
+  EmbedSelfieInput,
+  EmbedSelfieResult,
   FaceEngine,
   IndexedFace,
   IndexPhotoInput,
   LivenessInput,
   LivenessResult,
+  SearchByVectorInput,
   SearchFacesInput,
   SearchHit,
   SearchInput,
+  VectorHit,
 } from "./types.ts";
 
 /**
@@ -71,14 +75,18 @@ export interface RateLimitOptions {
 
 /**
  * Per-process throttle in front of a remote engine. `indexPhoto` uses the index
- * bucket; `search`, `searchFaces` and `checkLiveness` share the search bucket.
- * Deletes are not limited. With several worker instances the effective quota
- * is the sum. `checkLiveness` is exposed only when the inner engine has it.
+ * bucket; `search`, `searchFaces`, `searchByVector`, `embedSelfie` and `checkLiveness`
+ * share the search bucket. Deletes and `faceEmbedding` (a local row read) are not
+ * limited. With several worker instances the effective quota is the sum. The optional
+ * methods are exposed only when the inner engine has them.
  */
 export class RateLimitedFaceEngine implements FaceEngine {
   private readonly indexBucket: TokenBucket;
   private readonly searchBucket: TokenBucket;
   readonly checkLiveness?: (input: LivenessInput) => Promise<LivenessResult>;
+  readonly embedSelfie?: (input: EmbedSelfieInput) => Promise<EmbedSelfieResult>;
+  readonly searchByVector?: (input: SearchByVectorInput) => Promise<VectorHit[]>;
+  readonly faceEmbedding?: (input: SearchFacesInput) => Promise<number[] | null>;
 
   constructor(
     private readonly inner: FaceEngine,
@@ -93,6 +101,22 @@ export class RateLimitedFaceEngine implements FaceEngine {
         return liveness(input);
       };
     }
+    const embedSelfie = inner.embedSelfie?.bind(inner);
+    if (embedSelfie) {
+      this.embedSelfie = async (input) => {
+        await this.searchBucket.acquire();
+        return embedSelfie(input);
+      };
+    }
+    const searchByVector = inner.searchByVector?.bind(inner);
+    if (searchByVector) {
+      this.searchByVector = async (input) => {
+        await this.searchBucket.acquire();
+        return searchByVector(input);
+      };
+    }
+    const faceEmbedding = inner.faceEmbedding?.bind(inner);
+    if (faceEmbedding) this.faceEmbedding = (input) => faceEmbedding(input);
   }
 
   async indexPhoto(input: IndexPhotoInput): Promise<IndexedFace[]> {

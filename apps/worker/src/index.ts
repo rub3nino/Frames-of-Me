@@ -4,6 +4,7 @@ import { loadFaceEngine } from "@rephoto/api/face";
 import { createMailer } from "@rephoto/api/mailer";
 import { createS3ObjectStore } from "@rephoto/api/objects";
 import { createQueue } from "@rephoto/api/queue";
+import { FaceServiceBreaker } from "./breaker.js";
 import type { WorkerDeps } from "./handlers.js";
 import { runHousekeeping, runWorkerLoop } from "./loop.js";
 import { createCloudWatchPublisher, publishQueueDepth } from "./metrics.js";
@@ -25,6 +26,7 @@ const deps: WorkerDeps = {
   mailer: createMailer(env),
   queue: createQueue(db),
   faces: loadFaceEngine(env),
+  breaker: new FaceServiceBreaker(),
 };
 
 let stopped = false;

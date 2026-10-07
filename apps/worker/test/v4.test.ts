@@ -167,7 +167,7 @@ test("match skips the liveness check when LIVENESS_CHECK is false or the engine 
   assert.equal(g.logs.find((entry) => entry.type === "match")?.outcome, "done");
 });
 
-test("a liveness service failure retries the match job and keeps the selfie", async () => {
+test("a liveness service failure requeues the match job (no attempt burnt) and keeps the selfie", async () => {
   const error = new Error("Face service answered 503");
   error.name = "FaceServiceUnavailable";
   const faces = livenessEngine(error);
@@ -180,8 +180,10 @@ test("a liveness service failure retries the match job and keeps the selfie", as
     selfieKey,
   });
   assert.equal(await pollOnce(f.deps), true);
-  assert.equal(f.logs[0]?.outcome, "retry");
+  // v5: FaceServiceUnavailable is handled like a throttle (requeue, attempts untouched).
+  assert.equal(f.logs[0]?.outcome, "requeued");
   assert.equal(f.db.jobView(jobId)?.status, "queued");
+  assert.equal(f.db.jobView(jobId)?.attempts, 0);
   assert.equal(f.objects.objects.has(selfieKey), true);
   assert.equal(f.mailer.sent.length, 0);
 });

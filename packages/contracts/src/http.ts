@@ -133,8 +133,25 @@ export const galleryItemSchema = z
     createdAt: z.string().datetime(),
     /** False while only the web version is in: "Originali" downloads fall back to it. */
     originalReady: z.boolean(),
+    /** Participant verdict (v5). `not_me` items are still returned: the UI hides them. */
+    feedback: z.enum(["me", "not_me"]).nullable(),
   })
   .strict();
+
+/**
+ * Why the last `match` left the gallery empty (`galleries.last_match_reason`); null after a
+ * successful match. `no_photos_yet`: the selfie was fine but nothing matched; the selfie vector
+ * is kept so later uploads attach. `liveness`: the engine judged the selfie not live.
+ */
+export const galleryReasonSchema = z.enum([
+  "no_face",
+  "face_too_small",
+  "low_quality",
+  "multiple_faces",
+  "no_photos_yet",
+  "liveness",
+]);
+export type GalleryReason = z.infer<typeof galleryReasonSchema>;
 
 export const galleryResponseSchema = z
   .object({
@@ -142,6 +159,7 @@ export const galleryResponseSchema = z
     total: z.number().int().nonnegative(),
     items: z.array(galleryItemSchema),
     nextCursor: z.string().min(1).nullable(),
+    reason: galleryReasonSchema.nullable(),
   })
   .strict();
 
@@ -205,6 +223,11 @@ export const originalStatusSchema = z.enum(["pending", "present"]);
 export type OriginalStatus = z.infer<typeof originalStatusSchema>;
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
+export const UPLOAD_TAG_MAX = 20;
+const uploadTagsSchema = z
+  .array(z.string().trim().min(1).max(40))
+  .max(UPLOAD_TAG_MAX)
+  .optional();
 
 /**
  * Original stage: `sha256`/`bytes` describe the original. With `photoId` the photo was
@@ -219,6 +242,8 @@ export const uploadInitOriginalBodySchema = z
     bytes: z.number().int().positive().max(UPLOAD_MAX_BYTES),
     stage: z.literal("original").default("original"),
     photoId: z.string().uuid().optional(),
+    /** Free labels stored on the photo (v5 test tooling, e.g. `synth`, `round-2`). */
+    tags: uploadTagsSchema,
   })
   .strict();
 
@@ -236,6 +261,7 @@ export const uploadInitWebBodySchema = z
     stage: z.literal("web"),
     originalContentType: imageContentTypeSchema,
     originalBytes: z.number().int().positive().max(UPLOAD_MAX_BYTES),
+    tags: uploadTagsSchema,
   })
   .strict();
 
@@ -374,6 +400,36 @@ export const adminMetricsResponseSchema = z
     photosByStatus: photosByStatusSchema,
     galleries: z.number().int().nonnegative(),
     originalsPending: z.number().int().nonnegative(),
+    /** v5 (agent D): per-type queue view, age of the oldest queued job, last failures, face-service probe. */
+    jobsByType: z.array(
+      z
+        .object({
+          type: z.string().min(1),
+          queued: z.number().int().nonnegative(),
+          running: z.number().int().nonnegative(),
+          error: z.number().int().nonnegative(),
+          oldestQueuedSeconds: z.number().nonnegative().nullable(),
+        })
+        .strict(),
+    ),
+    oldestQueuedSeconds: z.number().nonnegative().nullable(),
+    lastErrors: z.array(
+      z
+        .object({
+          id: z.string().uuid(),
+          type: z.string().min(1),
+          error: z.string(),
+          at: z.string().datetime(),
+        })
+        .strict(),
+    ),
+    faceService: z
+      .object({
+        /** null when the engine is not the face service. */
+        ok: z.boolean().nullable(),
+        ms: z.number().nonnegative().nullable(),
+      })
+      .strict(),
   })
   .strict();
 
@@ -412,4 +468,286 @@ export const retentionBodySchema = z
 
 export const retentionResponseSchema = z
   .object({ jobId: z.string().uuid() })
+  .strict();
+
+// ---- admin and participant tooling v5 (agent D) ------------------------------------------
+
+export const ADMIN_PAGE_DEFAULT = 50;
+export const ADMIN_PAGE_MAX = 200;
+export const NEIGHBOURS_DEFAULT = 20;
+export const NEIGHBOURS_MAX = 100;
+
+export const eventSlugSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(60)
+  .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
+
+export const adminEventCreateBodySchema = z
+  .object({
+    slug: eventSlugSchema,
+    name: z.string().trim().min(1).max(200),
+    retentionDays: z.number().int().positive().optional(),
+    access: eventAccessSchema.optional(),
+  })
+  .strict();
+
+export const adminEventListItemSchema = eventResponseSchema
+  .extend({
+    createdAt: z.string().datetime(),
+    photos: z.number().int().nonnegative(),
+    galleries: z.number().int().nonnegative(),
+    participants: z.number().int().nonnegative(),
+    photographers: z.number().int().nonnegative(),
+  })
+  .strict();
+
+export const adminEventsResponseSchema = z
+  .object({ events: z.array(adminEventListItemSchema) })
+  .strict();
+
+/** A raw magic link for the room (QR / printed), never mailed. */
+export const adminMagicLinkBodySchema = z
+  .object({
+    email: z.string().trim().email().max(320),
+    role: roleSchema,
+    /** With `photographer`: the user is created and attached to this event. */
+    eventId: z.string().uuid().optional(),
+  })
+  .strict();
+
+export const adminMagicLinkResponseSchema = z
+  .object({ url: z.string().url() })
+  .strict();
+
+export const adminGalleriesQuerySchema = z
+  .object({
+    eventId: z.string().uuid(),
+    email: z.string().trim().email().max(320).optional(),
+    cursor: z.string().min(1).optional(),
+    limit: z.coerce.number().int().min(1).max(ADMIN_PAGE_MAX).default(ADMIN_PAGE_DEFAULT),
+  })
+  .strict();
+
+export const feedbackVerdictSchema = z.enum(["me", "not_me"]);
+export type FeedbackVerdict = z.infer<typeof feedbackVerdictSchema>;
+
+export const adminGalleryItemSchema = z
+  .object({
+    photoId: z.string().uuid(),
+    faceId: z.string().uuid(),
+    thumbUrl: z.string().url(),
+    webUrl: z.string().url(),
+    score: z.number().min(0).max(1),
+    source: galleryItemSourceSchema,
+    createdAt: z.string().datetime(),
+    originalReady: z.boolean(),
+    feedback: feedbackVerdictSchema.nullable(),
+    photo: z
+      .object({
+        sha256: z.string().regex(/^[a-f0-9]{64}$/),
+        filename: z.string().nullable(),
+      })
+      .strict(),
+  })
+  .strict();
+
+export const adminGalleryByEmailResponseSchema = z
+  .object({
+    user: userSchema,
+    gallery: z
+      .object({
+        id: z.string().uuid(),
+        matchedAt: z.string().datetime().nullable(),
+        anchorFaceIds: z.array(z.string()),
+        reason: galleryReasonSchema.nullable(),
+        total: z.number().int().nonnegative(),
+      })
+      .strict()
+      .nullable(),
+    items: z.array(adminGalleryItemSchema),
+  })
+  .strict();
+
+export const adminGalleriesListResponseSchema = z
+  .object({
+    galleries: z.array(
+      z
+        .object({
+          userId: z.string().uuid(),
+          email: z.string().email(),
+          total: z.number().int().nonnegative(),
+          matchedAt: z.string().datetime().nullable(),
+          reason: galleryReasonSchema.nullable(),
+        })
+        .strict(),
+    ),
+    nextCursor: z.string().min(1).nullable(),
+  })
+  .strict();
+
+export const bboxSchema = z
+  .object({
+    x: z.number(),
+    y: z.number(),
+    width: z.number(),
+    height: z.number(),
+  })
+  .strict();
+
+export const adminPhotoSchema = z
+  .object({
+    id: z.string().uuid(),
+    eventId: z.string().uuid(),
+    photographerId: z.string().uuid(),
+    sha256: z.string().regex(/^[a-f0-9]{64}$/),
+    status: photoStatusSchema,
+    contentType: imageContentTypeSchema,
+    bytes: z.number().int().nonnegative(),
+    originalStatus: originalStatusSchema,
+    indexedAt: z.string().datetime().nullable(),
+    error: z.string().nullable(),
+    createdAt: z.string().datetime(),
+    filename: z.string().nullable(),
+    tags: z.array(z.string()),
+  })
+  .strict();
+
+export const adminPhotoDetailResponseSchema = z
+  .object({
+    photo: adminPhotoSchema,
+    webUrl: z.string().url().nullable(),
+    thumbUrl: z.string().url().nullable(),
+    faces: z.array(
+      z
+        .object({
+          id: z.string().uuid(),
+          externalId: z.string().min(1),
+          bbox: bboxSchema,
+          confidence: z.number(),
+        })
+        .strict(),
+    ),
+    galleries: z.array(
+      z
+        .object({
+          userId: z.string().uuid(),
+          email: z.string().email(),
+          score: z.number().min(0).max(1),
+          source: galleryItemSourceSchema,
+          faceId: z.string().uuid(),
+          feedback: feedbackVerdictSchema.nullable(),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
+
+export const adminNeighboursQuerySchema = z
+  .object({
+    eventId: z.string().uuid(),
+    limit: z.coerce.number().int().min(1).max(NEIGHBOURS_MAX).default(NEIGHBOURS_DEFAULT),
+  })
+  .strict();
+
+export const adminNeighbourSchema = z
+  .object({
+    externalFaceId: z.string().min(1),
+    photoId: z.string().uuid(),
+    /** From the engine when it reports one, else the inverse of the similarity mapping. */
+    cosine: z.number(),
+    similarity: z.number(),
+  })
+  .strict();
+
+export const adminNeighboursResponseSchema = z.array(adminNeighbourSchema);
+
+export const adminPhotosQuerySchema = z
+  .object({
+    eventId: z.string().uuid(),
+    sha256: z.string().regex(/^[a-f0-9]{1,64}$/).optional(),
+    filename: z.string().trim().min(1).max(200).optional(),
+    status: photoStatusSchema.optional(),
+    photographerId: z.string().uuid().optional(),
+    tag: z.string().trim().min(1).max(40).optional(),
+    cursor: z.string().min(1).optional(),
+    limit: z.coerce.number().int().min(1).max(ADMIN_PAGE_MAX).default(ADMIN_PAGE_DEFAULT),
+  })
+  .strict();
+
+export const adminPhotosResponseSchema = z
+  .object({
+    photos: z.array(adminPhotoSchema.extend({ thumbUrl: z.string().url().nullable() }).strict()),
+    nextCursor: z.string().min(1).nullable(),
+  })
+  .strict();
+
+export const adminRematchResponseSchema = z
+  .object({ jobId: z.string().uuid() })
+  .strict();
+
+export const adminResetBodySchema = z
+  .object({ confirm: eventSlugSchema })
+  .strict();
+
+export const adminResetResponseSchema = z
+  .object({ jobId: z.string().uuid() })
+  .strict();
+
+export const adminMatchRunsQuerySchema = z
+  .object({
+    eventId: z.string().uuid(),
+    email: z.string().trim().email().max(320).optional(),
+    cursor: z.string().min(1).optional(),
+    limit: z.coerce.number().int().min(1).max(ADMIN_PAGE_MAX).default(ADMIN_PAGE_DEFAULT),
+  })
+  .strict();
+
+export const adminMatchRunSchema = z
+  .object({
+    id: z.string().uuid(),
+    userId: z.string().uuid(),
+    email: z.string().email(),
+    liveness: z.string().nullable(),
+    reason: z.string().nullable(),
+    selfieSha256: z.string().nullable(),
+    selfieFaces: z.number().int().nullable(),
+    engineMs: z.number().int().nullable(),
+    hits: z.number().int().nonnegative(),
+    createdAt: z.string().datetime(),
+    /** Summary of match_hits: how many were kept and the best cosine seen. */
+    kept: z.number().int().nonnegative(),
+    maxCosine: z.number().nullable(),
+  })
+  .strict();
+
+export const adminMatchRunsResponseSchema = z
+  .object({
+    runs: z.array(adminMatchRunSchema),
+    nextCursor: z.string().min(1).nullable(),
+  })
+  .strict();
+
+export const adminExportQuerySchema = z
+  .object({ eventId: z.string().uuid() })
+  .strict();
+
+export const galleryFeedbackBodySchema = z
+  .object({
+    photoId: z.string().uuid(),
+    verdict: feedbackVerdictSchema,
+  })
+  .strict();
+
+export const galleryFeedbackResponseSchema = z
+  .object({
+    photoId: z.string().uuid(),
+    verdict: feedbackVerdictSchema,
+  })
+  .strict();
+
+/** `{ eventSlug }` served by the web at `/api/config` so the slug is a runtime setting. */
+export const webConfigResponseSchema = z
+  .object({ eventSlug: eventSlugSchema })
   .strict();

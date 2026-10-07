@@ -8,6 +8,7 @@ export const jobTypeSchema = z.enum([
   "email",
   "retention",
   "verify",
+  "reset",
 ]);
 export type JobType = z.infer<typeof jobTypeSchema>;
 
@@ -71,6 +72,19 @@ export const retentionPayloadSchema = z
 
 export type RetentionPayload = z.infer<typeof retentionPayloadSchema>;
 
+/**
+ * Deletes every photo of the event (retention with cutoff `now`), its galleries, its
+ * match log and the engine collection. Enqueued by `POST /v1/admin/events/:id/reset`.
+ */
+export const resetPayloadSchema = z
+  .object({
+    eventId: z.string().uuid(),
+    actorId: z.string().uuid(),
+  })
+  .strict();
+
+export type ResetPayload = z.infer<typeof resetPayloadSchema>;
+
 export const JOB_MAX_ATTEMPTS = 5;
 
 /** A `running` job older than this returns to `queued` without counting as a failure. */
@@ -79,15 +93,19 @@ export const STALE_RUNNING_MS = 10 * 60 * 1000;
 /** Wait before claiming a throttled job again. Attempts are not incremented. */
 export const THROTTLE_REQUEUE_SECONDS = 5;
 
-/** Lower runs first. */
+/**
+ * Lower runs first. `index` runs before `derive` so the face service is fed as soon as a
+ * derivative exists instead of idling behind a backlog of derives (v5, B).
+ */
 export const JOB_PRIORITY: Record<JobType, number> = {
   match: 0,
   email: 10,
   attach: 30,
+  index: 40,
   derive: 50,
-  index: 60,
   verify: 70,
   retention: 90,
+  reset: 90,
 };
 
 /**
@@ -107,6 +125,8 @@ export function jobDedupeKey(type: JobType, payload: unknown): string | null {
       return `email:${field("kind")}:${field("userId")}:${field("eventId")}`;
     case "retention":
       return `retention:${field("eventId")}`;
+    case "reset":
+      return `reset:${field("eventId")}`;
     case "match":
       return null;
   }

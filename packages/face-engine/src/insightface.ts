@@ -1,26 +1,36 @@
 import postgres from "postgres";
 import type {
   Box,
+  EmbedSelfieInput,
+  EmbedSelfieResult,
   FaceEngine,
   ImageContentType,
   IndexedFace,
   IndexPhotoInput,
   LivenessInput,
   LivenessResult,
+  SearchByVectorInput,
   SearchFacesInput,
   SearchHit,
   SearchInput,
+  VectorHit,
 } from "./types.ts";
 
 export const DEFAULT_FACE_SERVICE_URL = "http://localhost:8090";
-export const DEFAULT_MIN_COSINE = 0.45;
-export const DEFAULT_SURE_COSINE = 0.65;
-export const DEFAULT_SEARCH_MAX_FACES = 500;
-export const DEFAULT_MIN_FACE_QUALITY = 0.3;
-/** Faces asked of the service per indexed photo (its own cap). */
-const INDEX_MAX_FACES = 50;
+export const DEFAULT_MIN_COSINE = 0.5;
+export const DEFAULT_SURE_COSINE = 0.7;
+export const DEFAULT_SEARCH_MAX_FACES = 200;
+export const DEFAULT_MIN_FACE_QUALITY = 0.2;
+/** Faces asked of the service per indexed photo (`INSIGHTFACE_INDEX_MAX_FACES`); the service caps at 150. */
+export const DEFAULT_INDEX_MAX_FACES = 100;
+const INDEX_MAX_FACES_CAP = 150;
+/** Smallest face (pixels on the detection image) the service is asked to return. */
+export const INDEX_MIN_FACE_SIZE = 24;
 /** `search` returns at most this many rows whatever the env says. */
 const SEARCH_MAX_FACES_CAP = 4096;
+/** Embed and search round trips are abandoned after this; the worker requeues the job. */
+export const EMBED_TIMEOUT_MS = 60_000;
+export const HEALTH_TIMEOUT_MS = 10_000;
 const DELETE_FACES_CHUNK = 1000;
 /** HNSW candidate list: never below 100, at least the requested limit. */
 const MIN_EF_SEARCH = 100;
@@ -113,6 +123,7 @@ export class InsightFaceEngine implements FaceEngine {
   readonly minCosine: number;
   readonly sureCosine: number;
   readonly searchMaxFaces: number;
+  readonly indexMaxFaces: number;
   readonly minFaceQuality: number;
   private readonly databaseUrl: string | undefined;
   private readonly fetchImpl: typeof fetch;
@@ -132,6 +143,7 @@ export class InsightFaceEngine implements FaceEngine {
       throw new Error("INSIGHTFACE_SURE_COSINE must be greater than INSIGHTFACE_MIN_COSINE");
     }
     this.searchMaxFaces = readSearchMaxFaces(env.INSIGHTFACE_MAX_FACES);
+    this.indexMaxFaces = readIndexMaxFaces(env.INSIGHTFACE_INDEX_MAX_FACES);
     this.minFaceQuality = readUnit(
       env.INSIGHTFACE_MIN_FACE_QUALITY,
       "INSIGHTFACE_MIN_FACE_QUALITY",
@@ -161,19 +173,27 @@ export class InsightFaceEngine implements FaceEngine {
     await this.tableChecked;
   }
 
+  /**
+   * Embeds the photo and replaces its rows in `face_vectors`: the delete of the photo's
+   * previous vectors and the insert run in one transaction, so a re-run (reclaimed job,
+   * re-index) never leaves duplicates or orphans (v5, A2).
+   */
   async indexPhoto(input: IndexPhotoInput): Promise<IndexedFace[]> {
     const sql = await this.db();
-    const embedded = await this.embed(input.imageBytes, input.contentType, INDEX_MAX_FACES);
-    if (!embedded) return [];
-    const faces = embedded.faces.filter(
+    const embedded = await this.embed(input.imageBytes, input.contentType, this.indexMaxFaces);
+    const faces = (embedded?.faces ?? []).filter(
       (face) => isEmbedding(face.embedding) && face.quality >= this.minFaceQuality,
     );
+    const rows = await sql.begin(async (tx) => {
+      await tx.unsafe(DELETE_PHOTO_SQL, [input.photoId]);
+      if (faces.length === 0) return [];
+      return tx.unsafe(INSERT_FACES_SQL, [
+        input.eventId,
+        input.photoId,
+        faces.map((face) => vectorText(face.embedding)),
+      ]);
+    });
     if (faces.length === 0) return [];
-    const rows = await sql.unsafe(INSERT_FACES_SQL, [
-      input.eventId,
-      input.photoId,
-      faces.map((face) => vectorText(face.embedding)),
-    ]);
     if (rows.length !== faces.length) {
       throw new Error(`face_vectors insert returned ${rows.length} rows for ${faces.length} faces`);
     }
@@ -186,12 +206,12 @@ export class InsightFaceEngine implements FaceEngine {
 
   async search(input: SearchInput): Promise<SearchHit[]> {
     const sql = await this.db();
-    const embedded = await this.embed(input.imageBytes, input.contentType, INDEX_MAX_FACES);
+    const embedded = await this.embed(input.imageBytes, input.contentType, this.indexMaxFaces);
     if (!embedded) return [];
     // Same shape check as indexPhoto: the vector literal must be 512 finite numbers.
     const largest = largestFace(embedded.faces.filter((face) => isEmbedding(face.embedding)));
     if (!largest) return [];
-    return this.nearest(sql, input.eventId, vectorText(largest.embedding), null);
+    return this.nearest(sql, input.eventId, vectorText(largest.embedding), null, {});
   }
 
   async searchFaces(input: SearchFacesInput): Promise<SearchHit[]> {
@@ -199,7 +219,64 @@ export class InsightFaceEngine implements FaceEngine {
     const rows = await sql.unsafe(SELECT_VECTOR_SQL, [input.externalFaceId, input.eventId]);
     const stored = rows[0]?.embedding;
     if (typeof stored !== "string") return [];
-    return this.nearest(sql, input.eventId, stored, input.externalFaceId);
+    return this.nearest(sql, input.eventId, stored, input.externalFaceId, {});
+  }
+
+  /**
+   * All faces of the selfie with their embeddings, in detection order, plus the pixel
+   * size the service worked on. Faces with a malformed embedding are dropped; no quality
+   * filter here (the worker decides). `faces: []` for a 400 or an empty answer.
+   */
+  async embedSelfie(input: EmbedSelfieInput): Promise<EmbedSelfieResult> {
+    const embedded = await this.embed(input.imageBytes, input.contentType, this.indexMaxFaces);
+    if (!embedded) return { faces: [], width: 0, height: 0 };
+    return {
+      width: embedded.width,
+      height: embedded.height,
+      faces: embedded.faces
+        .filter((face) => isEmbedding(face.embedding))
+        .map((face) => ({
+          bbox: normalizeBox(face.bbox),
+          score: clamp(face.score, 0, 1),
+          quality: clamp(face.quality, 0, 1),
+          embedding: [...face.embedding],
+        })),
+    };
+  }
+
+  /** Nearest faces to a raw embedding; `minCosine` may go below the engine's minimum (match log). */
+  async searchByVector(input: SearchByVectorInput): Promise<VectorHit[]> {
+    if (!isEmbedding(input.embedding)) {
+      throw new Error(`searchByVector needs a ${EMBEDDING_DIMENSIONS}-dimensional embedding`);
+    }
+    const sql = await this.db();
+    const hits = await this.nearest(sql, input.eventId, vectorText(input.embedding), null, {
+      minCosine: input.minCosine,
+      limit: input.maxFaces,
+    });
+    return hits as VectorHit[];
+  }
+
+  async faceEmbedding(input: SearchFacesInput): Promise<number[] | null> {
+    const sql = await this.db();
+    const rows = await sql.unsafe(SELECT_VECTOR_SQL, [input.externalFaceId, input.eventId]);
+    const stored = rows[0]?.embedding;
+    if (typeof stored !== "string") return null;
+    const parsed = parseVectorText(stored);
+    return isEmbedding(parsed) ? parsed : null;
+  }
+
+  /** `GET /health` of the face service within {@link HEALTH_TIMEOUT_MS}; false on any failure. */
+  async health(): Promise<boolean> {
+    try {
+      const response = await this.fetchImpl(`${this.serviceUrl}/health`, {
+        method: "GET",
+        signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
+      });
+      return response.ok;
+    } catch {
+      return false;
+    }
   }
 
   async deleteFaces(eventId: string, externalFaceIds: string[]): Promise<void> {
@@ -231,14 +308,20 @@ export class InsightFaceEngine implements FaceEngine {
     };
   }
 
-  /** Nearest neighbours of `vector` in the event, mapped and filtered. */
+  /**
+   * Nearest neighbours of `vector` in the event, mapped and filtered. Every hit carries
+   * the raw cosine. Hits between `minCosine` and the engine's minimum (match log only)
+   * get `similarity = 0`: they are never a match, only a record.
+   */
   private async nearest(
     sql: VectorSql,
     eventId: string,
     vector: string,
     excludeFaceId: string | null,
+    options: { minCosine?: number; limit?: number },
   ): Promise<SearchHit[]> {
-    const limit = this.searchMaxFaces;
+    const limit = clampLimit(options.limit ?? this.searchMaxFaces);
+    const minCosine = options.minCosine ?? this.minCosine;
     const efSearch = Math.max(MIN_EF_SEARCH, limit);
     const rows = await sql.begin(async (tx) => {
       await tx.unsafe(`set local hnsw.ef_search = ${efSearch}`);
@@ -249,12 +332,12 @@ export class InsightFaceEngine implements FaceEngine {
     const hits: SearchHit[] = [];
     for (const row of rows) {
       const cosine = Number(row.cos);
-      const similarity = this.mapSimilarity(cosine);
-      if (similarity === undefined) continue;
+      if (!Number.isFinite(cosine) || cosine < minCosine) continue;
       hits.push({
         externalFaceId: String(row.external_face_id),
         photoId: String(row.photo_id),
-        similarity,
+        similarity: this.mapSimilarity(cosine) ?? 0,
+        cosine,
       });
     }
     return hits;
@@ -266,7 +349,7 @@ export class InsightFaceEngine implements FaceEngine {
     contentType: ImageContentType,
     maxFaces: number,
   ): Promise<EmbedResponse | null> {
-    const query = `?max_faces=${maxFaces}`;
+    const query = `?max_faces=${maxFaces}&min_size=${INDEX_MIN_FACE_SIZE}`;
     const response = await this.post(`/v1/embed${query}`, imageBytes, contentType);
     if (response.status === 400) return null;
     if (!response.ok) throw await serviceError(response);
@@ -294,8 +377,13 @@ export class InsightFaceEngine implements FaceEngine {
       contentType === "image/png" ? "image.png" : "image.jpg",
     );
     try {
-      return await this.fetchImpl(`${this.serviceUrl}${path}`, { method: "POST", body: form });
+      return await this.fetchImpl(`${this.serviceUrl}${path}`, {
+        method: "POST",
+        body: form,
+        signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
+      });
     } catch (error) {
+      // Includes the timeout (AbortError / TimeoutError): a slow service is an unavailable one.
       const cause = error instanceof Error ? error.message : String(error);
       throw new FaceServiceUnavailable(
         `Face service at ${this.serviceUrl} unreachable: ${cause.slice(0, 200)}`,
@@ -371,6 +459,11 @@ export const DELETE_FACES_SQL = `
 delete from face_vectors
 where event_id = $1::uuid and external_face_id = any($2::uuid[])`;
 
+/** Run before every insert of a photo's faces (re-index, reclaimed job): no duplicates. */
+export const DELETE_PHOTO_SQL = `
+delete from face_vectors
+where photo_id = $1::uuid`;
+
 export const DELETE_EVENT_SQL = `
 delete from face_vectors
 where event_id = $1::uuid`;
@@ -379,7 +472,11 @@ export const TABLE_EXISTS_SQL = `select to_regclass('public.face_vectors') is no
 
 export const CREATE_EXTENSION_SQL = `create extension if not exists vector`;
 
-/** Same DDL as migration 005_face_vectors.sql, run by the engine when the table is missing. */
+/**
+ * Same DDL as migrations 005_face_vectors.sql + 006_recognition.sql (the face_vectors part),
+ * run by the engine when the table is missing. The foreign key is added only when `photos`
+ * exists (it always does once the migrations ran).
+ */
 export const FACE_VECTORS_DDL: readonly string[] = [
   `create table if not exists face_vectors (
   external_face_id uuid primary key default gen_random_uuid(),
@@ -391,6 +488,16 @@ export const FACE_VECTORS_DDL: readonly string[] = [
   `create index if not exists face_vectors_event_idx on face_vectors (event_id)`,
   `create index if not exists face_vectors_photo_idx on face_vectors (photo_id)`,
   `create index if not exists face_vectors_embedding_idx on face_vectors using hnsw (embedding vector_cosine_ops) with (m = 16, ef_construction = 64)`,
+  `do $$
+begin
+  if to_regclass('public.photos') is not null
+     and not exists (select 1 from pg_constraint where conname = 'face_vectors_photo_id_fkey') then
+    alter table face_vectors
+      add constraint face_vectors_photo_id_fkey
+      foreign key (photo_id) references photos(id) on delete cascade;
+  end if;
+end
+$$`,
 ];
 
 // --- helpers ---------------------------------------------------------------
@@ -408,6 +515,30 @@ export function mapCosine(cosine: number, minCosine: number, sureCosine: number)
 /** pgvector text literal: `[0.1,0.2,...]`. */
 export function vectorText(embedding: readonly number[]): string {
   return `[${embedding.join(",")}]`;
+}
+
+/** Inverse of {@link vectorText}; non-numeric parts become NaN (callers validate). */
+export function parseVectorText(text: string): number[] {
+  const inner = text.trim().replace(/^\[/, "").replace(/\]$/, "");
+  if (inner === "") return [];
+  return inner.split(",").map((part) => Number(part));
+}
+
+/** Cosine similarity of two vectors; 0 when either is empty or zero-length. */
+export function cosineSimilarity(a: readonly number[], b: readonly number[]): number {
+  const length = Math.min(a.length, b.length);
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let index = 0; index < length; index += 1) {
+    const x = a[index] ?? 0;
+    const y = b[index] ?? 0;
+    dot += x * y;
+    normA += x * x;
+    normB += y * y;
+  }
+  if (normA === 0 || normB === 0) return 0;
+  return dot / Math.sqrt(normA * normB);
 }
 
 export function largestFace<T extends { bbox: Box }>(faces: readonly T[]): T | undefined {
@@ -495,6 +626,20 @@ function readUnit(raw: string | undefined, name: string, fallback: number): numb
   const value = Number(raw);
   if (!Number.isFinite(value) || value < 0 || value > 1) {
     throw new Error(`${name} must be a number from 0 to 1`);
+  }
+  return value;
+}
+
+function clampLimit(limit: number): number {
+  if (!Number.isFinite(limit) || limit < 1) return 1;
+  return Math.min(SEARCH_MAX_FACES_CAP, Math.floor(limit));
+}
+
+function readIndexMaxFaces(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === "") return DEFAULT_INDEX_MAX_FACES;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1 || value > INDEX_MAX_FACES_CAP) {
+    throw new Error(`INSIGHTFACE_INDEX_MAX_FACES must be an integer from 1 to ${INDEX_MAX_FACES_CAP}`);
   }
   return value;
 }

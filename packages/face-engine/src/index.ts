@@ -6,18 +6,24 @@ import type { FaceEngine } from "./types.ts";
 
 export type {
   Box,
+  EmbedSelfieInput,
+  EmbedSelfieResult,
   FaceEngine,
   ImageContentType,
   IndexPhotoInput,
   IndexedFace,
   LivenessInput,
   LivenessResult,
+  SearchByVectorInput,
   SearchFacesInput,
   SearchHit,
   SearchInput,
+  SelfieFace,
+  VectorHit,
 } from "./types.ts";
 
 export {
+  fakeEmbedding,
   FakeFaceEngine,
   MemoryFaceIndexStore,
   SqlFaceIndexStore,
@@ -28,6 +34,7 @@ export { RekognitionFaceEngine, RekognitionThrottleError } from "./rekognition.t
 export type { RekognitionFaceClient } from "./rekognition.ts";
 
 export {
+  cosineSimilarity,
   FaceServiceError,
   FaceServiceUnavailable,
   FaceVectorsTableMissing,

@@ -1,5 +1,5 @@
 import type { WorkerDeps } from "./handlers.js";
-import { processJob } from "./run.js";
+import { claimOptions, processJob } from "./run.js";
 
 export type LoopOptions = {
   /** Jobs in flight at once. */
@@ -46,7 +46,7 @@ export async function runWorkerLoop(deps: WorkerDeps, options: LoopOptions): Pro
     while (inFlight.size < options.concurrency && !options.stop()) {
       let job: Awaited<ReturnType<typeof deps.queue.claim>>;
       try {
-        job = await deps.queue.claim();
+        job = await deps.queue.claim(claimOptions(deps));
       } catch (error) {
         // A database blip must not kill the process: log it and try again after the idle sleep.
         console.error(JSON.stringify({ ts: new Date().toISOString(), claim: String(error) }));

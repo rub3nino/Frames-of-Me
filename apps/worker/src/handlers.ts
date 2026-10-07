@@ -9,23 +9,35 @@ import {
   type Env,
   type JobType,
   type MatchPayload,
+  type ResetPayload,
   type RetentionPayload,
   type VerifyPayload,
 } from "@rephoto/contracts";
-import type { Database } from "@rephoto/db";
-import type { FaceEngine } from "@rephoto/face-engine/types";
+import type { Database, EventRow, MatchHitInsert, PhotoRow } from "@rephoto/db";
+import type { EmbedSelfieResult, FaceEngine, SearchHit, SelfieFace } from "@rephoto/face-engine/types";
 import type { Mailer } from "@rephoto/api/mailer";
 import type { ObjectStore } from "@rephoto/api/object-store";
 import type { JobQueue } from "@rephoto/api/queue";
+import type { FaceServiceBreaker } from "./breaker.js";
 
 /** Rekognition Bytes API rejects images over 5 MB. S3Object allows 15 MB; we send bytes. */
 const REKOGNITION_MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+/** The face service refuses bodies above 8 MiB (packages/face-engine/src/insightface.ts). */
+const FACE_SERVICE_MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+const DETECTION_JPEG_QUALITY = 85;
 const RETENTION_PHOTO_BATCH = 50;
 const DELETE_FACES_CHUNK = 1000;
 /** Derivatives are immutable per photo id, so browsers may cache them for a day. */
 const DERIVATIVE_CACHE_CONTROL = "public, max-age=86400, immutable";
 /** Anchors kept per gallery: the external ids of the best distinct-photo hits. */
 const ANCHOR_COUNT = 5;
+/** With this many anchors or more, an anchor-only attach needs two agreeing anchors. */
+const ANCHOR_QUORUM_FROM = 3;
+const ANCHOR_QUORUM = 2;
+/** MATCH_LOG: the engine is asked for everything down to this cosine; the gallery keeps ≥ MIN. */
+const MATCH_LOG_MIN_COSINE = 0.25;
+/** A second selfie face at least this fraction of the largest one means "two people". */
+const SECOND_FACE_AREA_RATIO = 0.5;
 /** A gallery is told about new photos at most once per window. */
 const NOTIFY_WINDOW_MS = 6 * 60 * 60 * 1000;
 /**
@@ -70,6 +82,9 @@ export function isNonRetryable(error: unknown): error is NonRetryableError {
   );
 }
 
+/** Why `match` rejected the selfie before searching (also `galleries.last_match_reason`). */
+export type SelfieRejectReason = "no_face" | "face_too_small" | "low_quality" | "multiple_faces";
+
 export type JobLogEntry = {
   ts: string;
   job: string;
@@ -79,10 +94,19 @@ export type JobLogEntry = {
   error?: string;
   /** `match` only: the selfie failed the engine's liveness check and got an empty gallery. */
   liveness?: "rejected";
+  /** `match` only: the selfie was rejected by a quality gate (`reason` says which). */
+  match?: "rejected";
+  reason?: SelfieRejectReason;
+  /** `match` only: photos in the rebuilt gallery. */
+  hits?: number;
+  /** With `LOG_IDS=true`: the ids of the job payload. */
+  photoId?: string;
+  userId?: string;
+  eventId?: string;
 };
 
 /** Extra fields a handler wants on its job log line. */
-export type JobNote = Pick<JobLogEntry, "liveness">;
+export type JobNote = Pick<JobLogEntry, "liveness" | "match" | "reason" | "hits">;
 
 export type WorkerDeps = {
   env: Env;
@@ -93,6 +117,10 @@ export type WorkerDeps = {
   faces: FaceEngine;
   /** One line per finished job. Defaults to a JSON line on stdout. */
   log?: (entry: JobLogEntry) => void;
+  /** Face service circuit breaker; one per process. Absent = no breaker (tests). */
+  breaker?: FaceServiceBreaker;
+  /** How often an in-flight job refreshes `claimed_at`. Default 2 minutes. */
+  heartbeatMs?: number;
 };
 
 export type WorkerJob =
@@ -102,7 +130,8 @@ export type WorkerJob =
   | ({ type: "match" } & MatchPayload)
   | ({ type: "email" } & EmailPayload)
   | ({ type: "retention" } & RetentionPayload)
-  | ({ type: "verify" } & VerifyPayload);
+  | ({ type: "verify" } & VerifyPayload)
+  | ({ type: "reset" } & ResetPayload);
 
 export async function runJob(job: WorkerJob, deps: WorkerDeps): Promise<JobNote | undefined> {
   if (job.type === "derive") {
@@ -126,6 +155,10 @@ export async function runJob(job: WorkerJob, deps: WorkerDeps): Promise<JobNote 
   }
   if (job.type === "verify") {
     await verifyOriginal(job.photoId, deps);
+    return;
+  }
+  if (job.type === "reset") {
+    await resetEvent(job, deps);
     return;
   }
   await sendGalleryMail(job, deps);
@@ -223,14 +256,11 @@ async function indexPhoto(photoId: string, deps: WorkerDeps): Promise<void> {
   }
   const existing = await deps.db.listExternalIds(photo.id);
   if (photo.status === "indexed" && existing.length > 0) return;
-  const web = await deps.objects.get(objectKeys.web(photo.id));
-  if (!web) throw new Error("Web derivative missing");
-  const imageBytes =
-    web.body.byteLength > REKOGNITION_MAX_IMAGE_BYTES
-      ? await fitRekognitionJpeg(web.body)
-      : web.body;
+  const imageBytes = await detectionBytes(photo, deps);
   if (existing.length > 0) {
+    // Re-index: the old faces leave the engine and every gallery they anchored (v5, A1).
     await deps.faces.deleteFaces(photo.eventId, existing);
+    await deps.db.removeAnchors(photo.eventId, existing);
   }
   const indexed = await deps.faces.indexPhoto({
     eventId: photo.eventId,
@@ -257,9 +287,44 @@ async function indexPhoto(photoId: string, deps: WorkerDeps): Promise<void> {
 }
 
 /**
- * Adds a freshly indexed photo to the galleries it belongs to: every face of the
- * photo is searched against the event collection, and each hit whose external id
- * anchors a gallery adds this photo to that gallery.
+ * What `index` sends to the engine (v5, A3). `FACE_INDEX_SOURCE=web`: the stored web
+ * derivative (1600 px), shrunk only when it exceeds the Rekognition byte limit.
+ * `original`: a detection JPEG rendered from the original (or from the web derivative while
+ * the original is pending) at `FACE_DETECT_LONG_EDGE`, so small faces in the back rows
+ * survive detection. Nothing is cached: the bytes exist for one request.
+ */
+async function detectionBytes(photo: PhotoRow, deps: WorkerDeps): Promise<Uint8Array> {
+  const web = await deps.objects.get(objectKeys.web(photo.id));
+  if (!web) throw new Error("Web derivative missing");
+  if (deps.env.FACE_INDEX_SOURCE !== "original") {
+    return web.body.byteLength > REKOGNITION_MAX_IMAGE_BYTES
+      ? await fitJpeg(web.body, REKOGNITION_MAX_IMAGE_BYTES)
+      : web.body;
+  }
+  let source = web.body;
+  if (photo.originalStatus === "present") {
+    const original = await deps.objects.get(photo.originalKey);
+    if (!original) throw new Error("Original missing");
+    source = original.body;
+  }
+  const maxBytes =
+    deps.env.FACE_ENGINE === "rekognition" ? REKOGNITION_MAX_IMAGE_BYTES : FACE_SERVICE_MAX_IMAGE_BYTES;
+  try {
+    return await fitJpeg(source, maxBytes, deps.env.FACE_DETECT_LONG_EDGE, DETECTION_JPEG_QUALITY);
+  } catch (error) {
+    if (isDecodeError(error)) throw new NonRetryableError("unsupported image");
+    throw error;
+  }
+}
+
+type AttachCandidate = { faceId: string; score: number };
+
+/**
+ * Adds a freshly indexed photo to the galleries it belongs to. Every face of the photo is
+ * searched against the event collection: a hit whose external id anchors a gallery is a
+ * candidate (cosine ≥ `INSIGHTFACE_ATTACH_MIN_COSINE`); so is every gallery whose stored
+ * selfie vector is close enough to the face (`INSIGHTFACE_MIN_COSINE`), which covers
+ * participants who scanned before any of their photos were uploaded (v5, A1).
  */
 async function attachPhoto(photoId: string, deps: WorkerDeps): Promise<void> {
   const photo = await deps.db.findPhoto(photoId);
@@ -268,8 +333,12 @@ async function attachPhoto(photoId: string, deps: WorkerDeps): Promise<void> {
   if (faces.length === 0) return;
   // Nothing to attach to yet (uploads usually start before the first selfie): skip the searches.
   if ((await deps.db.countAnchoredGalleries(photo.eventId)) === 0) return;
+  const env = deps.env;
+  const faceEmbedding = deps.faces.faceEmbedding?.bind(deps.faces);
   // hit external id → the face of this photo that matched it, with the best score
-  const hitsByExternal = new Map<string, { faceId: string; score: number }>();
+  const hitsByExternal = new Map<string, AttachCandidate>();
+  // gallery id → the best selfie-vector candidate among this photo's faces
+  const queryCandidates = new Map<string, AttachCandidate & { gallery: GalleryRef }>();
   for (const face of faces) {
     const hits = await deps.faces.searchFaces({
       eventId: photo.eventId,
@@ -278,25 +347,60 @@ async function attachPhoto(photoId: string, deps: WorkerDeps): Promise<void> {
     for (const hit of hits) {
       if (hit.photoId === photo.id) continue;
       const score = unitInterval(hit.similarity);
-      if (score < DEFAULT_MATCH_THRESHOLD) continue;
+      const accepted =
+        hit.cosine === undefined
+          ? score >= DEFAULT_MATCH_THRESHOLD
+          : hit.cosine >= env.INSIGHTFACE_ATTACH_MIN_COSINE;
+      if (!accepted) continue;
       const previous = hitsByExternal.get(hit.externalFaceId);
       if (!previous || score > previous.score) {
         hitsByExternal.set(hit.externalFaceId, { faceId: face.id, score });
       }
     }
+    if (!faceEmbedding) continue;
+    const embedding = await faceEmbedding({ eventId: photo.eventId, externalFaceId: face.externalId });
+    if (!embedding) continue;
+    const galleries = await deps.db.findGalleriesByQueryVector(
+      photo.eventId,
+      embedding,
+      env.INSIGHTFACE_MIN_COSINE,
+    );
+    for (const gallery of galleries) {
+      const score = cosineScore(gallery.cosine, env);
+      const previous = queryCandidates.get(gallery.id);
+      if (!previous || score > previous.score) {
+        queryCandidates.set(gallery.id, { faceId: face.id, score, gallery });
+      }
+    }
   }
-  if (hitsByExternal.size === 0) return;
-  const galleries = await deps.db.findGalleriesByAnchors(photo.eventId, [...hitsByExternal.keys()]);
-  if (galleries.length === 0) return;
+  const byGallery = new Map<string, GalleryRef>();
+  for (const candidate of queryCandidates.values()) byGallery.set(candidate.gallery.id, candidate.gallery);
+  if (hitsByExternal.size > 0) {
+    const anchored = await deps.db.findGalleriesByAnchors(photo.eventId, [...hitsByExternal.keys()]);
+    for (const gallery of anchored) byGallery.set(gallery.id, gallery);
+  }
+  if (byGallery.size === 0) return;
   const event = await deps.db.findEventById(photo.eventId);
   if (!event) throw new Error("Event missing");
   const now = new Date();
-  for (const gallery of galleries) {
-    let best: { faceId: string; score: number } | null = null;
+  for (const gallery of byGallery.values()) {
+    let anchorBest: AttachCandidate | null = null;
+    let agreeing = 0;
     for (const anchor of gallery.anchorFaceIds) {
       const hit = hitsByExternal.get(anchor);
-      if (hit && (!best || hit.score > best.score)) best = hit;
+      if (!hit) continue;
+      agreeing += 1;
+      if (!anchorBest || hit.score > anchorBest.score) anchorBest = hit;
     }
+    // Many anchors but only one of them agrees: too weak on its own.
+    if (gallery.anchorFaceIds.length >= ANCHOR_QUORUM_FROM && agreeing < ANCHOR_QUORUM) anchorBest = null;
+    const queryBest = queryCandidates.get(gallery.id) ?? null;
+    const best =
+      anchorBest && queryBest
+        ? anchorBest.score >= queryBest.score
+          ? anchorBest
+          : queryBest
+        : (anchorBest ?? queryBest);
     if (!best) continue;
     const inserted = await deps.db.addGalleryItems(gallery.id, [
       { photoId: photo.id, faceId: best.faceId, score: best.score, source: "attach" },
@@ -314,11 +418,24 @@ async function attachPhoto(photoId: string, deps: WorkerDeps): Promise<void> {
   }
 }
 
+type GalleryRef = { id: string; userId: string; anchorFaceIds: string[]; notifiedAt: Date | null };
+
+type MatchContext = {
+  job: { type: "match" } & MatchPayload;
+  event: EventRow;
+  selfieSha256: string;
+  liveness: string | null;
+};
+
 /**
- * Searches the event with the selfie and rebuilds the participant's gallery. With
- * `LIVENESS_CHECK=true` and an engine that can judge liveness, a selfie the engine
- * rejects gets an empty gallery: the "ready" mail still goes out and the UI shows
- * "Nessuna corrispondenza". The selfie object is deleted either way.
+ * Searches the event with the selfie and rebuilds the participant's gallery (v5, A1).
+ * With `LIVENESS_CHECK=true` and an engine that can judge liveness, a rejected selfie gets
+ * an empty gallery with reason `liveness` (the "ready" mail still goes out). With an engine
+ * that embeds selfies, the selfie is gated (no face, too small, low quality, two people)
+ * before any search: a rejected selfie gets an empty gallery, a reason and no mail. On a
+ * successful match the selfie vector is stored on the gallery so later uploads attach even
+ * when nothing matched yet (`no_photos_yet`). The selfie object is deleted unless
+ * `KEEP_SELFIES=true`, in which case its key is recorded on the gallery.
  */
 async function matchSelfie(
   job: { type: "match" } & MatchPayload,
@@ -326,15 +443,17 @@ async function matchSelfie(
 ): Promise<JobNote | undefined> {
   const selfie = await deps.objects.get(job.selfieKey);
   if (!selfie) throw new Error("Selfie object missing");
-  const imageBytes = await fitRekognitionJpeg(selfie.body);
+  const imageBytes = await fitJpeg(selfie.body, REKOGNITION_MAX_IMAGE_BYTES);
   const event = await deps.db.findEventById(job.eventId);
   if (!event) throw new Error("Event missing");
+  const context: MatchContext = { job, event, selfieSha256: sha256Hex(selfie.body), liveness: null };
   const liveness = deps.env.LIVENESS_CHECK ? deps.faces.checkLiveness?.bind(deps.faces) : undefined;
   if (liveness) {
     const verdict = await liveness({ imageBytes, contentType: "image/jpeg" });
+    context.liveness = verdict.live === false ? "rejected" : "live";
     if (verdict.live === false) {
-      await deps.db.replaceGallery(job.userId, job.eventId, [], []);
-      await deps.objects.delete(job.selfieKey);
+      await emptyGallery(context, deps, "liveness", null);
+      await logMatchRun(context, deps, { reason: "liveness", selfieFaces: null, engineMs: null, hits: [] });
       await enqueue(deps, "email", {
         userId: job.userId,
         eventId: job.eventId,
@@ -344,11 +463,37 @@ async function matchSelfie(
       return { liveness: "rejected" };
     }
   }
-  const hits = await deps.faces.search({
-    eventId: job.eventId,
-    imageBytes,
-    contentType: "image/jpeg",
-  });
+  const embedSelfie = deps.faces.embedSelfie?.bind(deps.faces);
+  const searchByVector = deps.faces.searchByVector?.bind(deps.faces);
+  const started = Date.now();
+  let hits: SearchHit[];
+  let queryEmbedding: number[] | null = null;
+  let selfieFaces: number | null = null;
+  if (embedSelfie && searchByVector) {
+    const embedded = await embedSelfie({ imageBytes, contentType: "image/jpeg" });
+    selfieFaces = embedded.faces.length;
+    const reason = selfieRejectReason(embedded, deps.env);
+    if (reason) {
+      await emptyGallery(context, deps, reason, null);
+      await logMatchRun(context, deps, { reason, selfieFaces, engineMs: Date.now() - started, hits: [] });
+      return { match: "rejected", reason };
+    }
+    const largest = largestFace(embedded.faces);
+    if (!largest) throw new Error("Selfie face missing after the gate");
+    queryEmbedding = largest.embedding;
+    hits = await searchByVector({
+      eventId: job.eventId,
+      embedding: queryEmbedding,
+      minCosine: deps.env.MATCH_LOG ? MATCH_LOG_MIN_COSINE : deps.env.INSIGHTFACE_MIN_COSINE,
+    });
+  } else {
+    hits = await deps.faces.search({
+      eventId: job.eventId,
+      imageBytes,
+      contentType: "image/jpeg",
+    });
+  }
+  const engineMs = Date.now() - started;
   const faceRows = await deps.db.findFacesByExternalIds(
     job.eventId,
     hits.map((hit) => hit.externalFaceId),
@@ -356,21 +501,32 @@ async function matchSelfie(
   const faceByExternal = new Map(faceRows.map((face) => [face.externalId, face]));
   const photos = await deps.db.listPhotosByIds([...new Set(hits.map((hit) => hit.photoId))]);
   const photoById = new Map(photos.map((photo) => [photo.id, photo]));
-  const best = new Map<string, { faceId: string; externalId: string; score: number }>();
+  type Best = { faceId: string; externalId: string; score: number; cosine: number | undefined };
+  const best = new Map<string, Best>();
   for (const hit of hits) {
     const face = faceByExternal.get(hit.externalFaceId);
     if (!face || face.photoId !== hit.photoId) continue;
     const photo = photoById.get(hit.photoId);
     if (!photo || photo.eventId !== job.eventId || photo.status !== "indexed") continue;
     const score = unitInterval(hit.similarity);
-    if (score < DEFAULT_MATCH_THRESHOLD) continue;
+    const accepted =
+      hit.cosine === undefined
+        ? score >= DEFAULT_MATCH_THRESHOLD
+        : hit.cosine >= deps.env.INSIGHTFACE_MIN_COSINE;
+    if (!accepted) continue;
     const previous = best.get(hit.photoId);
-    if (!previous || score > previous.score) {
-      best.set(hit.photoId, { faceId: face.id, externalId: face.externalId, score });
+    if (!previous || score > previous.score || (score === previous.score && (hit.cosine ?? 0) > (previous.cosine ?? 0))) {
+      best.set(hit.photoId, { faceId: face.id, externalId: face.externalId, score, cosine: hit.cosine });
     }
   }
-  const ranked = [...best.entries()].sort((a, b) => b[1].score - a[1].score);
-  const anchors = ranked.slice(0, ANCHOR_COUNT).map(([, item]) => item.externalId);
+  const ranked = [...best.entries()].sort(
+    (a, b) => b[1].score - a[1].score || (b[1].cosine ?? 0) - (a[1].cosine ?? 0),
+  );
+  // Anchors: only sure hits (cosine ≥ ANCHOR_MIN); engines without a cosine keep the top five.
+  const anchors = ranked
+    .filter(([, item]) => item.cosine === undefined || item.cosine >= deps.env.INSIGHTFACE_ANCHOR_MIN_COSINE)
+    .slice(0, ANCHOR_COUNT)
+    .map(([, item]) => item.externalId);
   await deps.db.replaceGallery(
     job.userId,
     job.eventId,
@@ -381,14 +537,123 @@ async function matchSelfie(
     })),
     anchors,
   );
-  await deps.objects.delete(job.selfieKey);
+  await deps.db.updateGalleryMatch(job.userId, job.eventId, {
+    queryEmbedding,
+    lastMatchReason: ranked.length === 0 ? "no_photos_yet" : null,
+    selfieKey: deps.env.KEEP_SELFIES ? job.selfieKey : null,
+  });
+  const kept = new Map(ranked.map(([photoId, item]) => [photoId, item.externalId]));
+  await logMatchRun(context, deps, {
+    reason: ranked.length === 0 ? "no_photos_yet" : null,
+    selfieFaces,
+    engineMs,
+    hits: hits.map((hit) => ({
+      photoId: hit.photoId,
+      externalFaceId: hit.externalFaceId,
+      cosine: hit.cosine ?? unitInterval(hit.similarity),
+      similarity: unitInterval(hit.similarity),
+      kept: kept.get(hit.photoId) === hit.externalFaceId,
+    })),
+  });
+  if (!deps.env.KEEP_SELFIES) await deps.objects.delete(job.selfieKey);
   await enqueue(deps, "email", {
     userId: job.userId,
     eventId: job.eventId,
     galleryPath: `/e/${event.slug}`,
     kind: "ready",
   } satisfies EmailPayload);
-  return undefined;
+  return { hits: ranked.length };
+}
+
+/** Empty gallery + reason; the selfie is deleted unless KEEP_SELFIES keeps it for inspection. */
+async function emptyGallery(
+  context: MatchContext,
+  deps: WorkerDeps,
+  reason: SelfieRejectReason | "liveness",
+  queryEmbedding: number[] | null,
+): Promise<void> {
+  const { job } = context;
+  await deps.db.replaceGallery(job.userId, job.eventId, [], []);
+  await deps.db.updateGalleryMatch(job.userId, job.eventId, {
+    queryEmbedding,
+    lastMatchReason: reason,
+    selfieKey: deps.env.KEEP_SELFIES ? job.selfieKey : null,
+  });
+  if (!deps.env.KEEP_SELFIES) await deps.objects.delete(job.selfieKey);
+}
+
+async function logMatchRun(
+  context: MatchContext,
+  deps: WorkerDeps,
+  run: { reason: string | null; selfieFaces: number | null; engineMs: number | null; hits: MatchHitInsert[] },
+): Promise<void> {
+  if (!deps.env.MATCH_LOG) return;
+  const runId = await deps.db.insertMatchRun({
+    userId: context.job.userId,
+    eventId: context.job.eventId,
+    liveness: context.liveness,
+    reason: run.reason,
+    selfieSha256: context.selfieSha256,
+    selfieFaces: run.selfieFaces,
+    engineMs: run.engineMs,
+    hits: run.hits.length,
+  });
+  await deps.db.insertMatchHits(runId, run.hits);
+}
+
+/**
+ * The selfie gate (v5, A1): no face, largest face long edge below `SELFIE_MIN_FACE_PX`
+ * (in the pixels of the image the engine saw; skipped when the engine does not report a
+ * size), quality below `SELFIE_MIN_QUALITY`, or a second face at least half the area of
+ * the largest one.
+ */
+export function selfieRejectReason(
+  embedded: EmbedSelfieResult,
+  env: Pick<Env, "SELFIE_MIN_FACE_PX" | "SELFIE_MIN_QUALITY">,
+): SelfieRejectReason | null {
+  const largest = largestFace(embedded.faces);
+  if (!largest) return "no_face";
+  if (embedded.width > 0 && embedded.height > 0) {
+    const longEdge = Math.max(largest.bbox.width * embedded.width, largest.bbox.height * embedded.height);
+    if (longEdge < env.SELFIE_MIN_FACE_PX) return "face_too_small";
+  }
+  if (largest.quality < env.SELFIE_MIN_QUALITY) return "low_quality";
+  const largestArea = faceArea(largest);
+  for (const face of embedded.faces) {
+    if (face === largest) continue;
+    if (faceArea(face) >= SECOND_FACE_AREA_RATIO * largestArea) return "multiple_faces";
+  }
+  return null;
+}
+
+function faceArea(face: SelfieFace): number {
+  return Math.max(0, face.bbox.width) * Math.max(0, face.bbox.height);
+}
+
+function largestFace(faces: readonly SelfieFace[]): SelfieFace | undefined {
+  let best: SelfieFace | undefined;
+  let bestArea = -1;
+  for (const face of faces) {
+    const area = faceArea(face);
+    if (area > bestArea) {
+      best = face;
+      bestArea = area;
+    }
+  }
+  return best;
+}
+
+/**
+ * Gallery score (0..1) of a raw cosine, the same mapping the InsightFace engine uses:
+ * `MIN` ↔ 0.8, `SURE` ↔ 1.
+ */
+function cosineScore(
+  cosine: number,
+  env: Pick<Env, "INSIGHTFACE_MIN_COSINE" | "INSIGHTFACE_SURE_COSINE">,
+): number {
+  const span = env.INSIGHTFACE_SURE_COSINE - env.INSIGHTFACE_MIN_COSINE;
+  const t = span > 0 ? (cosine - env.INSIGHTFACE_MIN_COSINE) / span : 1;
+  return 0.8 + 0.2 * Math.min(1, Math.max(0, t));
 }
 
 async function retainEvent(
@@ -398,6 +663,43 @@ async function retainEvent(
   const event = await deps.db.findEventById(job.eventId);
   if (!event) return;
   const cutoff = new Date(Date.now() - event.retentionDays * 24 * 60 * 60 * 1000);
+  await deletePhotosBefore(event, cutoff, job.actorId, { retention: true }, deps);
+  if ((await deps.db.countPhotos(event.id)) === 0) {
+    await deps.faces.deleteCollection(event.id);
+  }
+}
+
+/**
+ * `reset` (v5, D): the event goes back to empty. Every photo leaves through the retention
+ * loop (faces, anchors, objects, rows, one audit row per photo), then the galleries, the
+ * match log and the engine collection are dropped. Participants and photographers stay.
+ */
+async function resetEvent(job: { type: "reset" } & ResetPayload, deps: WorkerDeps): Promise<void> {
+  const event = await deps.db.findEventById(job.eventId);
+  if (!event) return;
+  // One second ahead of `now`: a photo inserted in the same millisecond must go too.
+  const cutoff = new Date(Date.now() + 1000);
+  const photos = await deletePhotosBefore(event, cutoff, job.actorId, { reset: true }, deps);
+  const galleries = await deps.db.deleteGalleriesByEvent(event.id);
+  const matchRuns = await deps.db.deleteMatchRunsByEvent(event.id);
+  await deps.faces.deleteCollection(event.id);
+  await deps.db.insertAudit({
+    actorId: job.actorId,
+    action: "event.reset",
+    target: `event:${event.id}`,
+    meta: { photos, galleries, matchRuns },
+  });
+}
+
+/** Deletes the photos of the event created before `cutoff`, in batches; returns how many. */
+async function deletePhotosBefore(
+  event: EventRow,
+  cutoff: Date,
+  actorId: string,
+  auditMeta: Record<string, unknown>,
+  deps: WorkerDeps,
+): Promise<number> {
+  let deleted = 0;
   for (;;) {
     const photos = await deps.db.listPhotosCreatedBefore(
       event.id,
@@ -426,16 +728,15 @@ async function retainEvent(
     for (const photo of photos) {
       await deps.db.deletePhoto(photo.id);
       await deps.db.insertAudit({
-        actorId: job.actorId,
+        actorId,
         action: "photo.deleted",
         target: `photo:${photo.id}`,
-        meta: { eventId: event.id, retention: true },
+        meta: { eventId: event.id, ...auditMeta },
       });
+      deleted += 1;
     }
   }
-  if ((await deps.db.countPhotos(event.id)) === 0) {
-    await deps.faces.deleteCollection(event.id);
-  }
+  return deleted;
 }
 
 async function sendGalleryMail(
@@ -465,7 +766,7 @@ export async function applyFinalFailure(
     await deps.db.setPhotoError(photo.id, reason);
     return;
   }
-  if (job.type === "match") {
+  if (job.type === "match" && !deps.env.KEEP_SELFIES) {
     await deps.objects.delete(job.selfieKey);
   }
   // `verify`: nothing to undo; the photo keeps serving its web derivative.
@@ -510,12 +811,18 @@ async function renderJpeg(
   return new Uint8Array(rendered);
 }
 
-/** EXIF-oriented JPEG small enough for Rekognition's Bytes API. */
-async function fitRekognitionJpeg(bytes: Uint8Array): Promise<Uint8Array> {
-  let maxEdge = 2048;
-  let quality = 85;
+/**
+ * EXIF-oriented JPEG at most `maxEdge` long and under `maxBytes`: the quality drops first,
+ * then the edge, until it fits. Used for selfies (Rekognition's 5 MB) and detection images.
+ */
+async function fitJpeg(
+  bytes: Uint8Array,
+  maxBytes: number,
+  maxEdge = 2048,
+  quality = 85,
+): Promise<Uint8Array> {
   let rendered = await renderJpeg(bytes, maxEdge, quality);
-  while (rendered.byteLength > REKOGNITION_MAX_IMAGE_BYTES && maxEdge > 480) {
+  while (rendered.byteLength > maxBytes && maxEdge > 480) {
     if (quality > 55) quality -= 10;
     else {
       maxEdge = Math.floor(maxEdge * 0.75);
@@ -523,8 +830,8 @@ async function fitRekognitionJpeg(bytes: Uint8Array): Promise<Uint8Array> {
     }
     rendered = await renderJpeg(bytes, maxEdge, quality);
   }
-  if (rendered.byteLength > REKOGNITION_MAX_IMAGE_BYTES) {
-    throw new Error("Image exceeds the Rekognition byte limit");
+  if (rendered.byteLength > maxBytes) {
+    throw new Error("Image exceeds the engine byte limit");
   }
   return rendered;
 }

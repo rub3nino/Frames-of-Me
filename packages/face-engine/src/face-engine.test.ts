@@ -115,7 +115,7 @@ describe("FakeFaceEngine", () => {
       contentType: "image/png",
     });
     assert.deepEqual(hits, [
-      { externalFaceId: "fake-photo-red", photoId: "photo-red", similarity: 99 },
+      { externalFaceId: "fake-photo-red", photoId: "photo-red", similarity: 99, cosine: 1 },
     ]);
   });
 
@@ -736,7 +736,7 @@ describe("searchFaces", () => {
     });
     const hits = await face.searchFaces({ eventId: "event-1", externalFaceId: "fake-photo-a" });
     assert.deepEqual(hits, [
-      { externalFaceId: "fake-photo-b", photoId: "photo-b", similarity: 99 },
+      { externalFaceId: "fake-photo-b", photoId: "photo-b", similarity: 99, cosine: 1 },
     ]);
     assert.deepEqual(
       await face.searchFaces({ eventId: "event-1", externalFaceId: "fake-missing" }),
@@ -771,7 +771,7 @@ describe("searchFaces", () => {
     const face = new FakeFaceEngine(store);
     const hits = await face.searchFaces({ eventId: "event-1", externalFaceId: "fake-photo-a" });
     assert.deepEqual(hits, [
-      { externalFaceId: "fake-photo-b", photoId: "photo-b", similarity: 99 },
+      { externalFaceId: "fake-photo-b", photoId: "photo-b", similarity: 99, cosine: 1 },
     ]);
     assert.equal(queries.length, 2);
     assert.match(queries[0] ?? "", /WHERE external_face_id = \$1/);

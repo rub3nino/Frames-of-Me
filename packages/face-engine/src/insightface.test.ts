@@ -4,6 +4,9 @@ import { createFaceEngine } from "./index.ts";
 import {
   CREATE_EXTENSION_SQL,
   DELETE_FACES_SQL,
+  DELETE_PHOTO_SQL,
+  EMBED_TIMEOUT_MS,
+  HEALTH_TIMEOUT_MS,
   FACE_VECTORS_DDL,
   FaceServiceUnavailable,
   FaceVectorsTableMissing,
@@ -66,14 +69,14 @@ function missingTableSql(extensionOk = false): VectorSql & { calls: string[] } {
   return sql;
 }
 
-type FetchCall = { url: string; body: FormData };
+type FetchCall = { url: string; body: FormData; signal: AbortSignal | null | undefined; method: string | undefined };
 
 function stubFetch(
   respond: (call: FetchCall) => Response | Promise<Response>,
 ): typeof fetch & { calls: FetchCall[] } {
   const calls: FetchCall[] = [];
   const impl = (async (input: string | URL | Request, init?: RequestInit) => {
-    const call = { url: String(input), body: init?.body as FormData };
+    const call = { url: String(input), body: init?.body as FormData, signal: init?.signal, method: init?.method };
     calls.push(call);
     return respond(call);
   }) as typeof fetch & { calls: FetchCall[] };
@@ -138,10 +141,12 @@ describe("InsightFace similarity mapping", () => {
     );
     const defaults = engine({ env: { FACE_SERVICE_URL: " http://face:8090/ " } });
     assert.equal(defaults.serviceUrl, "http://face:8090");
-    assert.equal(defaults.minCosine, 0.45);
-    assert.equal(defaults.sureCosine, 0.65);
-    assert.equal(defaults.searchMaxFaces, 500);
-    assert.equal(defaults.minFaceQuality, 0.3);
+    assert.equal(defaults.minCosine, 0.5);
+    assert.equal(defaults.sureCosine, 0.7);
+    assert.equal(defaults.searchMaxFaces, 200);
+    assert.equal(defaults.indexMaxFaces, 100);
+    assert.equal(defaults.minFaceQuality, 0.2);
+    assert.throws(() => engine({ env: { INSIGHTFACE_INDEX_MAX_FACES: "151" } }), /INDEX_MAX_FACES/);
   });
 });
 
@@ -157,8 +162,8 @@ describe("InsightFace indexPhoto", () => {
         height: 50,
         faces: [
           face(1, { quality: 0.95, score: 0.99, bbox: { left: 0.5, top: 0.25, width: 0.3, height: 0.5 } }),
-          face(2, { quality: 0.3 }),
-          face(3, { quality: 0.29 }),
+          face(2, { quality: 0.2 }),
+          face(3, { quality: 0.19 }),
           face(4, { embedding: [1, 2, 3] }),
         ],
       }),
@@ -169,7 +174,7 @@ describe("InsightFace indexPhoto", () => {
       imageBytes: BYTES,
       contentType: "image/jpeg",
     });
-    assert.equal(fetch.calls[0]?.url, "http://localhost:8090/v1/embed?max_faces=50");
+    assert.equal(fetch.calls[0]?.url, "http://localhost:8090/v1/embed?max_faces=100&min_size=24");
     const image = fetch.calls[0]?.body.get("image");
     assert.ok(image instanceof Blob);
     assert.equal(image.type, "image/jpeg");
@@ -184,6 +189,11 @@ describe("InsightFace indexPhoto", () => {
     ]);
     const inserts = sql.calls.filter((call) => call.query === INSERT_FACES_SQL);
     assert.equal(inserts.length, 1);
+    // v5 (A2): the photo's previous vectors go first, in the same transaction as the insert.
+    const deletes = sql.calls.filter((call) => call.query === DELETE_PHOTO_SQL);
+    assert.equal(deletes.length, 1);
+    assert.deepEqual(deletes[0]?.params, [PHOTO]);
+    assert.ok(sql.calls.indexOf(deletes[0] as Call) < sql.calls.indexOf(inserts[0] as Call));
     assert.equal(inserts[0]?.params[0], EVENT);
     assert.equal(inserts[0]?.params[1], PHOTO);
     const vectors = inserts[0]?.params[2] as string[];
@@ -192,7 +202,7 @@ describe("InsightFace indexPhoto", () => {
     assert.equal(vectors[0]?.split(",").length, 512);
   });
 
-  it("returns [] and skips the insert when no face passes the filter", async () => {
+  it("returns [] and skips the insert when no face passes the filter, still clearing old vectors", async () => {
     const sql = stubSql();
     const faces = await engine({
       sql,
@@ -200,6 +210,7 @@ describe("InsightFace indexPhoto", () => {
     }).indexPhoto({ eventId: EVENT, photoId: PHOTO, imageBytes: BYTES, contentType: "image/png" });
     assert.deepEqual(faces, []);
     assert.equal(sql.calls.some((call) => call.query === INSERT_FACES_SQL), false);
+    assert.equal(sql.calls.filter((call) => call.query === DELETE_PHOTO_SQL).length, 1);
   });
 
   it("treats 400 as no faces and 5xx / connection errors as FaceServiceUnavailable", async () => {
@@ -246,8 +257,11 @@ describe("InsightFace indexPhoto", () => {
     const subject = engine({ sql });
     await subject.ready();
     assert.deepEqual(sql.calls, [TABLE_EXISTS_SQL, CREATE_EXTENSION_SQL, ...FACE_VECTORS_DDL]);
-    assert.equal(FACE_VECTORS_DDL.length, 4);
-    assert.ok(FACE_VECTORS_DDL.every((statement) => /if not exists/.test(statement)));
+    assert.equal(FACE_VECTORS_DDL.length, 5);
+    assert.ok(FACE_VECTORS_DDL.every((statement) => /if not exists|not exists \(select 1 from pg_constraint/.test(statement)), "idempotent DDL");
+    // v5 (A2): the foreign key on photos, guarded so it only runs once photos exists.
+    assert.match(FACE_VECTORS_DDL[4] ?? "", /references photos\(id\) on delete cascade/);
+    assert.match(FACE_VECTORS_DDL[4] ?? "", /to_regclass\('public.photos'\)/);
     await subject.ready();
     await subject.deleteCollection(EVENT);
     assert.equal(sql.calls.filter((query) => query === TABLE_EXISTS_SQL).length, 1, "checked once");
@@ -265,7 +279,7 @@ describe("InsightFace search", () => {
     { external_face_id: "f6", photo_id: "p6", cos: -0.2 },
   ];
 
-  it("embeds the selfie, searches with the largest face and maps cosine to 80..100", async () => {
+  it("embeds the selfie, searches with the largest face and maps cosine to 80..100 with the raw cosine", async () => {
     const sql = stubSql((call) => (call.query === SEARCH_SQL ? rows : []));
     const small = face(1, { bbox: { left: 0, top: 0, width: 0.1, height: 0.1 } });
     const big = face(2, { bbox: { left: 0, top: 0, width: 0.5, height: 0.4 } });
@@ -273,19 +287,19 @@ describe("InsightFace search", () => {
       sql,
       fetch: stubFetch(() => json(200, { width: 1, height: 1, faces: [small, big] })),
     }).search({ eventId: EVENT, imageBytes: BYTES, contentType: "image/jpeg" });
+    // Defaults MIN 0.5 / SURE 0.7: 0.9 → 100, 0.65 → 95, 0.55 → 85, 0.45 and below dropped.
     assert.deepEqual(hits, [
-      { externalFaceId: "f1", photoId: "p1", similarity: 100 },
-      { externalFaceId: "f2", photoId: "p2", similarity: 100 },
-      { externalFaceId: "f3", photoId: "p3", similarity: 90 },
-      { externalFaceId: "f4", photoId: "p4", similarity: 80 },
+      { externalFaceId: "f1", photoId: "p1", similarity: 100, cosine: 0.9 },
+      { externalFaceId: "f2", photoId: "p2", similarity: 95, cosine: 0.65 },
+      { externalFaceId: "f3", photoId: "p3", similarity: 85, cosine: 0.55 },
     ]);
     const search = sql.calls.find((call) => call.query === SEARCH_SQL);
     assert.ok(search);
     assert.equal(search.params[0], `[${big.embedding.join(",")}]`);
     assert.equal(search.params[1], EVENT);
-    assert.equal(search.params[2], 500);
+    assert.equal(search.params[2], 200);
     const setLocal = sql.calls.find((call) => call.query.startsWith("set local hnsw.ef_search"));
-    assert.equal(setLocal?.query, "set local hnsw.ef_search = 500");
+    assert.equal(setLocal?.query, "set local hnsw.ef_search = 200");
     assert.ok(sql.calls.indexOf(setLocal as Call) < sql.calls.indexOf(search));
   });
 
@@ -332,9 +346,9 @@ describe("InsightFace search", () => {
     const fetch = stubFetch(() => json(200, {}));
     const subject = engine({ sql, fetch });
     const hits = await subject.searchFaces({ eventId: EVENT, externalFaceId: "f1" });
-    assert.deepEqual(hits, [{ externalFaceId: "f2", photoId: "p2", similarity: 100 }]);
+    assert.deepEqual(hits, [{ externalFaceId: "f2", photoId: "p2", similarity: 100, cosine: 0.7 }]);
     const query = sql.calls.find((call) => call.query === SEARCH_EXCLUDING_SQL);
-    assert.deepEqual(query?.params, [stored, EVENT, 500, "f1"]);
+    assert.deepEqual(query?.params, [stored, EVENT, 200, "f1"]);
     assert.equal(fetch.calls.length, 0, "no HTTP round trip for searchFaces");
 
     assert.deepEqual(await subject.searchFaces({ eventId: EVENT, externalFaceId: "nope" }), []);
@@ -404,5 +418,127 @@ describe("createFaceEngine with insightface", () => {
     assert.equal(rekognition.checkLiveness, undefined);
     assert.throws(() => createFaceEngine({ FACE_ENGINE: "rekognition", FACE_SEARCH_TPS: "-2" }));
     assert.throws(() => createFaceEngine({ FACE_ENGINE: "other" }), /insightface/);
+  });
+});
+
+// ---- v5 (agent A): selfie embedding, vector search, timeouts ------------------------------
+
+describe("InsightFace v5 vector path", () => {
+  const rows = [
+    { external_face_id: "f1", photo_id: "p1", cos: 0.9 },
+    { external_face_id: "f2", photo_id: "p2", cos: 0.6 },
+    { external_face_id: "f3", photo_id: "p3", cos: 0.3 },
+    { external_face_id: "f4", photo_id: "p4", cos: 0.2 },
+  ];
+
+  it("embedSelfie returns every face with its embedding and the detection size, no quality filter", async () => {
+    const fetch = stubFetch(() =>
+      json(200, {
+        width: 640,
+        height: 480,
+        faces: [face(1, { quality: 0.1, bbox: { left: 0.2, top: 0.1, width: 0.5, height: 0.6 } }), face(2, { embedding: [1] }), face(3)],
+      }),
+    );
+    const result = await engine({ fetch }).embedSelfie({ imageBytes: BYTES, contentType: "image/jpeg" });
+    assert.equal(result.width, 640);
+    assert.equal(result.height, 480);
+    assert.equal(result.faces.length, 2, "the malformed embedding is dropped, the low quality face kept");
+    assert.deepEqual(result.faces[0]?.bbox, { left: 0.2, top: 0.1, width: 0.5, height: 0.6 });
+    assert.equal(result.faces[0]?.quality, 0.1);
+    assert.equal(result.faces[0]?.embedding.length, 512);
+    assert.equal(fetch.calls[0]?.url, "http://localhost:8090/v1/embed?max_faces=100&min_size=24");
+    const none = await engine({ fetch: stubFetch(() => new Response("", { status: 400 })) }).embedSelfie({
+      imageBytes: BYTES,
+      contentType: "image/jpeg",
+    });
+    assert.deepEqual(none, { faces: [], width: 0, height: 0 });
+  });
+
+  it("searchByVector maps cosine with the raw value, honours minCosine below MIN (similarity 0) and maxFaces", async () => {
+    const sql = stubSql((call) => (call.query === SEARCH_SQL ? rows : []));
+    const subject = engine({ sql });
+    const vector = embedding(5);
+    const hits = await subject.searchByVector({ eventId: EVENT, embedding: vector });
+    assert.deepEqual(hits, [
+      { externalFaceId: "f1", photoId: "p1", similarity: 100, cosine: 0.9 },
+      { externalFaceId: "f2", photoId: "p2", similarity: 90, cosine: 0.6 },
+    ]);
+    const search = sql.calls.find((call) => call.query === SEARCH_SQL);
+    assert.deepEqual(search?.params, [`[${vector.join(",")}]`, EVENT, 200]);
+
+    const logged = await subject.searchByVector({ eventId: EVENT, embedding: vector, minCosine: 0.25, maxFaces: 7 });
+    assert.deepEqual(
+      logged.map((hit) => [hit.externalFaceId, hit.similarity, hit.cosine]),
+      [
+        ["f1", 100, 0.9],
+        ["f2", 90, 0.6],
+        ["f3", 0, 0.3],
+      ],
+    );
+    const last = sql.calls.filter((call) => call.query === SEARCH_SQL).at(-1);
+    assert.equal(last?.params[2], 7);
+    assert.ok(sql.calls.some((call) => call.query === "set local hnsw.ef_search = 100"));
+    await assert.rejects(subject.searchByVector({ eventId: EVENT, embedding: [1, 2, 3] }), /512/);
+  });
+
+  it("faceEmbedding parses the stored vector and returns null for unknown ids", async () => {
+    const stored = embedding(3);
+    const sql = stubSql((call) =>
+      call.query === SELECT_VECTOR_SQL && call.params[0] === "f1" ? [{ embedding: `[${stored.join(",")}]` }] : [],
+    );
+    const subject = engine({ sql });
+    const parsed = await subject.faceEmbedding({ eventId: EVENT, externalFaceId: "f1" });
+    assert.ok(parsed);
+    assert.equal(parsed.length, 512);
+    assert.ok(Math.abs((parsed[0] ?? 0) - (stored[0] ?? 0)) < 1e-9);
+    assert.equal(await subject.faceEmbedding({ eventId: EVENT, externalFaceId: "nope" }), null);
+  });
+
+  it("posts embed/search with a 60 s abort signal and health with a 10 s one", async () => {
+    const fetch = stubFetch((call) =>
+      call.method === "GET" ? new Response("ok", { status: 200 }) : json(200, { width: 1, height: 1, faces: [] }),
+    );
+    const subject = engine({ fetch });
+    await subject.search({ eventId: EVENT, imageBytes: BYTES, contentType: "image/jpeg" });
+    assert.equal(EMBED_TIMEOUT_MS, 60_000);
+    assert.equal(HEALTH_TIMEOUT_MS, 10_000);
+    assert.ok(fetch.calls[0]?.signal instanceof AbortSignal, "embed carries an abort signal");
+    assert.equal(fetch.calls[0]?.signal?.aborted, false);
+    assert.equal(await subject.health(), true);
+    assert.equal(fetch.calls[1]?.method, "GET");
+    assert.equal(fetch.calls[1]?.url, "http://localhost:8090/health");
+    assert.ok(fetch.calls[1]?.signal instanceof AbortSignal, "health carries an abort signal");
+    // A timeout surfaces as FaceServiceUnavailable, like a connection failure.
+    const timedOut = engine({
+      fetch: stubFetch(() => {
+        throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+      }),
+    });
+    await assert.rejects(
+      timedOut.search({ eventId: EVENT, imageBytes: BYTES, contentType: "image/jpeg" }),
+      FaceServiceUnavailable,
+    );
+    assert.equal(await timedOut.health(), false);
+  });
+
+  it("cosineSimilarity is 1 for equal vectors, 0 for orthogonal or empty ones", async () => {
+    const { cosineSimilarity } = await import("./insightface.ts");
+    assert.ok(Math.abs(cosineSimilarity(embedding(1), embedding(1)) - 1) < 1e-9);
+    assert.equal(cosineSimilarity([1, 0], [0, 1]), 0);
+    assert.equal(cosineSimilarity([], [1]), 0);
+  });
+
+  it("the limiter forwards embedSelfie, searchByVector and faceEmbedding only when the inner engine has them", () => {
+    const limited = createFaceEngine({
+      FACE_ENGINE: "insightface",
+      DATABASE_URL: "postgres://x",
+    }) as RateLimitedFaceEngine;
+    assert.equal(typeof limited.embedSelfie, "function");
+    assert.equal(typeof limited.searchByVector, "function");
+    assert.equal(typeof limited.faceEmbedding, "function");
+    const rekognition = createFaceEngine({ FACE_ENGINE: "rekognition" }) as RateLimitedFaceEngine;
+    assert.equal(rekognition.embedSelfie, undefined);
+    assert.equal(rekognition.searchByVector, undefined);
+    assert.equal(rekognition.faceEmbedding, undefined);
   });
 });

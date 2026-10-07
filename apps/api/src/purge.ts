@@ -11,6 +11,8 @@ export async function purgePhoto(
   const externalIds = await deps.db.listExternalIds(photo.id);
   if (externalIds.length > 0) {
     await deps.faces.deleteFaces(photo.eventId, externalIds);
+    // Galleries anchored on this photo's faces must not keep dangling anchors (v5, A1).
+    await deps.db.removeAnchors(photo.eventId, externalIds);
   }
   const derivatives = await deps.db.listDerivatives(photo.id);
   await deps.objects.delete(photo.originalKey);

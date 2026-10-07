@@ -68,7 +68,7 @@ describe("MemoryDatabase jobs", () => {
     );
     db.setJobCreatedAt(laterIndex, new Date(Date.now() + 1));
     assert.equal(db.jobView(matchJob)?.priority, 0);
-    assert.equal(db.jobView(indexJob)?.priority, 60);
+    assert.equal(db.jobView(indexJob)?.priority, 40);
     assert.equal(db.jobView(retention)?.priority, 90);
 
     const order: string[] = [];

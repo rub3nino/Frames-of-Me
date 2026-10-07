@@ -183,7 +183,9 @@ test("attach adds a later matching photo to the gallery and notifies at most onc
   const attached = page.items.find((item) => item.photoId === second);
   assert.ok(attached);
   assert.equal(attached.source, "attach");
-  assert.equal(attached.score, 0.99);
+  // v5: the stored score is the best of the anchor hit (0.99) and the selfie-vector match
+  // (cosine 1 with the fake engine → 1).
+  assert.equal(attached.score, 1);
   assert.equal(page.items.find((item) => item.photoId === first)?.source, "match");
   assert.equal(f.mailer.sent.length, 2);
   assert.equal(f.mailer.sent[1]?.subject, "Ci sono nuove foto per te");

@@ -65,6 +65,9 @@ export type UploadSessionRow = {
   /** Web stage only: what the original will be (`photos.content_type` / `photos.bytes`). */
   originalContentType: ImageContentType | null;
   originalBytes: number | null;
+  /** v5: carried to the photo row at complete. */
+  filename: string | null;
+  tags: string[];
   createdAt: Date;
 };
 
@@ -133,6 +136,11 @@ export type ClaimedJob = {
   attempts: number;
 };
 
+/** `claimJob` filter: job types this claim must skip (circuit breaker on the face service). */
+export type ClaimOptions = {
+  excludeTypes?: readonly JobType[];
+};
+
 export type BBox = { x: number; y: number; width: number; height: number };
 
 export type FaceInsert = {
@@ -192,6 +200,9 @@ export interface Database {
     photoId?: string | null;
     originalContentType?: ImageContentType | null;
     originalBytes?: number | null;
+    /** v5: carried to the photo row at complete. */
+    filename?: string | null;
+    tags?: string[];
   }): Promise<void>;
   findUploadSession(id: string): Promise<UploadSessionRow | null>;
   markUploadSession(id: string, status: "completed" | "aborted"): Promise<boolean>;
@@ -215,6 +226,9 @@ export interface Database {
     bytes: number;
     /** Defaults to `present`. */
     originalStatus?: OriginalStatus;
+    /** v5: client filename and free tags (`photos.filename`, `photos.tags`). */
+    filename?: string | null;
+    tags?: string[];
   }): Promise<PhotoRow>;
   findPhoto(id: string): Promise<PhotoRow | null>;
   setOriginalStatus(photoId: string, status: OriginalStatus): Promise<void>;
@@ -261,14 +275,24 @@ export interface Database {
   findGalleryByUser(
     userId: string,
     eventId: string,
-  ): Promise<{ id: string; anchorFaceIds: string[]; matchedAt: Date | null } | null>;
+  ): Promise<{
+    id: string;
+    anchorFaceIds: string[];
+    matchedAt: Date | null;
+    /** `galleries.last_match_reason` (v5): null after a successful match. */
+    reason: string | null;
+    /** `galleries.selfie_key` (v5): the kept selfie object when KEEP_SELFIES is on. */
+    selfieKey: string | null;
+    /** True when a selfie vector is stored (`query_embedding is not null`). */
+    hasQueryVector: boolean;
+  } | null>;
   /** Items ordered by `score desc, photo_id asc`, keyset from `cursor`. Items missing a derivative are skipped. */
   listGalleryPage(
     userId: string,
     eventId: string,
     input: { limit: number; cursor?: GalleryCursor },
   ): Promise<GalleryPage>;
-  /** How many galleries of the event have at least one anchor (attach is a no-op when zero). */
+  /** How many galleries of the event have anchors or a selfie vector (attach is a no-op when zero). */
   countAnchoredGalleries(eventId: string): Promise<number>;
   /** Galleries of the event whose anchors overlap `externalFaceIds`. */
   findGalleriesByAnchors(eventId: string, externalFaceIds: string[]): Promise<AnchoredGallery[]>;
@@ -309,7 +333,7 @@ export interface Database {
   metrics(): Promise<Metrics>;
   /** With a `dedupeKey` that already has a queued/running job, returns that job's id and inserts nothing. */
   enqueueJob(type: JobType, payload: unknown, opts?: EnqueueJobOptions): Promise<string>;
-  claimJob(): Promise<ClaimedJob | null>;
+  claimJob(options?: ClaimOptions): Promise<ClaimedJob | null>;
   completeJob(id: string): Promise<void>;
   failJob(id: string, error: string): Promise<"queued" | "error">;
   /** Immediate terminal failure: `error`, `attempts = JOB_MAX_ATTEMPTS`. */
@@ -318,4 +342,245 @@ export interface Database {
   requeueJob(id: string, error: string): Promise<void>;
   /** Deletes `done` jobs created before the cutoff; returns how many. */
   pruneJobs(input: { doneOlderThan: Date }): Promise<number>;
+
+  // ---- recognition + robustness v5 (agent A) --------------------------------------------
+  /**
+   * Sets the match bookkeeping of a gallery (created empty when missing): the selfie vector
+   * (`query_embedding`, null clears it), `last_match_reason` and `selfie_key`. Fields left
+   * `undefined` are untouched.
+   */
+  updateGalleryMatch(userId: string, eventId: string, patch: GalleryMatchPatch): Promise<void>;
+  /**
+   * Galleries of the event whose stored selfie vector has cosine ≥ `minCosine` with
+   * `embedding` (pgvector `<=>` over `galleries.query_embedding`), best first.
+   */
+  findGalleriesByQueryVector(
+    eventId: string,
+    embedding: number[],
+    minCosine: number,
+  ): Promise<QueryVectorGallery[]>;
+  /** MATCH_LOG: one row per `match` run; returns the run id. */
+  insertMatchRun(input: MatchRunInsert): Promise<string>;
+  /** MATCH_LOG: every engine hit of a run (kept = it made the gallery). */
+  insertMatchHits(runId: string, hits: MatchHitInsert[]): Promise<void>;
+  /** Heartbeat of an in-flight job: `claimed_at = now()` so the stale reclaim leaves it alone. */
+  touchJob(id: string): Promise<void>;
+  /** `reset` job: drops every gallery (and items) of the event; returns how many. */
+  deleteGalleriesByEvent(eventId: string): Promise<number>;
+  /** `reset` job: drops the match log of the event; returns how many runs. */
+  deleteMatchRunsByEvent(eventId: string): Promise<number>;
+  /**
+   * Admin requeue: photos of the event in `status` (and, when given, with `error ilike
+   * '%errorLike%'`) go back to `uploaded`, or `processing` when both derivatives exist;
+   * `error` is cleared. Returns the photos with whether their web derivative exists, so the
+   * caller enqueues `index` (web present) or `derive`.
+   */
+  resetPhotosForRequeue(input: {
+    eventId: string;
+    status: PhotoStatus;
+    errorLike?: string;
+  }): Promise<Array<{ id: string; webReady: boolean }>>;
+
+  // ---- admin and participant tooling v5 (agent D) ----------------------------------------
+  /** Throws DuplicateKeyError when the slug exists. */
+  createEvent(input: {
+    slug: string;
+    name: string;
+    retentionDays?: number;
+    access?: EventAccess;
+  }): Promise<EventRow>;
+  listEventsWithCounts(): Promise<EventWithCounts[]>;
+  /** The user with this email and role (default `participant`). */
+  findUserByEmail(email: string, role?: Role): Promise<UserRow | null>;
+  /** Galleries of the event, newest match first (`matched_at desc nulls last, user_id`). */
+  listGalleriesPage(
+    eventId: string,
+    input: { limit: number; cursor?: GalleryListCursor },
+  ): Promise<{ galleries: GalleryListRow[]; nextCursor: GalleryListCursor | null }>;
+  /** Null when no participant has this email. `gallery` is null before the first match. */
+  findGalleryWithItemsByEmail(eventId: string, email: string): Promise<GalleryWithItems | null>;
+  findPhotoDetail(id: string): Promise<PhotoDetail | null>;
+  /** Newest first (`created_at desc, id desc`), filters AND-ed; `filename` is a prefix match. */
+  listPhotosAdmin(
+    filters: PhotoAdminFilters,
+    input: { limit: number; cursor?: UploadCursor },
+  ): Promise<{ items: PhotoAdminRow[]; nextCursor: UploadCursor | null }>;
+  /** `galleries.selfie_key` (set by the worker with KEEP_SELFIES); null when absent. */
+  findGallerySelfieKey(userId: string, eventId: string): Promise<string | null>;
+  /** Removes the gallery and its items; false when there was none. */
+  deleteGallery(userId: string, eventId: string): Promise<boolean>;
+  upsertFeedback(input: {
+    userId: string;
+    eventId: string;
+    photoId: string;
+    verdict: FeedbackVerdict;
+    scoreAtTime: number | null;
+  }): Promise<void>;
+  listFeedback(userId: string, eventId: string): Promise<Array<{ photoId: string; verdict: FeedbackVerdict }>>;
+  /** Newest first; `email` narrows to one participant. Reads agent A's match_runs/match_hits (006). */
+  listMatchRuns(
+    eventId: string,
+    input: { email?: string; limit: number; cursor?: UploadCursor },
+  ): Promise<{ runs: MatchRunRow[]; nextCursor: UploadCursor | null }>;
+  exportGalleries(eventId: string): AsyncIterable<GalleryExportRow>;
+  exportMatchHits(eventId: string): AsyncIterable<MatchHitExportRow>;
+  exportFeedback(eventId: string): AsyncIterable<FeedbackExportRow>;
+  /** Queue view by type, age of the oldest queued job and the last failures. Separate from `metrics()`. */
+  metricsExtras(): Promise<MetricsExtras>;
 }
+
+// ---- admin and participant tooling v5 (agent D) --------------------------------------------
+
+export type FeedbackVerdict = "me" | "not_me";
+
+export type EventWithCounts = EventRow & {
+  photos: number;
+  galleries: number;
+  participants: number;
+  photographers: number;
+};
+
+export type GalleryListCursor = { matchedAt: Date; userId: string };
+
+export type GalleryListRow = {
+  userId: string;
+  email: string;
+  total: number;
+  matchedAt: Date | null;
+  reason: string | null;
+};
+
+export type GalleryAdminItem = GalleryPageItem & {
+  faceId: string;
+  sha256: string;
+  filename: string | null;
+  feedback: FeedbackVerdict | null;
+};
+
+export type GalleryWithItems = {
+  user: UserRow;
+  gallery: {
+    id: string;
+    matchedAt: Date | null;
+    anchorFaceIds: string[];
+    reason: string | null;
+    total: number;
+  } | null;
+  items: GalleryAdminItem[];
+};
+
+export type PhotoAdminRow = PhotoRow & { filename: string | null; tags: string[] };
+
+export type PhotoAdminFilters = {
+  eventId: string;
+  sha256?: string;
+  filename?: string;
+  status?: PhotoStatus;
+  photographerId?: string;
+  tag?: string;
+};
+
+export type PhotoDetail = {
+  photo: PhotoAdminRow;
+  faces: Array<{ id: string; externalId: string; bbox: BBox; confidence: number }>;
+  galleries: Array<{
+    userId: string;
+    email: string;
+    score: number;
+    source: GalleryItemSource;
+    faceId: string;
+    feedback: FeedbackVerdict | null;
+  }>;
+};
+
+export type MatchRunRow = {
+  id: string;
+  userId: string;
+  email: string;
+  liveness: string | null;
+  reason: string | null;
+  selfieSha256: string | null;
+  selfieFaces: number | null;
+  engineMs: number | null;
+  hits: number;
+  createdAt: Date;
+  kept: number;
+  maxCosine: number | null;
+};
+
+export type GalleryExportRow = {
+  email: string;
+  userId: string;
+  photoId: string;
+  sha256: string;
+  filename: string | null;
+  score: number;
+  source: GalleryItemSource;
+  faceId: string;
+  createdAt: Date;
+  feedback: FeedbackVerdict | null;
+};
+
+export type MatchHitExportRow = {
+  runId: string;
+  email: string;
+  userId: string;
+  runCreatedAt: Date;
+  photoId: string;
+  externalFaceId: string;
+  cosine: number;
+  similarity: number;
+  kept: boolean;
+};
+
+export type FeedbackExportRow = {
+  email: string;
+  userId: string;
+  photoId: string;
+  sha256: string;
+  filename: string | null;
+  verdict: FeedbackVerdict;
+  scoreAtTime: number | null;
+  createdAt: Date;
+};
+
+export type MetricsExtras = {
+  jobsByType: Array<{
+    type: string;
+    queued: number;
+    running: number;
+    error: number;
+    oldestQueuedSeconds: number | null;
+  }>;
+  oldestQueuedSeconds: number | null;
+  lastErrors: Array<{ id: string; type: string; error: string; at: Date }>;
+};
+
+// ---- recognition + robustness v5 (agent A) ------------------------------------------------
+
+export type GalleryMatchPatch = {
+  queryEmbedding?: number[] | null;
+  lastMatchReason?: string | null;
+  selfieKey?: string | null;
+};
+
+export type QueryVectorGallery = AnchoredGallery & { cosine: number };
+
+export type MatchRunInsert = {
+  userId: string;
+  eventId: string;
+  liveness: string | null;
+  reason: string | null;
+  selfieSha256: string | null;
+  selfieFaces: number | null;
+  engineMs: number | null;
+  hits: number;
+};
+
+export type MatchHitInsert = {
+  photoId: string;
+  externalFaceId: string;
+  cosine: number;
+  similarity: number;
+  kept: boolean;
+};

@@ -30,7 +30,40 @@ export interface SearchHit {
   externalFaceId: string;
   photoId: string;
   similarity: number; // 0..100
+  /** Raw cosine similarity (-1..1) when the engine has one (InsightFace, fake); absent for Rekognition. */
+  cosine?: number;
 }
+
+export interface EmbedSelfieInput {
+  imageBytes: Uint8Array;
+  contentType: ImageContentType;
+}
+
+/** One face of a selfie as the engine saw it, with its embedding (not stored). */
+export interface SelfieFace {
+  bbox: Box;
+  score: number; // 0..1 detector confidence
+  quality: number; // 0..1
+  embedding: number[];
+}
+
+export interface EmbedSelfieResult {
+  faces: SelfieFace[];
+  /** Pixel size of the image the engine detected on (0 when unknown). */
+  width: number;
+  height: number;
+}
+
+export interface SearchByVectorInput {
+  eventId: string;
+  embedding: number[];
+  /** Hits below this cosine are dropped; the engine's own minimum when absent. */
+  minCosine?: number;
+  /** Row limit; the engine's own maximum when absent. */
+  maxFaces?: number;
+}
+
+export type VectorHit = SearchHit & { cosine: number };
 
 export interface SearchFacesInput {
   eventId: string;
@@ -62,4 +95,15 @@ export interface FaceEngine {
    * liveness model implement it (InsightFace via the face service).
    */
   checkLiveness?(input: LivenessInput): Promise<LivenessResult>;
+  /**
+   * Detects the faces of a selfie and returns their embeddings without touching the
+   * collection, so the worker can gate the selfie (size, quality, face count) and search
+   * by vector. Optional: InsightFace and the fake engine implement it; Rekognition falls
+   * back to `search`.
+   */
+  embedSelfie?(input: EmbedSelfieInput): Promise<EmbedSelfieResult>;
+  /** Nearest faces of the event to a raw embedding, with the raw cosine on every hit. */
+  searchByVector?(input: SearchByVectorInput): Promise<VectorHit[]>;
+  /** Stored embedding of an indexed face, or null when unknown. Used by `attach` for the selfie-vector path. */
+  faceEmbedding?(input: SearchFacesInput): Promise<number[] | null>;
 }

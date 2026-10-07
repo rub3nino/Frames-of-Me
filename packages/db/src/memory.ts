@@ -29,6 +29,24 @@ import type {
   UploadStage,
   UploadSummary,
   UserRow,
+  EventWithCounts,
+  FeedbackExportRow,
+  FeedbackVerdict,
+  GalleryExportRow,
+  GalleryListCursor,
+  GalleryListRow,
+  GalleryWithItems,
+  MatchHitExportRow,
+  MatchRunRow,
+  MetricsExtras,
+  PhotoAdminFilters,
+  PhotoAdminRow,
+  PhotoDetail,
+  ClaimOptions,
+  GalleryMatchPatch,
+  MatchHitInsert,
+  MatchRunInsert,
+  QueryVectorGallery,
 } from "./types.js";
 
 const EVENT_ID = "00000000-0000-4000-8000-000000000001";
@@ -57,6 +75,10 @@ type Gallery = {
   anchorFaceIds: string[];
   matchedAt: Date | null;
   notifiedAt: Date | null;
+  // v5 (agent A): galleries.query_embedding / last_match_reason / selfie_key
+  queryEmbedding: number[] | null;
+  lastMatchReason: string | null;
+  selfieKey: string | null;
 };
 
 type Item = GalleryItemRow & { galleryId: string; source: GalleryItemSource; createdAt: Date };
@@ -83,6 +105,8 @@ type JobRow = {
   createdAt: Date;
   claimedAt: Date | null;
   lastError: string | null;
+  finishedAt: Date | null;
+  durationMs: number | null;
 };
 
 export class MemoryDatabase implements Database {
@@ -101,6 +125,11 @@ export class MemoryDatabase implements Database {
   private readonly invites: Invite[] = [];
   private readonly eventPhotographers = new Set<string>();
   private readonly eventParticipants = new Set<string>();
+  // v5 (agent D): photos.filename/tags, gallery_feedback, and a read model of match_runs/match_hits.
+  private readonly photoMeta = new Map<string, { filename: string | null; tags: string[] }>();
+  private readonly feedback: FeedbackRow[] = [];
+  private readonly matchRunRows: MatchRunStored[] = [];
+  private readonly matchHitRows: MatchHitStored[] = [];
 
   async seedDemo(): Promise<void> {
     if (!(await this.findEventBySlug("demo"))) {
@@ -291,8 +320,12 @@ export class MemoryDatabase implements Database {
     photoId?: string | null;
     originalContentType?: ImageContentType | null;
     originalBytes?: number | null;
+    filename?: string | null;
+    tags?: string[];
   }): Promise<void> {
     this.uploads.set(input.id, {
+      filename: input.filename ?? null,
+      tags: [...(input.tags ?? [])],
       id: input.id,
       eventId: input.eventId,
       photographerId: input.photographerId,
@@ -381,8 +414,11 @@ export class MemoryDatabase implements Database {
     contentType: ImageContentType;
     bytes: number;
     originalStatus?: OriginalStatus;
+    filename?: string | null;
+    tags?: string[];
   }): Promise<PhotoRow> {
     if (await this.findPhotoBySha(input.eventId, input.sha256)) throw new DuplicateKeyError();
+    this.photoMeta.set(input.id, { filename: input.filename ?? null, tags: [...(input.tags ?? [])] });
     const photo: PhotoRow = {
       id: input.id,
       eventId: input.eventId,
@@ -562,14 +598,7 @@ export class MemoryDatabase implements Database {
     const now = new Date();
     let gallery = this.galleryOf(userId, eventId);
     if (!gallery) {
-      gallery = {
-        id: randomUUID(),
-        userId,
-        eventId,
-        anchorFaceIds: [],
-        matchedAt: null,
-        notifiedAt: null,
-      };
+      gallery = this.newGallery(userId, eventId);
       this.galleries.push(gallery);
     }
     gallery.anchorFaceIds = [...anchors];
@@ -595,10 +624,24 @@ export class MemoryDatabase implements Database {
   async findGalleryByUser(
     userId: string,
     eventId: string,
-  ): Promise<{ id: string; anchorFaceIds: string[]; matchedAt: Date | null } | null> {
+  ): Promise<{
+    id: string;
+    anchorFaceIds: string[];
+    matchedAt: Date | null;
+    reason: string | null;
+    selfieKey: string | null;
+    hasQueryVector: boolean;
+  } | null> {
     const gallery = this.galleryOf(userId, eventId);
     if (!gallery) return null;
-    return { id: gallery.id, anchorFaceIds: [...gallery.anchorFaceIds], matchedAt: gallery.matchedAt };
+    return {
+      id: gallery.id,
+      anchorFaceIds: [...gallery.anchorFaceIds],
+      matchedAt: gallery.matchedAt,
+      reason: gallery.lastMatchReason,
+      selfieKey: gallery.selfieKey,
+      hasQueryVector: gallery.queryEmbedding !== null,
+    };
   }
 
   async listGalleryPage(
@@ -640,7 +683,9 @@ export class MemoryDatabase implements Database {
 
   async countAnchoredGalleries(eventId: string): Promise<number> {
     return this.galleries.filter(
-      (gallery) => gallery.eventId === eventId && gallery.anchorFaceIds.length > 0,
+      (gallery) =>
+        gallery.eventId === eventId &&
+        (gallery.anchorFaceIds.length > 0 || gallery.queryEmbedding !== null),
     ).length;
   }
 
@@ -849,11 +894,14 @@ export class MemoryDatabase implements Database {
       createdAt: now,
       claimedAt: null,
       lastError: null,
+      finishedAt: null,
+      durationMs: null,
     });
     return id;
   }
 
-  async claimJob(): Promise<ClaimedJob | null> {
+  async claimJob(options: ClaimOptions = {}): Promise<ClaimedJob | null> {
+    const excluded = new Set<JobType>(options.excludeTypes ?? []);
     const now = new Date();
     const staleBefore = now.getTime() - STALE_RUNNING_MS;
     for (const row of this.jobs) {
@@ -865,7 +913,7 @@ export class MemoryDatabase implements Database {
       }
     }
     const job = this.jobs
-      .filter((row) => row.status === "queued" && row.runAfter <= now)
+      .filter((row) => row.status === "queued" && row.runAfter <= now && !excluded.has(row.type))
       .sort(
         (a, b) =>
           a.priority - b.priority ||
@@ -880,13 +928,16 @@ export class MemoryDatabase implements Database {
 
   async completeJob(id: string): Promise<void> {
     const job = this.jobs.find((row) => row.id === id);
-    if (job) job.status = "done";
+    if (!job) return;
+    finishJob(job);
+    job.status = "done";
   }
 
   async failJob(id: string, error: string): Promise<"queued" | "error"> {
     const job = this.jobs.find((row) => row.id === id);
     if (!job) return "error";
     const next = job.attempts + 1;
+    finishJob(job);
     job.attempts = next;
     job.claimedAt = null;
     job.lastError = error;
@@ -902,6 +953,7 @@ export class MemoryDatabase implements Database {
   async failJobTerminal(id: string, error: string): Promise<void> {
     const job = this.jobs.find((row) => row.id === id);
     if (!job) return;
+    finishJob(job);
     job.status = "error";
     job.attempts = JOB_MAX_ATTEMPTS;
     job.lastError = error;
@@ -911,6 +963,7 @@ export class MemoryDatabase implements Database {
   async requeueJob(id: string, error: string): Promise<void> {
     const job = this.jobs.find((row) => row.id === id);
     if (!job) return;
+    finishJob(job);
     job.status = "queued";
     job.claimedAt = null;
     job.lastError = error;
@@ -931,23 +984,163 @@ export class MemoryDatabase implements Database {
 
   jobView(id: string): {
     status: string;
+    type: JobType;
     attempts: number;
     claimedAt: Date | null;
     runAfter: Date;
     priority: number;
     dedupeKey: string | null;
     lastError: string | null;
+    finishedAt: Date | null;
+    durationMs: number | null;
   } | null {
     const job = this.jobs.find((row) => row.id === id);
     if (!job) return null;
     return {
       status: job.status,
+      type: job.type,
       attempts: job.attempts,
       claimedAt: job.claimedAt,
       runAfter: job.runAfter,
       priority: job.priority,
       dedupeKey: job.dedupeKey,
       lastError: job.lastError,
+      finishedAt: job.finishedAt,
+      durationMs: job.durationMs,
+    };
+  }
+
+  // ---- recognition + robustness v5 (agent A) --------------------------------------------
+
+  async updateGalleryMatch(userId: string, eventId: string, patch: GalleryMatchPatch): Promise<void> {
+    let gallery = this.galleryOf(userId, eventId);
+    if (!gallery) {
+      gallery = this.newGallery(userId, eventId);
+      this.galleries.push(gallery);
+    }
+    if (patch.queryEmbedding !== undefined) {
+      gallery.queryEmbedding = patch.queryEmbedding ? [...patch.queryEmbedding] : null;
+    }
+    if (patch.lastMatchReason !== undefined) gallery.lastMatchReason = patch.lastMatchReason;
+    if (patch.selfieKey !== undefined) gallery.selfieKey = patch.selfieKey;
+  }
+
+  async findGalleriesByQueryVector(
+    eventId: string,
+    embedding: number[],
+    minCosine: number,
+  ): Promise<QueryVectorGallery[]> {
+    const hits: QueryVectorGallery[] = [];
+    for (const gallery of this.galleries) {
+      if (gallery.eventId !== eventId || gallery.queryEmbedding === null) continue;
+      const cosine = cosineOf(gallery.queryEmbedding, embedding);
+      if (cosine < minCosine) continue;
+      hits.push({
+        id: gallery.id,
+        userId: gallery.userId,
+        anchorFaceIds: [...gallery.anchorFaceIds],
+        notifiedAt: gallery.notifiedAt,
+        cosine,
+      });
+    }
+    return hits.sort((a, b) => b.cosine - a.cosine);
+  }
+
+  async insertMatchRun(input: MatchRunInsert): Promise<string> {
+    const id = randomUUID();
+    this.matchRunRows.push({ ...input, id, createdAt: new Date() });
+    return id;
+  }
+
+  async insertMatchHits(runId: string, hits: MatchHitInsert[]): Promise<void> {
+    const seen = new Set(
+      this.matchHitRows
+        .filter((row) => row.runId === runId)
+        .map((row) => `${row.photoId}:${row.externalFaceId}`),
+    );
+    for (const hit of hits) {
+      const key = `${hit.photoId}:${hit.externalFaceId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      this.matchHitRows.push({ ...hit, runId });
+    }
+  }
+
+  async touchJob(id: string): Promise<void> {
+    const job = this.jobs.find((row) => row.id === id);
+    if (job && job.status === "running") job.claimedAt = new Date();
+  }
+
+  async deleteGalleriesByEvent(eventId: string): Promise<number> {
+    const ids = new Set(
+      this.galleries.filter((gallery) => gallery.eventId === eventId).map((gallery) => gallery.id),
+    );
+    for (let index = this.items.length - 1; index >= 0; index -= 1) {
+      if (ids.has(this.items[index]?.galleryId ?? "")) this.items.splice(index, 1);
+    }
+    for (let index = this.galleries.length - 1; index >= 0; index -= 1) {
+      if (this.galleries[index]?.eventId === eventId) this.galleries.splice(index, 1);
+    }
+    return ids.size;
+  }
+
+  async deleteMatchRunsByEvent(eventId: string): Promise<number> {
+    const ids = new Set(
+      this.matchRunRows.filter((run) => run.eventId === eventId).map((run) => run.id),
+    );
+    for (let index = this.matchHitRows.length - 1; index >= 0; index -= 1) {
+      if (ids.has(this.matchHitRows[index]?.runId ?? "")) this.matchHitRows.splice(index, 1);
+    }
+    for (let index = this.matchRunRows.length - 1; index >= 0; index -= 1) {
+      if (this.matchRunRows[index]?.eventId === eventId) this.matchRunRows.splice(index, 1);
+    }
+    return ids.size;
+  }
+
+  async resetPhotosForRequeue(input: {
+    eventId: string;
+    status: PhotoStatus;
+    errorLike?: string;
+  }): Promise<Array<{ id: string; webReady: boolean }>> {
+    const needle = input.errorLike?.toLowerCase();
+    const result: Array<{ id: string; webReady: boolean }> = [];
+    for (const photo of this.photos.values()) {
+      if (photo.eventId !== input.eventId || photo.status !== input.status) continue;
+      if (needle !== undefined && !(photo.error ?? "").toLowerCase().includes(needle)) continue;
+      const web = this.derivatives.some((row) => row.photoId === photo.id && row.kind === "web");
+      const thumb = this.derivatives.some((row) => row.photoId === photo.id && row.kind === "thumb");
+      photo.status = web && thumb ? "processing" : "uploaded";
+      photo.error = null;
+      result.push({ id: photo.id, webReady: web });
+    }
+    return result;
+  }
+
+  /** Test helper: the match log of an event, oldest first, with each run's hits. */
+  matchLogOf(eventId: string): Array<MatchRunStored & { hitRows: MatchHitStored[] }> {
+    return this.matchRunRows
+      .filter((run) => run.eventId === eventId)
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+      .map((run) => ({ ...run, hitRows: this.matchHitRows.filter((hit) => hit.runId === run.id) }));
+  }
+
+  /** Test helper: the stored selfie vector of a gallery (null when none). */
+  galleryQueryVector(userId: string, eventId: string): number[] | null {
+    const gallery = this.galleryOf(userId, eventId);
+    return gallery?.queryEmbedding ? [...gallery.queryEmbedding] : null;
+  }
+
+  private newGallery(userId: string, eventId: string): Gallery {
+    return {
+      id: randomUUID(),
+      userId,
+      eventId,
+      anchorFaceIds: [],
+      matchedAt: null,
+      notifiedAt: null,
+      queryEmbedding: null,
+      lastMatchReason: null,
+      selfieKey: null,
     };
   }
 
@@ -978,6 +1171,408 @@ export class MemoryDatabase implements Database {
     if (upload) upload.createdAt = createdAt;
   }
 
+  // ---- admin and participant tooling v5 (agent D) ----------------------------------------
+
+  async createEvent(input: {
+    slug: string;
+    name: string;
+    retentionDays?: number;
+    access?: EventAccess;
+  }): Promise<EventRow> {
+    if (await this.findEventBySlug(input.slug)) throw new DuplicateKeyError();
+    const event: EventRow = {
+      id: randomUUID(),
+      slug: input.slug,
+      name: input.name,
+      retentionDays: input.retentionDays ?? 90,
+      access: input.access ?? "open",
+      createdAt: new Date(),
+    };
+    this.events.set(event.id, event);
+    return event;
+  }
+
+  async listEventsWithCounts(): Promise<EventWithCounts[]> {
+    return [...this.events.values()]
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || compareText(a.id, b.id))
+      .map((event) => ({
+        ...event,
+        photos: [...this.photos.values()].filter((photo) => photo.eventId === event.id).length,
+        galleries: this.galleries.filter((gallery) => gallery.eventId === event.id).length,
+        participants: new Set(
+          this.consents
+            .filter((row) => row.eventId === event.id && !row.withdrawnAt)
+            .map((row) => row.userId),
+        ).size,
+        photographers: [...this.eventPhotographers].filter((key) => key.startsWith(`${event.id}:`)).length,
+      }));
+  }
+
+  async findUserByEmail(email: string, role: Role = "participant"): Promise<UserRow | null> {
+    return this.findUserByEmailRole(email, role);
+  }
+
+  async listGalleriesPage(
+    eventId: string,
+    input: { limit: number; cursor?: GalleryListCursor },
+  ): Promise<{ galleries: GalleryListRow[]; nextCursor: GalleryListCursor | null }> {
+    const cursor = input.cursor;
+    const sortAt = (gallery: Gallery) => gallery.matchedAt?.getTime() ?? 0;
+    const rows = this.galleries
+      .filter((gallery) => gallery.eventId === eventId)
+      .sort((a, b) => sortAt(b) - sortAt(a) || compareText(a.userId, b.userId))
+      .filter((gallery) => {
+        if (!cursor) return true;
+        const at = cursor.matchedAt.getTime();
+        return sortAt(gallery) < at || (sortAt(gallery) === at && gallery.userId > cursor.userId);
+      });
+    const page = rows.slice(0, input.limit);
+    const last = page[page.length - 1];
+    return {
+      galleries: page.map((gallery) => ({
+        userId: gallery.userId,
+        email: this.users.get(gallery.userId)?.email ?? "",
+        total: this.items.filter((item) => item.galleryId === gallery.id).length,
+        matchedAt: gallery.matchedAt,
+        reason: galleryReason(gallery),
+      })),
+      nextCursor:
+        rows.length > input.limit && last
+          ? { matchedAt: new Date(sortAt(last)), userId: last.userId }
+          : null,
+    };
+  }
+
+  async findGalleryWithItemsByEmail(eventId: string, email: string): Promise<GalleryWithItems | null> {
+    const user = await this.findUserByEmailRole(email, "participant");
+    if (!user) return null;
+    const gallery = this.galleryOf(user.id, eventId);
+    if (!gallery) return { user, gallery: null, items: [] };
+    const feedback = new Map(
+      this.feedback
+        .filter((row) => row.userId === user.id && row.eventId === eventId)
+        .map((row) => [row.photoId, row.verdict]),
+    );
+    const items = this.items
+      .filter((item) => item.galleryId === gallery.id)
+      .sort((a, b) => b.score - a.score || compareText(a.photoId, b.photoId))
+      .flatMap((item) => {
+        const photo = this.photos.get(item.photoId);
+        if (!photo) return [];
+        const thumb = this.derivatives.find((row) => row.photoId === item.photoId && row.kind === "thumb");
+        const web = this.derivatives.find((row) => row.photoId === item.photoId && row.kind === "web");
+        return [
+          {
+            photoId: item.photoId,
+            faceId: item.faceId,
+            score: item.score,
+            source: item.source,
+            createdAt: item.createdAt,
+            thumbKey: thumb?.s3Key ?? "",
+            webKey: web?.s3Key ?? "",
+            originalReady: photo.originalStatus === "present",
+            sha256: photo.sha256,
+            filename: this.photoMeta.get(photo.id)?.filename ?? null,
+            feedback: feedback.get(item.photoId) ?? null,
+          },
+        ];
+      });
+    return {
+      user,
+      gallery: {
+        id: gallery.id,
+        matchedAt: gallery.matchedAt,
+        anchorFaceIds: [...gallery.anchorFaceIds],
+        reason: galleryReason(gallery),
+        total: items.length,
+      },
+      items,
+    };
+  }
+
+  async findPhotoDetail(id: string): Promise<PhotoDetail | null> {
+    const photo = this.photos.get(id);
+    if (!photo) return null;
+    const galleries = this.items
+      .filter((item) => item.photoId === id)
+      .flatMap((item) => {
+        const gallery = this.galleries.find((row) => row.id === item.galleryId);
+        if (!gallery) return [];
+        const verdict = this.feedback.find(
+          (row) => row.userId === gallery.userId && row.eventId === gallery.eventId && row.photoId === id,
+        );
+        return [
+          {
+            userId: gallery.userId,
+            email: this.users.get(gallery.userId)?.email ?? "",
+            score: item.score,
+            source: item.source,
+            faceId: item.faceId,
+            feedback: verdict?.verdict ?? null,
+          },
+        ];
+      })
+      .sort((a, b) => b.score - a.score || compareText(a.email, b.email));
+    return {
+      photo: this.adminPhoto(photo),
+      faces: this.faces
+        .filter((face) => face.photoId === id)
+        .map((face) => ({
+          id: face.id,
+          externalId: face.externalId,
+          bbox: { ...face.bbox },
+          confidence: face.confidence,
+        })),
+      galleries,
+    };
+  }
+
+  async listPhotosAdmin(
+    filters: PhotoAdminFilters,
+    input: { limit: number; cursor?: UploadCursor },
+  ): Promise<{ items: PhotoAdminRow[]; nextCursor: UploadCursor | null }> {
+    const cursor = input.cursor;
+    const rows = [...this.photos.values()]
+      .filter((photo) => {
+        if (photo.eventId !== filters.eventId) return false;
+        const meta = this.photoMeta.get(photo.id);
+        if (filters.sha256 && !photo.sha256.startsWith(filters.sha256)) return false;
+        if (filters.filename && !(meta?.filename ?? "").startsWith(filters.filename)) return false;
+        if (filters.status && photo.status !== filters.status) return false;
+        if (filters.photographerId && photo.photographerId !== filters.photographerId) return false;
+        if (filters.tag && !(meta?.tags ?? []).includes(filters.tag)) return false;
+        return true;
+      })
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || compareText(b.id, a.id))
+      .filter((photo) => {
+        if (!cursor) return true;
+        const byTime = photo.createdAt.getTime() - cursor.createdAt.getTime();
+        return byTime < 0 || (byTime === 0 && photo.id < cursor.id);
+      });
+    const items = rows.slice(0, input.limit).map((photo) => this.adminPhoto(photo));
+    const last = items[items.length - 1];
+    return {
+      items,
+      nextCursor: rows.length > input.limit && last ? { createdAt: last.createdAt, id: last.id } : null,
+    };
+  }
+
+  async findGallerySelfieKey(userId: string, eventId: string): Promise<string | null> {
+    const gallery = this.galleryOf(userId, eventId);
+    return gallery ? gallerySelfieKey(gallery) : null;
+  }
+
+  async deleteGallery(userId: string, eventId: string): Promise<boolean> {
+    const gallery = this.galleryOf(userId, eventId);
+    if (!gallery) return false;
+    for (let index = this.items.length - 1; index >= 0; index -= 1) {
+      if (this.items[index]?.galleryId === gallery.id) this.items.splice(index, 1);
+    }
+    const position = this.galleries.indexOf(gallery);
+    if (position >= 0) this.galleries.splice(position, 1);
+    return true;
+  }
+
+  async upsertFeedback(input: {
+    userId: string;
+    eventId: string;
+    photoId: string;
+    verdict: FeedbackVerdict;
+    scoreAtTime: number | null;
+  }): Promise<void> {
+    const existing = this.feedback.find(
+      (row) =>
+        row.userId === input.userId && row.eventId === input.eventId && row.photoId === input.photoId,
+    );
+    if (existing) {
+      existing.verdict = input.verdict;
+      existing.scoreAtTime = input.scoreAtTime;
+      existing.createdAt = new Date();
+      return;
+    }
+    this.feedback.push({ ...input, createdAt: new Date() });
+  }
+
+  async listFeedback(
+    userId: string,
+    eventId: string,
+  ): Promise<Array<{ photoId: string; verdict: FeedbackVerdict }>> {
+    return this.feedback
+      .filter((row) => row.userId === userId && row.eventId === eventId)
+      .map((row) => ({ photoId: row.photoId, verdict: row.verdict }));
+  }
+
+  async listMatchRuns(
+    eventId: string,
+    input: { email?: string; limit: number; cursor?: UploadCursor },
+  ): Promise<{ runs: MatchRunRow[]; nextCursor: UploadCursor | null }> {
+    const cursor = input.cursor;
+    const rows = this.matchRunRows
+      .filter((run) => {
+        if (run.eventId !== eventId) return false;
+        if (input.email && this.users.get(run.userId)?.email !== input.email) return false;
+        return true;
+      })
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || compareText(b.id, a.id))
+      .filter((run) => {
+        if (!cursor) return true;
+        const byTime = run.createdAt.getTime() - cursor.createdAt.getTime();
+        return byTime < 0 || (byTime === 0 && run.id < cursor.id);
+      });
+    const page = rows.slice(0, input.limit);
+    const last = page[page.length - 1];
+    return {
+      runs: page.map((run) => {
+        const hits = this.matchHitRows.filter((hit) => hit.runId === run.id);
+        return {
+          id: run.id,
+          userId: run.userId,
+          email: this.users.get(run.userId)?.email ?? "",
+          liveness: run.liveness,
+          reason: run.reason,
+          selfieSha256: run.selfieSha256,
+          selfieFaces: run.selfieFaces,
+          engineMs: run.engineMs,
+          hits: run.hits,
+          createdAt: run.createdAt,
+          kept: hits.filter((hit) => hit.kept).length,
+          maxCosine: hits.length > 0 ? Math.max(...hits.map((hit) => hit.cosine)) : null,
+        };
+      }),
+      nextCursor: rows.length > input.limit && last ? { createdAt: last.createdAt, id: last.id } : null,
+    };
+  }
+
+  async *exportGalleries(eventId: string): AsyncIterable<GalleryExportRow> {
+    const galleries = this.galleries
+      .filter((gallery) => gallery.eventId === eventId)
+      .map((gallery) => ({ gallery, email: this.users.get(gallery.userId)?.email ?? "" }))
+      .sort((a, b) => compareText(a.email, b.email));
+    for (const { gallery, email } of galleries) {
+      const items = this.items
+        .filter((item) => item.galleryId === gallery.id)
+        .sort((a, b) => b.score - a.score || compareText(a.photoId, b.photoId));
+      for (const item of items) {
+        const photo = this.photos.get(item.photoId);
+        if (!photo) continue;
+        const verdict = this.feedback.find(
+          (row) => row.userId === gallery.userId && row.eventId === eventId && row.photoId === item.photoId,
+        );
+        yield {
+          email,
+          userId: gallery.userId,
+          photoId: item.photoId,
+          sha256: photo.sha256,
+          filename: this.photoMeta.get(photo.id)?.filename ?? null,
+          score: item.score,
+          source: item.source,
+          faceId: item.faceId,
+          createdAt: item.createdAt,
+          feedback: verdict?.verdict ?? null,
+        };
+      }
+    }
+  }
+
+  async *exportMatchHits(eventId: string): AsyncIterable<MatchHitExportRow> {
+    const runs = this.matchRunRows
+      .filter((run) => run.eventId === eventId)
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || compareText(a.id, b.id));
+    for (const run of runs) {
+      const hits = this.matchHitRows
+        .filter((hit) => hit.runId === run.id)
+        .sort((a, b) => b.cosine - a.cosine);
+      for (const hit of hits) {
+        yield {
+          runId: run.id,
+          email: this.users.get(run.userId)?.email ?? "",
+          userId: run.userId,
+          runCreatedAt: run.createdAt,
+          photoId: hit.photoId,
+          externalFaceId: hit.externalFaceId,
+          cosine: hit.cosine,
+          similarity: hit.similarity,
+          kept: hit.kept,
+        };
+      }
+    }
+  }
+
+  async *exportFeedback(eventId: string): AsyncIterable<FeedbackExportRow> {
+    const rows = this.feedback
+      .filter((row) => row.eventId === eventId)
+      .map((row) => ({ row, email: this.users.get(row.userId)?.email ?? "" }))
+      .sort((a, b) => compareText(a.email, b.email) || a.row.createdAt.getTime() - b.row.createdAt.getTime());
+    for (const { row, email } of rows) {
+      const photo = this.photos.get(row.photoId);
+      if (!photo) continue;
+      yield {
+        email,
+        userId: row.userId,
+        photoId: row.photoId,
+        sha256: photo.sha256,
+        filename: this.photoMeta.get(photo.id)?.filename ?? null,
+        verdict: row.verdict,
+        scoreAtTime: row.scoreAtTime,
+        createdAt: row.createdAt,
+      };
+    }
+  }
+
+  async metricsExtras(): Promise<MetricsExtras> {
+    const now = Date.now();
+    const byType = new Map<string, MetricsExtras["jobsByType"][number]>();
+    for (const job of this.jobs) {
+      if (job.status === "done") continue;
+      let row = byType.get(job.type);
+      if (!row) {
+        row = { type: job.type, queued: 0, running: 0, error: 0, oldestQueuedSeconds: null };
+        byType.set(job.type, row);
+      }
+      row[job.status] += 1;
+      if (job.status === "queued") {
+        const age = Math.max(0, (now - job.createdAt.getTime()) / 1000);
+        row.oldestQueuedSeconds = Math.max(row.oldestQueuedSeconds ?? 0, age);
+      }
+    }
+    const jobsByType = [...byType.values()].sort((a, b) => compareText(a.type, b.type));
+    const ages = jobsByType
+      .map((row) => row.oldestQueuedSeconds)
+      .filter((age): age is number => age !== null);
+    return {
+      jobsByType,
+      oldestQueuedSeconds: ages.length > 0 ? Math.max(...ages) : null,
+      lastErrors: this.jobs
+        .filter((job) => job.status === "error")
+        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+        .slice(0, 20)
+        .map((job) => ({ id: job.id, type: job.type, error: job.lastError ?? "", at: job.createdAt })),
+    };
+  }
+
+  /** Test helper: what the worker records with KEEP_SELFIES (agent A's `galleries.selfie_key`). */
+  setGallerySelfieKey(userId: string, eventId: string, selfieKey: string | null): void {
+    const gallery = this.galleryOf(userId, eventId);
+    if (!gallery) throw new Error("missing gallery");
+    (gallery as { selfieKey?: string | null }).selfieKey = selfieKey;
+  }
+
+  /** Test helper: what the worker records with MATCH_LOG (agent A's match_runs / match_hits). */
+  addMatchRun(
+    run: Omit<MatchRunStored, "id" | "createdAt"> & { id?: string; createdAt?: Date },
+    hits: Array<Omit<MatchHitStored, "runId">> = [],
+  ): string {
+    const id = run.id ?? randomUUID();
+    this.matchRunRows.push({ ...run, id, createdAt: run.createdAt ?? new Date() });
+    for (const hit of hits) this.matchHitRows.push({ ...hit, runId: id });
+    return id;
+  }
+
+  private adminPhoto(photo: PhotoRow): PhotoAdminRow {
+    const meta = this.photoMeta.get(photo.id);
+    return { ...photo, filename: meta?.filename ?? null, tags: [...(meta?.tags ?? [])] };
+  }
+
   private galleryOf(userId: string, eventId: string): Gallery | undefined {
     return this.galleries.find((row) => row.userId === userId && row.eventId === eventId);
   }
@@ -987,6 +1582,70 @@ export class MemoryDatabase implements Database {
       .filter((row) => row.photographerId === photographerId && row.eventId === eventId)
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || compareText(b.id, a.id));
   }
+}
+
+type FeedbackRow = {
+  userId: string;
+  eventId: string;
+  photoId: string;
+  verdict: FeedbackVerdict;
+  scoreAtTime: number | null;
+  createdAt: Date;
+};
+
+type MatchRunStored = {
+  id: string;
+  userId: string;
+  eventId: string;
+  liveness: string | null;
+  reason: string | null;
+  selfieSha256: string | null;
+  selfieFaces: number | null;
+  engineMs: number | null;
+  hits: number;
+  createdAt: Date;
+};
+
+type MatchHitStored = {
+  runId: string;
+  photoId: string;
+  externalFaceId: string;
+  cosine: number;
+  similarity: number;
+  kept: boolean;
+};
+
+/** `galleries.last_match_reason` as the worker (agent A) records it on the in-memory gallery. */
+function galleryReason(gallery: Gallery): string | null {
+  const row = gallery as { lastMatchReason?: string | null; reason?: string | null };
+  return row.lastMatchReason ?? row.reason ?? null;
+}
+
+function gallerySelfieKey(gallery: Gallery): string | null {
+  return (gallery as { selfieKey?: string | null }).selfieKey ?? null;
+}
+
+/** `finished_at` / `duration_ms` as Postgres computes them when a job leaves `running`. */
+function finishJob(job: JobRow): void {
+  const now = new Date();
+  job.finishedAt = now;
+  job.durationMs = Math.max(0, now.getTime() - (job.claimedAt ?? now).getTime());
+}
+
+function cosineOf(a: readonly number[], b: readonly number[]): number {
+  const length = Math.min(a.length, b.length);
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let index = 0; index < length; index += 1) {
+    const x = a[index] ?? 0;
+    const y = b[index] ?? 0;
+    dot += x * y;
+    normA += x * x;
+    normB += y * y;
+  }
+  if (normA === 0 || normB === 0) return 0;
+  return dot / Math.sqrt(normA * normB);
 }
 
 function compareText(a: string, b: string): number {

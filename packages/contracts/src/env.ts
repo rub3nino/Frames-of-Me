@@ -28,20 +28,62 @@ export const envSchema = z
     ),
     INSIGHTFACE_MIN_COSINE: z.preprocess(
       blankToUndefined,
-      z.coerce.number().min(0).max(1).default(0.45),
+      z.coerce.number().min(0).max(1).default(0.5),
     ),
     INSIGHTFACE_SURE_COSINE: z.preprocess(
       blankToUndefined,
-      z.coerce.number().min(0).max(1).default(0.65),
+      z.coerce.number().min(0).max(1).default(0.7),
     ),
     INSIGHTFACE_MAX_FACES: z.preprocess(
       blankToUndefined,
-      z.coerce.number().int().min(1).max(4096).default(500),
+      z.coerce.number().int().min(1).max(4096).default(200),
     ),
     INSIGHTFACE_MIN_FACE_QUALITY: z.preprocess(
       blankToUndefined,
-      z.coerce.number().min(0).max(1).default(0.3),
+      z.coerce.number().min(0).max(1).default(0.2),
     ),
+    // --- v5 recognition (agent A) ---------------------------------------------
+    /** `attach`: an anchor ↔ face cosine below this never adds a photo to a gallery. */
+    INSIGHTFACE_ATTACH_MIN_COSINE: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().min(0).max(1).default(0.55),
+    ),
+    /** `match`: only hits at or above this cosine become anchors. Defaults to INSIGHTFACE_SURE_COSINE. */
+    INSIGHTFACE_ANCHOR_MIN_COSINE: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().min(0).max(1).optional(),
+    ),
+    /** Faces asked of the service per indexed photo (`max_faces` of `/v1/embed`). */
+    INSIGHTFACE_INDEX_MAX_FACES: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().int().min(1).max(150).default(100),
+    ),
+    /** Selfie gate: long edge of the largest face, in pixels of the image sent to the engine. */
+    SELFIE_MIN_FACE_PX: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().int().min(1).default(120),
+    ),
+    /** Selfie gate: engine quality of the largest face. */
+    SELFIE_MIN_QUALITY: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().min(0).max(1).default(0.6),
+    ),
+    /** Which bytes `index` sends to the engine. Default: `original` for insightface, `web` otherwise. */
+    FACE_INDEX_SOURCE: z.preprocess(
+      blankToUndefined,
+      z.enum(["web", "original"]).optional(),
+    ),
+    /** Long edge of the detection JPEG rendered from the original (FACE_INDEX_SOURCE=original). */
+    FACE_DETECT_LONG_EDGE: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().int().min(640).max(8192).default(2560),
+    ),
+    /** Write every `match` run and all its hits to match_runs / match_hits (test campaign). */
+    MATCH_LOG: z.preprocess(blankToUndefined, z.enum(["true", "false"]).default("false")),
+    /** Keep the selfie object after `match` and record its key on the gallery (rematch tooling). */
+    KEEP_SELFIES: z.preprocess(blankToUndefined, z.enum(["true", "false"]).default("false")),
+    /** Add photoId / userId / eventId to the worker job log lines. */
+    LOG_IDS: z.preprocess(blankToUndefined, z.enum(["true", "false"]).default("false")),
     FACE_INDEX_TPS: z.preprocess(
       blankToUndefined,
       z.coerce.number().positive().default(20),
@@ -76,6 +118,25 @@ export const envSchema = z
       z.enum(["true", "false", "auto"]).default("auto"),
     ),
     SMTP_FROM: z.string().min(1),
+    /** Magic links per email per hour (agent D, v5). */
+    MAGIC_LINK_PER_EMAIL: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().int().min(0).default(3),
+    ),
+    /** Magic links per client IP per hour; 0 disables the per-IP limit. */
+    MAGIC_LINK_PER_IP: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().int().min(0).default(20),
+    ),
+    /** Selfies per participant per hour; 0 disables the limit. */
+    SELFIE_MAX_PER_HOUR: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().int().min(0).default(5),
+    ),
+    /** Comma-separated IPs or CIDRs that skip both limits (the test room's NAT). */
+    RATE_LIMIT_EXEMPT_IPS: z.preprocess(blankToUndefined, z.string().default("")),
+    /** Comma-separated emails upserted as admin when the api boots. */
+    BOOTSTRAP_ADMINS: z.preprocess(blankToUndefined, z.string().default("")),
     WEB_ORIGIN: z.string().url(),
     API_ORIGIN: z.string().url(),
     SEED_DEMO: z.preprocess(blankToUndefined, z.enum(["true", "false"]).optional()),
@@ -157,6 +218,12 @@ export const envSchema = z
     SMTP_SECURE:
       env.SMTP_SECURE === undefined ? env.SMTP_PORT === 465 : env.SMTP_SECURE === "true",
     LIVENESS_CHECK: env.LIVENESS_CHECK === "true",
+    INSIGHTFACE_ANCHOR_MIN_COSINE: env.INSIGHTFACE_ANCHOR_MIN_COSINE ?? env.INSIGHTFACE_SURE_COSINE,
+    FACE_INDEX_SOURCE:
+      env.FACE_INDEX_SOURCE ?? (env.FACE_ENGINE === "insightface" ? "original" : "web"),
+    MATCH_LOG: env.MATCH_LOG === "true",
+    KEEP_SELFIES: env.KEEP_SELFIES === "true",
+    LOG_IDS: env.LOG_IDS === "true",
   }));
 
 export type Env = z.infer<typeof envSchema>;
