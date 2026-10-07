@@ -53,8 +53,6 @@ import {
   googleCallbackQuerySchema,
   OAUTH_STATE_COOKIE_NAME,
   OAUTH_STATE_TTL_SECONDS,
-  passwordResetBodySchema,
-  passwordResetConfirmBodySchema,
   registerBodySchema,
   REGISTER_RATE_LIMIT,
 } from "@rephoto/contracts";
@@ -94,6 +92,7 @@ import { registerAdminV6Routes } from "./routes.admin-v6.js";
 import { registerCrowdRoutes } from "./routes.crowd.js";
 // v6 G (agent G): the privacy routes live in their own file; this is the only line they add here.
 import { registerPrivacyRoutes } from "./routes.privacy.js";
+import { registerResetRoutes } from "./routes.reset.js";
 
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -1345,62 +1344,18 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     return c.json({ user: publicUser(user) }, 201);
   });
 
-  app.post("/v1/auth/password-reset", async (c) => {
-    const body = passwordResetBodySchema.safeParse(await readJson(c));
-    if (!body.success) throw new ApiError(400, MESSAGES.validation);
-    const email = body.data.email.toLowerCase();
-    const ip = c.get("ip");
-    await enforceMailLinkLimits(deps, email, ip);
-    const user = await deps.db.findUserByEmailRole(email, "participant");
-    // Always 202: whether the account exists is not answered here.
-    if (user) {
-      const token = newToken();
-      await deps.db.insertMagicLink({
-        email,
-        role: "participant",
-        tokenHash: sha256Hex(token),
-        expiresAt: new Date(Date.now() + MAGIC_LINK_TTL_SECONDS * 1000),
-        ip: ip === "unknown" ? null : ip,
-      });
-      await deps.mailer.send({
-        to: email,
-        subject: "Reimposta la password RePhoto",
-        text: `${webOrigin(deps.env)}/registrati?reset=${encodeURIComponent(token)}`,
-      });
-    }
-    return c.json({ status: "sent" }, 202);
-  });
-
-  app.post("/v1/auth/password-reset/confirm", async (c) => {
-    const body = passwordResetConfirmBodySchema.safeParse(await readJson(c));
-    if (!body.success) throw new ApiError(400, MESSAGES.validation);
-    const consumed = await deps.db.consumeMagicLink(sha256Hex(body.data.token));
-    if (!consumed || consumed.role !== "participant") {
-      throw new ApiError(400, MESSAGES.linkInvalid);
-    }
-    const user = await deps.db.findUserByEmailRole(consumed.email, "participant");
-    if (!user) throw new ApiError(400, MESSAGES.linkInvalid);
-    await deps.db.setUserPassword(user.id, hashPassword(body.data.password));
-    // Clicking the link proves the address: this is where lazy verification completes.
-    await deps.db.markEmailVerified(user.id);
-    await deps.db.insertAudit({
-      actorId: user.id,
-      action: "auth.password_reset",
-      target: `user:${user.id}`,
-      meta: {},
-    });
-    await startSession(c, deps, user);
-    return c.json({ user: publicUser(user) });
-  });
-
   registerAdminV6Routes(app, deps); // v6 D (agent D): admin console, routes.admin-v6.ts
   registerCrowdRoutes(app, deps);
   registerPrivacyRoutes(app, deps); // v6 G (agent G): apps/api/src/routes.privacy.ts
+  // v6 hardening H1 (agent H): password reset, own token table. This REPLACES the two
+  // inline /v1/auth/password-reset routes that agent B had written against `magic_links`
+  // — a login link must not be able to set a password (016_password_reset_tokens.sql).
+  registerResetRoutes(app, deps);
 }
 
 // ---- admin and participant tooling v5 (agent D) helpers --------------------------------------
 
-function rateLimitExempt(deps: AppDeps, ip: string): boolean {
+export function rateLimitExempt(deps: AppDeps, ip: string): boolean {
   const entries = parseIpList(deps.env.RATE_LIMIT_EXEMPT_IPS);
   return entries.length > 0 && ipMatches(ip, entries);
 }
@@ -1516,7 +1471,7 @@ function parseUuid(value: string): string {
   return value;
 }
 
-function publicUser(user: UserRow) {
+export function publicUser(user: UserRow) {
   return { id: user.id, email: user.email, role: user.role };
 }
 
@@ -1726,7 +1681,7 @@ async function issueMagicLink(
   });
 }
 
-async function startSession(c: Context<AppEnv>, deps: AppDeps, user: UserRow): Promise<void> {
+export async function startSession(c: Context<AppEnv>, deps: AppDeps, user: UserRow): Promise<void> {
   const token = newToken();
   await deps.db.insertSession({
     userId: user.id,
@@ -1823,29 +1778,6 @@ function homePathForRole(role: Role): string {
   if (role === "photographer") return "/upload";
   if (role === "admin") return "/admin";
   return "/selfie";
-}
-
-/**
- * The same per-email / per-IP budget `request-link` uses, on the same `magic_links` table:
- * a password reset and a login link are one mail budget, so the Resend day cap holds.
- */
-async function enforceMailLinkLimits(
-  deps: AppDeps,
-  email: string,
-  ip: string,
-): Promise<void> {
-  if (rateLimitExempt(deps, ip)) return;
-  const windowStart = since(MAGIC_LINK_RATE_LIMIT.windowSeconds);
-  const perEmail = deps.env.MAGIC_LINK_PER_EMAIL;
-  if (perEmail > 0) {
-    const byEmail = await deps.db.countMagicLinksSince({ email, since: windowStart });
-    if (byEmail >= perEmail) throw new ApiError(429, MESSAGES.rateLimited);
-  }
-  const perIp = deps.env.MAGIC_LINK_PER_IP;
-  if (perIp > 0) {
-    const byIp = await deps.db.countMagicLinksSince({ ip, since: windowStart });
-    if (byIp >= perIp) throw new ApiError(429, MESSAGES.rateLimited);
-  }
 }
 
 type RateLimiter = {

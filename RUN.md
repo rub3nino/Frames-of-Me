@@ -22,11 +22,73 @@ pnpm dev:web
 | API | http://localhost:8787 |
 | MinIO | http://localhost:9000 (console http://localhost:9001) |
 | Mailpit | http://localhost:8025 (SMTP `localhost:1025`) |
-| face-service | http://localhost:8090 (`GET /health` → `{ ok, model, providers }`) |
+| face-service | http://localhost:8090 (`GET /health` → `{ ok, model, providers, version, max_faces_cap }`) |
 
 Seeded data: event slug `demo` (`access = open`), admin `admin@rephoto.local`, photographer `photographer@rephoto.local` with the invite already accepted and the `event_photographers` row in place. `FACE_ENGINE=fake` is the default in `.env.example`. No real secrets are in the repo.
 
 Flow to try: open http://localhost:3000/staff, ask a link as `photographer@rephoto.local` with role «Fotografo» (`/` is the participant form; photographers and admins use `/staff` since v5, same magic link with their role, see `CONTRACTS.md`), read it in Mailpit, click **Entra** on `/verify`, upload on `/upload`; then register a participant on `/registrati` with an event code (`insert into event_codes (event_id, code) select id, 'DEMO-2026' from events where slug = 'demo'`), give consent and send a selfie on `/selfie`, open `/e/demo` — or, for a pre-v6 account, mint a magic link and open `/verify?token=…`. With the fake engine two images with the same average colour are the same person; with the InsightFace engine (below) it is real face matching. The admin console (`admin@rephoto.local` on `/staff` with role «Amministratore», then `/admin`) is described further down.
+
+## MinIO credentials: api and worker are not root (v6 hardening)
+
+`docker-compose.yml` used to hand api and worker `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` as `S3_ACCESS_KEY` / `S3_SECRET_KEY`, and `.env.example` said the same. The credentials sitting in two long-running Node processes — the ones that sign every presigned URL a browser gets — were the MinIO superuser: create and delete any bucket, read the backup copy, add users, rewrite policies. Production stopped doing that (v6 F2); local dev now matches, through the same script.
+
+| | user | may do |
+| --- | --- | --- |
+| api, worker, `pnpm seed:test`, `pnpm ingest` | `rephoto-app` / `rephoto-app-secret` | get / put / delete objects **inside `rephoto` only**, plus the multipart commands |
+| `minio-init`, console on :9001, `mc` | `rephoto` / `rephoto-secret` (root) | everything |
+
+`minio-init` now runs `deploy/scripts/minio-provision.sh` — one provisioning path, shared with production — which creates the bucket, the `rephoto-app` policy (objects of that bucket, no `s3:ListBucket`, no `admin:*`) and the user, and is idempotent on every `up`.
+
+### What to do to an existing local stack
+
+Your `.env` is not in the repo, so nothing broke when you pulled: your api and worker keep working with the root credentials until you do this.
+
+```bash
+# 1. create the application user and policy on the MinIO volume you already have
+#    (idempotent; it does not touch the bucket's objects or the root credentials)
+docker compose up -d --force-recreate minio-init
+docker compose logs minio-init          # ends with "minio-init: done"
+
+# 2. in .env, replace the two S3 lines (they were rephoto / rephoto-secret)
+#    S3_ACCESS_KEY=rephoto-app
+#    S3_SECRET_KEY=rephoto-app-secret
+
+# 3. restart the host processes that read .env
+#    (Ctrl-C and re-run `pnpm dev:api` and `pnpm dev:worker`; `pnpm dev:web` does not use S3)
+```
+
+Then check it: upload a photo on `/upload` and open its thumbnail. Nothing else changes — same bucket, same objects, same presigned URLs.
+
+Notes:
+- **Keep root for the console.** http://localhost:9001 and any `mc` alias stay on `rephoto` / `rephoto-secret`.
+- **`mc ls` / `mc stat` fail as `rephoto-app`**, on purpose: the policy grants no `s3:ListBucket`, so a leaked application key cannot enumerate the bucket. The application never lists — it addresses every object by key — and a Get/Head of a missing key still answers `NoSuchKey`, so `store.get()` / `store.head()` keep returning `null` instead of throwing.
+- **To rotate the key**: set `S3_APP_SECRET_KEY` in the shell (or in a `.env` compose reads), `docker compose up -d --force-recreate minio-init`, put the same value in `.env` as `S3_SECRET_KEY`, restart api and worker.
+- The `app` profile (`docker compose --profile app up --build`) needs nothing: api, worker and migrate read the application user from compose and wait for `minio-init`.
+
+### Coolify: read this BEFORE the next deploy — one variable to add, or the deploy fails
+
+`docker-compose.coolify.yml` had the same problem, worse: `MINIO_ROOT_USER: ${S3_ACCESS_KEY}`, so the **api's own key was the MinIO root account**. A leaked application key was full administrative access to the object store — delete any bucket, read the backup copy, add users, rewrite policies — and that key is in two long-running Node processes and signs every presigned URL a browser gets. It is now the same split as everywhere else: `rephoto-app` for api and worker, root only for `minio-init` and the console.
+
+**What happens if you deploy without doing anything: the deploy fails and nothing changes.** `S3_APP_SECRET_KEY` has no default — deliberately, because a default here would be a key whose secret is printed in this repository, on a bucket reachable from the internet. Compose stops at interpolation with
+
+```
+error while interpolating x-app-env.S3_SECRET_KEY: required variable S3_APP_SECRET_KEY is
+missing a value: add S3_APP_SECRET_KEY in Coolify (v6 hardening H3; see "MinIO credentials"
+in RUN.md). ...
+```
+
+No container is recreated, so **the running stack keeps serving** — the site stays up, the failure is in the deploy log. It is a blocked deploy, not an outage. Fix it by doing step 1 and redeploying.
+
+Steps in Coolify → the resource → *Environment Variables*, in this order:
+
+1. **Add `S3_APP_SECRET_KEY`** — a new random value, `openssl rand -base64 24`, at least 8 characters. Do **not** reuse `S3_SECRET_KEY`. (Optionally add `S3_APP_ACCESS_KEY`; it defaults to `rephoto-app` and the default is fine, it is a username, not a secret.) **Redeploy.** `minio-init` creates the user and the bucket-scoped policy with the root account you already have, then api and worker come up signing as `rephoto-app`. Everything works at this point: same bucket, same objects, same presigned URLs.
+2. **Add `MINIO_ROOT_USER` and `MINIO_ROOT_PASSWORD`**, set to **exactly the values `S3_ACCESS_KEY` and `S3_SECRET_KEY` have today**. This is a rename, not a change: until these two exist the compose file still reads root from the old pair (`${MINIO_ROOT_USER:-${S3_ACCESS_KEY:-…}}`), which is why step 1 did not change who root is. MinIO reads its root credentials from the environment on every start, so giving them different values here **would** change the root account. **Redeploy** and check the `minio-init` log ends with `minio-init: done`.
+3. **Delete `S3_ACCESS_KEY` and `S3_SECRET_KEY`** from Coolify. Nothing reads them any more. **Redeploy.** If a redeploy ever fails with `required variable S3_APP_SECRET_KEY`, you deleted the wrong one — put back `S3_APP_SECRET_KEY`, not these.
+4. **Rotate root** (recommended, now that it is a separate account): change `MINIO_ROOT_PASSWORD` to a fresh value and redeploy. The old value was also the api's key for as long as this file existed, so treat it as exposed.
+
+Checks after step 3: upload a photo and open its thumbnail (presigned PUT and GET as `rephoto-app`); the `minio-init` log shows `policy rephoto-app`, `user rephoto-app`, `attach` and `lifecycle selfies/`; the MinIO console still logs in with the root pair.
+
+Also carried over: the selfie lifecycle rule (`selfies/*` expires after a day, so a kept selfie is deleted by the store itself) now lives in the shared provisioning script behind `S3_SELFIE_EXPIRE_DAYS`, which only this file sets. It is applied once instead of once per deploy — the old inline `mc ilm rule add` added a duplicate rule on **every** deploy. Existing duplicates are harmless; clear them with `mc ilm rule rm --id <id> local/rephoto` as root if you want a tidy list.
 
 ## Face engine: `fake` or `insightface`
 
@@ -44,6 +106,30 @@ Thresholds (`INSIGHTFACE_MIN_COSINE=0.50`, `INSIGHTFACE_SURE_COSINE=0.70`, v5 de
 
 **Test-campaign switches** (all `false` by default, `.env.example` lists them): `MATCH_LOG=true` writes every `match` run and all its hits, down to cosine 0.25, into `match_runs` / `match_hits` (then `/admin#esporta` → «match-hits.csv», or `select cosine, kept from match_hits order by cosine desc`); `KEEP_SELFIES=true` keeps the selfie object and records its key in `galleries.selfie_key`, which enables «Rifai il confronto» on an admin gallery; `LOG_IDS=true` adds `photoId` / `userId` / `eventId` to the worker log lines. Restart `dev:worker` after changing them. With the face-service stopped (`docker compose stop face-service`) the worker now **requeues** `index` / `attach` / `match` without burning attempts and, after five in a row, prints one `{ breaker: "open", pauseMs: 30000 }` line and stops claiming those types for 30 s; `docker compose start face-service` and the queue resumes with nothing in `error`.
 
+### The worker checks the face-service build before it claims `index` or `match` (v6 hardening)
+
+`GET /health` reports `version` and `max_faces_cap` — the real cap its `/v1/embed?max_faces=` validator enforces — and with `FACE_ENGINE=insightface` the worker reads it once at start and compares it with `INSIGHTFACE_INDEX_MAX_FACES` (default 100, the `max_faces` of every embed call). If the service cannot serve that, the worker prints one line and **stops claiming `index` and `match`**:
+
+```json
+{"ts":"…","faceService":"incompatible","paused":["index","match"],"requiredMaxFaces":100,"maxFacesCap":50,"version":"1.0.0","error":"face service at http://face-service:8090 accepts max_faces<=50 but the worker asks for 100 …"}
+```
+
+Those two are exactly the job types that post to `/v1/embed?max_faces=`: `index` through `indexPhoto`, `match` through `embedSelfie` / `search`. **`match` is the one that matters on an event day** — a paused `index` is invisible bulk work waiting, while a participant who sends a selfie against a wrong image gets five failed attempts and then an error, on the one screen they are watching. A job sitting `queued` until someone rebuilds the image is strictly better than that. `attach` (pgvector only), `verify` (a sha256 check of the stored original, it never calls the engine) and `retention` / `reset` keep flowing.
+
+The paused jobs stay `queued` with zero attempts, no photo reaches `error` and no gallery is written: rebuild the image (`docker compose build face-service`, or `docker build -t rephoto-face-service apps/face-service`), restart the worker, and the queue drains — the selfie is still in the object store, so the match just runs. The check is a standing refusal, not the circuit breaker — only a restart clears it — and the two are independent, so an open breaker cannot hide it.
+
+Why it exists: during v6 a stale `rephoto-face-service` image enforced `max_faces <= 50` while the source said 150 and the worker asked for 100. FastAPI's query validator answered `422` before decoding any image, so every `index` job failed five times and its photo ended in `error` — while `/health` answered `{"ok": true}`, because `ok` only ever meant "the model object exists". A health check that cannot say which build answered it cannot catch a wrong build. A service that does **not** answer is deliberately not treated as incompatible: that is the breaker's job (it may simply be loading its model, and even that `503` now carries `version` and `max_faces_cap`).
+
+Also log-worthy: a build from before this change reports no `max_faces_cap` at all, and is refused for that reason alone — it cannot be verified, and it is the exact class of image that caused the incident. Bump `SERVICE_VERSION` in `apps/face-service/app/main.py` whenever the `/v1/embed` or `/v1/liveness` contract changes.
+
+> **Your local `rephoto-face-service:latest` is almost certainly that stale image.** The one in this checkout reports `{"ok": true, "model": "buffalo_l", "providers": […]}` with no `version` and no `max_faces_cap`, and answers `422` to `POST /v1/embed?max_faces=100`. So with `FACE_ENGINE=insightface` the worker will now refuse `index` and `match` and print the `faceService: "incompatible"` line — loudly, instead of silently failing every photo. One command fixes it:
+>
+> ```bash
+> docker compose build face-service && docker compose up -d face-service
+> ```
+>
+> Then restart `pnpm dev:worker`. Check it with `curl -s localhost:8090/health`: you want `"version":"1.1.0","max_faces_cap":150` in the answer. Nothing to do with `FACE_ENGINE=fake` (the default), which never talks to the service.
+
 Running the Python service outside Docker (venv, `MODEL_ROOT`, `uvicorn`) is described in `apps/face-service/README.md`.
 
 ## Participant sign-in (v6): Google, password, event code — and the magic-link fallback
@@ -52,7 +138,9 @@ The participant home page (`/`) no longer offers a magic link. It offers **Acced
 
 - **Self-registration:** `POST /v1/auth/register` `{ email, password, eventCode }` → creates the `participant`, scrypt-hashes the password into `users.password_hash` and sets the `rephoto_session` cookie, `201`. The password is at least 10 characters. The **event code** is the anti-bot gate: it is the code printed on the badge/QR, stored in `event_codes` (migration `012_auth_identities.sql`) with an optional `max_uses` and `expires_at`. Absent, expired and exhausted all answer `403` with one message. The claim is a single `update … where uses < max_uses returning …`, so `max_uses` holds under concurrent registrations. A code string that exists in two events charges exactly one of them.
 - **Registration sends no e-mail at all** and `users.email_verified_at` stays null. Lazy verification is deliberate: 6 000 same-day registrations would blow through the Resend free tier (3 000/month, 100/day) in minutes. The address is proven later — by a password reset, a magic link, or a Google token with `email_verified`.
-- **Password reset** (the only e-mail a self-registered participant can trigger): `POST /v1/auth/password-reset` `{ email }` → always `202`, and a link is mailed only when a participant with that address exists. It reuses the `magic_links` table and therefore the same `MAGIC_LINK_PER_EMAIL` / `MAGIC_LINK_PER_IP` budget. The link lands on `/registrati?reset=<token>`, which posts `POST /v1/auth/password-reset/confirm` `{ token, password }` → new password, `email_verified_at` stamped, session started. Single use.
+- **Password reset** (the only e-mail a self-registered participant can trigger): `POST /v1/auth/password-reset` `{ email }` → always `202`, and a link is mailed only when a participant with that address exists. The link lands on `/registrati?reset=<token>`, which posts `POST /v1/auth/password-reset/confirm` `{ token, password }` → new password, `email_verified_at` stamped, session started.
+  - **The reset token is not a magic link** (v6 hardening, migration `016_password_reset_tokens.sql`, routes in `apps/api/src/routes.reset.ts`). It lives in `password_reset_tokens`, bound to one `user_id`, valid **15 minutes**, single use, and burnt again by any password change — so a second link mailed before the first was used dies with the password it was meant to replace. Until v6 the flow ran on `magic_links`, which meant an intercepted **login** link (mailed by `request-link`, or minted in the admin console and shown as a QR) could be posted to `…/confirm` and take the account for good. `consumePasswordResetToken` only ever sees this table, so it cannot happen again.
+  - Its budget is its own too: `PASSWORD_RESET_PER_USER` (default 3/hour) and `PASSWORD_RESET_PER_IP` (default 20/hour), counted on `password_reset_tokens`. The reset flow and the event-day login fallback can no longer starve each other.
 - **Google:** `GET /v1/auth/google/start` (302 to Google, with a short-lived signed `rephoto_oauth` cookie carrying state + the PKCE verifier + the nonce) and `GET /v1/auth/google/callback` (verifies state, PKCE, nonce, issuer, audience and expiry, then resolves the user and 302s into the app). Without `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REDIRECT_URL` both routes answer `404`, and the web only shows the button when `NEXT_PUBLIC_GOOGLE_LOGIN=true`. The `email` claim is used **only** when the token says `email_verified`; an unverified claim never finds or creates an account. A sign-in resolves to `role = 'participant'` unless a `user_identities` row already points at another role, and `users.unique (email, role)` is untouched, so the same address can be a participant and a photographer.
 - Register the redirect URI in the Google console exactly as `GOOGLE_REDIRECT_URL`. Through the web proxy that is `https://<web host>/v1/auth/google/callback`; pointing it straight at the API host works too.
 
@@ -152,6 +240,7 @@ All variables are listed in `.env.example` and described in `CONTRACTS.md` (sect
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URL` | unset | v6. Google OIDC client. All three together or none: a partial set fails env validation at boot, and with none set `/v1/auth/google/*` answers `404`. The redirect URL must match the Google console entry, e.g. `https://<host>/v1/auth/google/callback` |
 | `OAUTH_STATE_SECRET` | = `SESSION_SECRET` | v6. HMAC key of the short-lived `rephoto_oauth` state/PKCE cookie (min 16 chars). Rotating it only invalidates sign-ins in flight |
 | `REGISTER_PER_IP`, `REGISTER_PER_CODE` | `20`, `600` | v6. Self-registrations per hour per client IP and per event code; `0` = off. In-process counters (per API instance, lost on restart) — the hard cap is `event_codes.max_uses` |
+| `PASSWORD_RESET_PER_USER`, `PASSWORD_RESET_PER_IP` | `3`, `20` | v6 hardening. Password-reset links per hour per account and per client IP; `0` = off. Counted on `password_reset_tokens`, so this budget is independent of `MAGIC_LINK_PER_*` |
 | `NEXT_PUBLIC_GOOGLE_LOGIN` | unset | v6, web build-time: `true` shows «Accedi con Google» on `/`. Leave unset when no Google client is configured, otherwise the button leads to a `404` |
 | `FACE_DET_LONG_EDGE`, `FACE_DET_SIZE`, `FACE_SERVICE_WORKERS`, `FACE_MODEL_CONCURRENCY` | `2560`, `1024`, `1`, `2` | v5, compose only: face-service detection resolution, uvicorn processes (≈ 1–1.5 GB RSS each), inferences per process |
 | `WORKER_CONCURRENCY` | `4` | Jobs in flight per worker process (1–32). The face-service runs two inferences at once per process; more jobs only queue inside it |
@@ -232,13 +321,13 @@ k6 scripts for the two hot paths (photographer upload, participant selfie with p
 The test deployment runs from `docker-compose.coolify.yml` on Coolify. Public exposure is a Cloudflare Tunnel → Coolify's Traefik, so no host ports are published; you map an FQDN per service in the Coolify UI.
 
 1. **New resource**: Coolify → project *RePhoto* → environment *test* → **+ New** → **Docker Compose** → source = the GitHub repo `rub3nino/rephoto`, branch `main`, compose file `docker-compose.coolify.yml`. Enable **automatic deploy on push**.
-2. **Environment variables** (Coolify → the resource → *Environment Variables*): set the values from the *Production / Coolify* block in `.env.example`. At minimum `SESSION_SECRET` (32+ random chars), `S3_ACCESS_KEY` / `S3_SECRET_KEY`, `POSTGRES_PASSWORD`, `WEB_ORIGIN`, `API_ORIGIN`, `S3_ENDPOINT=https://s3.framesofme.com`, `NEXT_PUBLIC_WEB_ORIGIN`, `NEXT_PUBLIC_MEDIA_ORIGINS=https://s3.framesofme.com`, `SMTP_FROM`, `BOOTSTRAP_ADMINS`. The `NEXT_PUBLIC_*` ones are build-time — set them as **Build Variables** too. Do **not** set `SEED_DEMO` on api/worker (it is forced on the one-shot `migrate` service only).
+2. **Environment variables** (Coolify → the resource → *Environment Variables*): set the values from the *Production / Coolify* block in `.env.example`. At minimum `SESSION_SECRET` (32+ random chars), `S3_APP_SECRET_KEY` (**required**, no default — the bucket-scoped application key; see “Coolify: read this BEFORE the next deploy” above) with `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` for the MinIO root account, `POSTGRES_PASSWORD`, `WEB_ORIGIN`, `API_ORIGIN`, `S3_ENDPOINT=https://s3.framesofme.com`, `NEXT_PUBLIC_WEB_ORIGIN`, `NEXT_PUBLIC_MEDIA_ORIGINS=https://s3.framesofme.com`, `SMTP_FROM`, `BOOTSTRAP_ADMINS`. The `NEXT_PUBLIC_*` ones are build-time — set them as **Build Variables** too. Do **not** set `SEED_DEMO` on api/worker (it is forced on the one-shot `migrate` service only).
 3. **Domains (FQDN per service)** in each service's *Domains* field:
    - `web` → `https://framesofme.com` (+ `https://www.framesofme.com`), container port **3000**
    - `api` → `https://api.framesofme.com`, container port **8787**
    - `minio` → `https://s3.framesofme.com`, container port **9000**
    - `mailpit` → `https://mail.framesofme.com`, container port **8025** (keep behind Cloudflare Access)
-4. **Deploy**. On first boot: `migrate` runs once (schema + demo event) and exits 0, then `api` and `worker` start; `minio-init` creates the bucket and the 24 h expiry rule for `selfies/`. `FACE_ENGINE=fake` by default — for real matching set `FACE_ENGINE=insightface` and keep the `face-service` (needs more RAM; first build pulls the ~280 MB model).
+4. **Deploy**. On first boot: `migrate` runs once (schema + demo event) and exits 0, then `api` and `worker` start; `minio-init` creates the bucket, the bucket-scoped `rephoto-app` policy and user (v6 hardening H3) and the 24 h expiry rule for `selfies/`. `FACE_ENGINE=fake` by default — for real matching set `FACE_ENGINE=insightface` and keep the `face-service` (needs more RAM; first build pulls the ~280 MB model).
 5. **Verify**: `https://api.framesofme.com/health` → 200, `https://framesofme.com/` → 200, `https://framesofme.com/v1/events/demo` → 200.
 
 Cloudflare Tunnel: point the tunnel at Coolify's Traefik (the proxy's `:80`/`:443`), with a public hostname per FQDN above. No inbound ports are opened on the host.

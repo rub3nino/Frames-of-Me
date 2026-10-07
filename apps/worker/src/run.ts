@@ -95,10 +95,20 @@ export async function processJob(claimed: ClaimedJob, deps: WorkerDeps): Promise
   }
 }
 
-/** Claim filter honouring the breaker: face jobs stay queued while it is open. */
+/**
+ * Claim filter honouring the breaker: face jobs stay queued while it is open.
+ *
+ * v6 hardening H2 (agent H): and the face-service compatibility gate, whose exclusions are
+ * merged in. The two are different things — the breaker is a transient pause that closes on
+ * the next success, the gate is a standing refusal for a service whose build cannot serve
+ * what `index` and `match` ask of it (src/face-compat.ts) — so neither may hide the other.
+ */
 export function claimOptions(deps: WorkerDeps): ClaimOptions | undefined {
-  const excluded = deps.breaker?.excludedTypes();
-  return excluded ? { excludeTypes: excluded } : undefined;
+  const breaker = deps.breaker?.excludedTypes();
+  const gate = deps.faceGate?.excludedTypes();
+  if (!breaker && !gate) return undefined;
+  const excluded = [...new Set([...(breaker ?? []), ...(gate ?? [])])];
+  return { excludeTypes: excluded };
 }
 
 function defaultLog(entry: JobLogEntry): void {

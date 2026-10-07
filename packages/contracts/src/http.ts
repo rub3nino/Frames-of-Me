@@ -1401,3 +1401,15 @@ export const adminRetentionScheduleResponseSchema = z
     ),
   })
   .strict();
+
+// ---- hardening v6 (agent H) ---------------------------------------------------------------
+
+/**
+ * A password-reset token is NOT a magic link (migration 016). It is single use, bound to one
+ * account and deliberately shorter-lived than a login link (20 min): it is the one token
+ * whose holder can take the account for good, so the window in which an intercepted mail is
+ * still worth something is the first thing to shrink.
+ */
+export const PASSWORD_RESET_TTL_SECONDS = 15 * 60;
+/** Reset links per account / per IP, counted over this window (`PASSWORD_RESET_PER_*`). */
+export const PASSWORD_RESET_RATE_LIMIT = { windowSeconds: 60 * 60 } as const;

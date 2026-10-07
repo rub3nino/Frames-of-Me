@@ -245,7 +245,12 @@ Ora `minio-init` esegue `scripts/minio-provision.sh`, che a ogni `up`:
 
 1. crea il bucket se manca;
 2. installa la policy `rephoto-app` — solo oggetti **di quel bucket**;
-3. crea (o ri-chiavizza) l'utente applicativo `S3_APP_ACCESS_KEY` e gli attacca la policy.
+3. crea (o ri-chiavizza) l'utente applicativo `S3_APP_ACCESS_KEY` e gli attacca la policy;
+4. (v6 H3, solo se `S3_SELFIE_EXPIRE_DAYS` è valorizzata) aggiunge la regola di lifecycle che
+   scade `selfies/*` dopo N giorni, una volta sola — la controlla prima di aggiungerla. Qui la
+   variabile non è impostata, quindi il passo viene saltato: la usa solo
+   `docker-compose.coolify.yml`, dove la regola esisteva già inline. Il controllo è un `case`
+   di shell e non un `grep`: l'immagine `cgr.dev/chainguard/minio` non ha `grep`.
 
 | Variabile | Chi la usa | Perché |
 | --- | --- | --- |

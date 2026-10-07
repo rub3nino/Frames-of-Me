@@ -702,6 +702,35 @@ export interface Database {
    * biometric data about them, and a consent withdrawal does not delete them.
    */
   countPhotosByUploader(eventId: string, userId: string): Promise<number>;
+  // ---- hardening v6 (agent H): password-reset tokens, migration 016 -----------------------
+  //
+  // Reset tokens live in their own table, never in `magic_links`: a login link must not be
+  // able to set a password (see 016_password_reset_tokens.sql). The token is bound to a
+  // user id, is single use, and every password change invalidates the open ones.
+  insertPasswordResetToken(input: {
+    userId: string;
+    tokenHash: string;
+    expiresAt: Date;
+    ip: string | null;
+  }): Promise<void>;
+  /** Reset tokens minted in the window, for this route's own rate limit (per user, per IP). */
+  countPasswordResetTokensSince(input: {
+    userId?: string;
+    ip?: string;
+    since: Date;
+  }): Promise<number>;
+  /**
+   * Marks the token used and returns whose it is. Null when the hash is unknown, already
+   * used or expired — one answer for all three, like `consumeMagicLink`. Atomic: two
+   * concurrent confirms, only one wins.
+   */
+  consumePasswordResetToken(tokenHash: string): Promise<{ userId: string } | null>;
+  /**
+   * Burns every open reset token of a user; returns how many were burnt. Called by
+   * {@link Database.setUserPassword}, so *any* password change (reset, staff rotation,
+   * bootstrap) retires the outstanding links.
+   */
+  invalidatePasswordResetTokens(userId: string): Promise<number>;
 }
 
 // ---- albums and vector isolation v6 (agent A) ---------------------------------------------

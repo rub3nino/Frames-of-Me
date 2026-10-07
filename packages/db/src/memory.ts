@@ -282,6 +282,9 @@ export class MemoryDatabase implements Database {
 
   async setUserPassword(userId: string, passwordHash: string): Promise<void> {
     this.passwords.set(userId, passwordHash);
+    // v6 hardening (agent H): mirrors the Postgres implementation — any password change
+    // retires the user's open reset links.
+    await this.invalidatePasswordResetTokens(userId);
   }
 
   async findUserForLogin(
@@ -2251,6 +2254,46 @@ export class MemoryDatabase implements Database {
     return count;
   }
 
+  // ---- hardening v6 (agent H): password-reset tokens, migration 016 -----------------------
+  //
+  // A table of its own, exactly like in Postgres: nothing here can turn a `magic_links` row
+  // into a password change. The field lives next to its methods so this block is one
+  // contiguous addition.
+  private readonly resetTokens = new Map<string, PasswordResetTokenStored>();
+
+  async insertPasswordResetToken(input: {
+    userId: string;
+    tokenHash: string;
+    expiresAt: Date;
+    ip: string | null;
+  }): Promise<void> {
+    this.resetTokens.set(input.tokenHash, {
+      id: randomUUID(),
+      userId: input.userId,
+      tokenHash: input.tokenHash,
+      expiresAt: input.expiresAt,
+      usedAt: null,
+      ip: input.ip,
+      createdAt: new Date(),
+    });
+  }
+
+  async countPasswordResetTokensSince(input: {
+    userId?: string;
+    ip?: string;
+    since: Date;
+  }): Promise<number> {
+    if (input.userId === undefined && input.ip === undefined) return 0;
+    let count = 0;
+    for (const row of this.resetTokens.values()) {
+      if (row.createdAt < input.since) continue;
+      if (input.userId !== undefined && row.userId !== input.userId) continue;
+      if (input.ip !== undefined && row.ip !== input.ip) continue;
+      count += 1;
+    }
+    return count;
+  }
+
   async setPhotoModeration(input: {
     photoId: string;
     state: ModerationState;
@@ -2469,6 +2512,24 @@ export class MemoryDatabase implements Database {
     if (!row) throw new Error("missing retention schedule");
     row.claimedAt = claimedAt;
   }
+
+  async consumePasswordResetToken(tokenHash: string): Promise<{ userId: string } | null> {
+    const row = this.resetTokens.get(tokenHash);
+    if (!row || row.usedAt !== null || row.expiresAt.getTime() <= Date.now()) return null;
+    row.usedAt = new Date();
+    return { userId: row.userId };
+  }
+
+  async invalidatePasswordResetTokens(userId: string): Promise<number> {
+    let burnt = 0;
+    const now = new Date();
+    for (const row of this.resetTokens.values()) {
+      if (row.userId !== userId || row.usedAt !== null) continue;
+      row.usedAt = now;
+      burnt += 1;
+    }
+    return burnt;
+  }
 }
 
 type FeedbackRow = {
@@ -2574,4 +2635,17 @@ type RetentionScheduleStored = {
   /** The alarm already mailed, and the window it was mailed for (migration 015). */
   notifiedAlarm: RetentionAlarmMail | null;
   notifiedWindow: Date | null;
+};
+
+// ---- hardening v6 (agent H) ---------------------------------------------------------------
+
+/** One row of `password_reset_tokens` (migration 016). */
+type PasswordResetTokenStored = {
+  id: string;
+  userId: string;
+  tokenHash: string;
+  expiresAt: Date;
+  usedAt: Date | null;
+  ip: string | null;
+  createdAt: Date;
 };

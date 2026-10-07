@@ -109,4 +109,36 @@ fi
 
 # Fail the service rather than let api/worker start with a user that has no policy.
 $MC admin user info local "$APP_USER" >/dev/null
+
+# v6 hardening H3 (agent H): optional lifecycle rule on `selfies/`, only when
+# S3_SELFIE_EXPIRE_DAYS is set and non-empty. It carries over what the Coolify stack's
+# minio-init did before it was switched to this script (docker-compose.coolify.yml): a kept
+# selfie (KEEP_SELFIES) is deleted by the store itself after a day, so the retention promise
+# does not depend on a job running. Unset in deploy/compose.yml and docker-compose.yml, where
+# this block is skipped and nothing changes.
+#
+# `mc ilm rule add` does NOT deduplicate: the old inline command in
+# docker-compose.coolify.yml added one more identical rule on every single deploy. The
+# existing rules are read first, so a re-run is a no-op. `--expire-days` is the current flag
+# and `--expiry-days` the older one; a failure only logs, because the rule is a safety net
+# and not the only deletion path (the worker deletes selfies itself unless KEEP_SELFIES).
+#
+# The match is a shell `case`, not `grep`: this runs inside cgr.dev/chainguard/minio, which
+# ships `mc`, `sh`, `date` and `mktemp` but NO grep. A grep-based guard here silently never
+# matched and kept adding rules — verified, do not reintroduce one.
+if [ -n "${S3_SELFIE_EXPIRE_DAYS:-}" ]; then
+  existing_rules=$($MC ilm rule ls "local/$BUCKET" --json 2>/dev/null || true)
+  case "$existing_rules" in
+    *'"Prefix":"selfies/"'*)
+      log "lifecycle selfies/ already present"
+      ;;
+    *)
+      log "lifecycle selfies/ expire after ${S3_SELFIE_EXPIRE_DAYS}d"
+      $MC ilm rule add --expire-days "$S3_SELFIE_EXPIRE_DAYS" --prefix "selfies/" "local/$BUCKET" \
+        || $MC ilm rule add --expiry-days "$S3_SELFIE_EXPIRE_DAYS" --prefix "selfies/" "local/$BUCKET" \
+        || log "lifecycle rule not applied (unsupported mc?); continuing"
+      ;;
+  esac
+fi
+
 log "done"

@@ -251,6 +251,22 @@ export const envSchema = z
      * empty nothing is sent and the worker logs `alarmMail: "no-recipient"` once per window.
      */
     RETENTION_ALARM_EMAIL: z.preprocess(blankToUndefined, z.string().default("")),
+    // --- v6 hardening (agent H): the password-reset budget is its own -------------------
+    //
+    // It used to be the magic-link budget (`MAGIC_LINK_PER_*`), which coupled two
+    // unrelated flows: a reset flood exhausted the event-day login fallback, and a
+    // login-link flood locked a participant out of their own reset. Counted on
+    // `password_reset_tokens` (migration 016), which only this route writes.
+    /** Reset links per account per hour; 0 disables the limit. */
+    PASSWORD_RESET_PER_USER: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().int().min(0).default(3),
+    ),
+    /** Reset links per client IP per hour; 0 disables the limit. */
+    PASSWORD_RESET_PER_IP: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().int().min(0).default(20),
+    ),
   })
   .superRefine((env, ctx) => {
     if (env.INSIGHTFACE_SURE_COSINE <= env.INSIGHTFACE_MIN_COSINE) {
