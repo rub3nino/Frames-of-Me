@@ -1901,6 +1901,17 @@ test("rematch needs KEEP_SELFIES and a stored selfie; delete gallery removes it"
   const { id: keptParticipant } = await participantCookie(kept, "p@example.com");
   await seedGallery(kept, keptParticipant, 1);
   const keptPath = `/v1/admin/galleries/${keptParticipant}/${kept.event.id}`;
+  // v6 (integration): rematch re-runs face recognition, so it needs an ACTIVE consent. The
+  // consent is what the selfie route demanded before this gallery could exist at all
+  // (routes.ts: `hasActiveConsent` -> 403 consentRequired), so seeding it here is what the
+  // real world guarantees; `seedGallery` inserts the gallery rows directly and skips it.
+  await kept.db.insertConsent({
+    userId: keptParticipant,
+    eventId: kept.event.id,
+    textVersion: "v1",
+    ip: "127.0.0.1",
+    userAgent: "test",
+  });
   const noKey = await kept.app.request(new Request(`http://api.local${keptPath}/rematch`, { method: "POST", headers: { cookie: keptCookie } }));
   assert.equal(noKey.status, 409);
   kept.db.setGallerySelfieKey(keptParticipant, kept.event.id, objectKeys.selfie(kept.event.id, keptParticipant, "kept"));
@@ -2171,4 +2182,53 @@ test("BOOTSTRAP_ADMINS upserts admins at boot", async () => {
   assert.equal(parsed.BOOTSTRAP_ADMINS, "x@example.com");
   assert.equal(parsed.RATE_LIMIT_EXEMPT_IPS, "10.0.0.0/8");
   assert.equal(parsed.MAGIC_LINK_PER_IP, 0);
+});
+
+// ---- integration fix 2: rematch is defence in depth on consent -----------------------------
+
+test("rematch refuses without an active consent, even with KEEP_SELFIES and a stored selfie", async () => {
+  const h = await harness({ env: { ...env, KEEP_SELFIES: true } });
+  const cookie = await adminCookie(h);
+  const { id: participantId } = await participantCookie(h, "p@example.com");
+  await seedGallery(h, participantId, 1);
+  h.db.setGallerySelfieKey(
+    participantId,
+    h.event.id,
+    objectKeys.selfie(h.event.id, participantId, "kept"),
+  );
+  const path = `/v1/admin/galleries/${participantId}/${h.event.id}/rematch`;
+
+  // Everything the route used to check is satisfied: KEEP_SELFIES, the user, the event and a
+  // stored selfie key. What is missing is the consent, and that is now enough to refuse.
+  const noConsent = await h.app.request(
+    new Request(`http://api.local${path}`, { method: "POST", headers: { cookie } }),
+  );
+  assert.equal(noConsent.status, 409);
+  assert.deepEqual(await noConsent.json(), { error: MESSAGES.consentRequired });
+  assert.equal(await h.db.countMatchJobsSince(participantId, new Date(0)), 0);
+
+  // With the consent in place it goes through, unchanged.
+  await h.db.insertConsent({
+    userId: participantId,
+    eventId: h.event.id,
+    textVersion: "v1",
+    ip: "127.0.0.1",
+    userAgent: "test",
+  });
+  const ok = await h.app.request(
+    new Request(`http://api.local${path}`, { method: "POST", headers: { cookie } }),
+  );
+  assert.equal(ok.status, 202);
+  assert.equal(await h.db.countMatchJobsSince(participantId, new Date(0)), 1);
+
+  // And a withdrawal closes it again. `withdrawConsent` deletes the gallery and the selfie
+  // key too, so after it BOTH guards refuse — which is the point of defence in depth: the
+  // route no longer depends on those two facts staying in step.
+  await h.db.withdrawConsent({ userId: participantId, eventId: h.event.id });
+  assert.equal(await h.db.hasActiveConsent(participantId, h.event.id), false);
+  const withdrawn = await h.app.request(
+    new Request(`http://api.local${path}`, { method: "POST", headers: { cookie } }),
+  );
+  assert.equal(withdrawn.status, 409);
+  assert.deepEqual(await withdrawn.json(), { error: MESSAGES.consentRequired });
 });

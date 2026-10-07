@@ -1065,6 +1065,14 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       deps.db.findEventById(eventId),
     ]);
     if (!user || !event) throw new ApiError(404, MESSAGES.notFound);
+    // v6 (integration) defence in depth: re-running face recognition for someone is
+    // processing their biometric data, so it needs an ACTIVE consent, not merely the traces
+    // of a past one. The hole was narrow — a stored selfie key implies a prior consented
+    // submission, and `withdrawConsent` deletes the gallery and with it the key — but it
+    // relied on two separate facts staying in step. This asks the consent directly.
+    if (!(await deps.db.hasActiveConsent(userId, eventId))) {
+      throw new ApiError(409, MESSAGES.consentRequired);
+    }
     const selfieKey = await deps.db.findGallerySelfieKey(userId, eventId);
     if (!selfieKey) throw new ApiError(409, MESSAGES.selfieNotKept);
     // Repeated clicks collapse into the queued/running job (match has no dedupe key of its own).
