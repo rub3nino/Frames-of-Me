@@ -1615,9 +1615,14 @@ export class PostgresDatabase implements Database {
   async listFeedback(
     userId: string,
     eventId: string,
+    photoIds?: string[],
   ): Promise<Array<{ photoId: string; verdict: FeedbackVerdict }>> {
+    if (photoIds !== undefined && photoIds.length === 0) return [];
     const rows = await this.sql<{ photo_id: string; verdict: FeedbackVerdict }[]>`
-      select photo_id, verdict from gallery_feedback where user_id = ${userId} and event_id = ${eventId}
+      select photo_id, verdict
+      from gallery_feedback
+      where user_id = ${userId} and event_id = ${eventId}
+        ${photoIds === undefined ? this.sql`` : this.sql`and photo_id = any(${photoIds}::uuid[])`}
     `;
     return rows.map((row) => ({ photoId: row.photo_id, verdict: row.verdict }));
   }

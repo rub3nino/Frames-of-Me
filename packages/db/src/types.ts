@@ -435,7 +435,11 @@ export interface Database {
     verdict: FeedbackVerdict;
     scoreAtTime: number | null;
   }): Promise<void>;
-  listFeedback(userId: string, eventId: string): Promise<Array<{ photoId: string; verdict: FeedbackVerdict }>>;
+  listFeedback(
+    userId: string,
+    eventId: string,
+    photoIds?: string[],
+  ): Promise<Array<{ photoId: string; verdict: FeedbackVerdict }>>;
   /** Newest first; `email` narrows to one participant. Reads agent A's match_runs/match_hits (006). */
   listMatchRuns(
     eventId: string,

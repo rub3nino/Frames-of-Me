@@ -180,6 +180,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const user = requireUser(c);
     requireRole(user, ["participant"]);
     const event = await loadEvent(deps, c.req.param("slug"));
+    await requireParticipantAccess(deps, user, event);
     const body = consentBodySchema.safeParse(await readJson(c));
     if (!body.success) throw new ApiError(400, MESSAGES.validation);
     const consent = await deps.db.insertConsent({
@@ -199,12 +200,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const user = requireUser(c);
     requireRole(user, ["participant"]);
     const event = await loadEvent(deps, c.req.param("slug"));
-    if (
-      event.access === "list" &&
-      !(await deps.db.isEventParticipant(event.id, user.email.toLowerCase()))
-    ) {
-      throw new ApiError(403, MESSAGES.notOnList);
-    }
+    await requireParticipantAccess(deps, user, event);
     if (!(await deps.db.hasActiveConsent(user.id, event.id))) {
       throw new ApiError(403, MESSAGES.consentRequired);
     }
@@ -245,18 +241,22 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const cursor = query.data.cursor ? decodeGalleryCursor(query.data.cursor) : undefined;
     if (cursor === null) throw new ApiError(400, MESSAGES.validation);
     const limit = query.data.limit;
-    const [latest, gallery, page, feedbackRows] = await Promise.all([
+    await requireParticipantAccess(deps, user, event);
+    const [latest, gallery, page] = await Promise.all([
       deps.db.latestMatchJob(user.id, event.id),
       deps.db.findGalleryByUser(user.id, event.id),
       deps.db.listGalleryPage(user.id, event.id, { limit, ...(cursor ? { cursor } : {}) }),
-      deps.db.listFeedback(user.id, event.id),
     ]);
+    const feedbackRows = await deps.db.listFeedback(
+      user.id,
+      event.id,
+      page.items.map((item) => item.photoId),
+    );
     const status = galleryStatus(latest?.status ?? null, gallery !== null, page.total);
     // v5 (D): `not_me` items stay in the page with the flag; the web hides them under "Nascoste".
     const feedbackByPhoto = new Map(feedbackRows.map((row) => [row.photoId, row.verdict]));
-    const items = [];
-    for (const row of page.items) {
-      items.push({
+    const items = await Promise.all(
+      page.items.map(async (row) => ({
         photoId: row.photoId,
         thumbUrl: await deps.objects.presignGet(row.thumbKey),
         webUrl: await deps.objects.presignGet(row.webKey),
@@ -265,8 +265,8 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
         createdAt: row.createdAt.toISOString(),
         originalReady: row.originalReady,
         feedback: feedbackByPhoto.get(row.photoId) ?? null,
-      });
-    }
+      })),
+    );
     const last = page.items[page.items.length - 1];
     const nextCursor =
       page.items.length === limit && last
@@ -287,16 +287,16 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const user = requireUser(c);
     requireRole(user, ["participant"]);
     const event = await loadEvent(deps, c.req.param("slug"));
+    await requireParticipantAccess(deps, user, event);
     const body = galleryDownloadBodySchema.safeParse(await readJson(c));
     if (!body.success) throw new ApiError(400, MESSAGES.validation);
     const photos = await ownedPhotos(deps, user, event, body.data.photoIds);
-    const urls = [];
-    for (const photo of photos) {
-      urls.push({
+    const urls = await Promise.all(
+      photos.map(async (photo) => ({
         photoId: photo.id,
         url: await deps.objects.presignGet(variantKey(photo, body.data.variant)),
-      });
-    }
+      })),
+    );
     return c.json({ urls });
   });
 
@@ -305,6 +305,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     requireRole(user, ["participant"]);
     if (!isTrustedFormOrigin(c, deps)) throw new ApiError(403, MESSAGES.forbidden);
     const event = await loadEvent(deps, c.req.param("slug"));
+    await requireParticipantAccess(deps, user, event);
     const request = await readZipRequest(c);
     const photos = await ownedPhotos(deps, user, event, request.photoIds);
     const entries = photos.map((photo, index) => ({
@@ -1145,6 +1146,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const user = requireUser(c);
     requireRole(user, ["participant"]);
     const event = await loadEvent(deps, c.req.param("slug"));
+    await requireParticipantAccess(deps, user, event);
     const body = galleryFeedbackBodySchema.safeParse(await readJson(c));
     if (!body.success) throw new ApiError(400, MESSAGES.validation);
     // Only photos of the caller's own gallery can be judged.
@@ -1306,6 +1308,20 @@ async function loadEvent(deps: AppDeps, slug: string) {
   const event = await deps.db.findEventBySlug(slug);
   if (!event) throw new ApiError(404, MESSAGES.notFound);
   return event;
+}
+
+/** Enforces event allowlists consistently for every participant-facing route. */
+async function requireParticipantAccess(
+  deps: AppDeps,
+  user: UserRow,
+  event: EventRow,
+): Promise<void> {
+  if (
+    event.access === "list" &&
+    !(await deps.db.isEventParticipant(event.id, user.email.toLowerCase()))
+  ) {
+    throw new ApiError(403, MESSAGES.notOnList);
+  }
 }
 
 async function ownUpload(deps: AppDeps, id: string, photographerId: string) {
