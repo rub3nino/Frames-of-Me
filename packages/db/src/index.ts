@@ -60,5 +60,19 @@ export type {
   // v6 (agent B)
   EventCodeRow,
   IdentityProvider,
+  // v6 (agent E): tagging
+  AuditEntryRow,
+  PhotoTagRow,
+  PhotoTagState,
+  PhotoTagWithNameRow,
+  TagProfileRow,
+  TaggableUserRow,
+  TaggedPhotoRow,
 } from "./types.js";
 export { AlbumRecognitionLockedError, AlbumRecognitionNotAllowedError } from "./types.js";
+// v6 (agent E): tagging
+export {
+  DISPLAY_NAME_MAX_LENGTH,
+  normalizeDisplayName,
+  TAG_SEARCH_MIN_PREFIX,
+} from "./types.js";

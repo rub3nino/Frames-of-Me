@@ -11,6 +11,9 @@ import {
   AlbumRecognitionLockedError,
   AlbumRecognitionNotAllowedError,
   DuplicateKeyError,
+  // v6 (agent E): tagging
+  normalizeDisplayName,
+  TAG_SEARCH_MIN_PREFIX,
 } from "./types.js";
 import type {
   AnchoredGallery,
@@ -63,6 +66,14 @@ import type {
   // v6 (agent B)
   EventCodeRow,
   IdentityProvider,
+  // v6 (agent E): tagging
+  AuditEntryRow,
+  PhotoTagRow,
+  PhotoTagState,
+  PhotoTagWithNameRow,
+  TagProfileRow,
+  TaggableUserRow,
+  TaggedPhotoRow,
 } from "./types.js";
 
 const EVENT_ID = "00000000-0000-4000-8000-000000000001";
@@ -2109,6 +2120,170 @@ export class PostgresDatabase implements Database {
     `;
     return rows[0]?.email_verified_at ?? null;
   }
+
+  // ---- tagging v6 (agent E): users.taggable / display_name, photo_tags -------------------
+
+  async findTagProfile(userId: string): Promise<TagProfileRow | null> {
+    const rows = await this.sql<TagProfileSql[]>`
+      select id, taggable, display_name from users where id = ${userId}
+    `;
+    return rows[0] ? mapTagProfile(rows[0]) : null;
+  }
+
+  async setTagProfile(
+    userId: string,
+    input: { taggable: boolean; displayName?: string | null },
+  ): Promise<TagProfileRow | null> {
+    const current = await this.findTagProfile(userId);
+    if (!current) return null;
+    const name =
+      input.displayName === undefined ? current.displayName : normalizeDisplayName(input.displayName);
+    // `taggable = true` needs a display name, supplied now or already stored. A taggable row
+    // with no name could never be found by the autocomplete anyway, and leaving it possible
+    // invites a later "fall back to the e-mail" patch.
+    if (input.taggable && !name) return null;
+    const rows = await this.sql<TagProfileSql[]>`
+      update users
+      set taggable = ${input.taggable}, display_name = ${name}
+      where id = ${userId}
+      returning id, taggable, display_name
+    `;
+    return rows[0] ? mapTagProfile(rows[0]) : null;
+  }
+
+  async searchTaggableUsers(input: {
+    eventId: string;
+    prefix: string;
+    limit: number;
+  }): Promise<TaggableUserRow[]> {
+    // Second line of defence: the API already refuses a short query, and this makes a future
+    // caller that forgets to get nothing rather than the whole roster.
+    const prefix = input.prefix.trim().toLowerCase();
+    if (prefix.length < TAG_SEARCH_MIN_PREFIX) return [];
+    const rows = await this.sql<{ id: string; display_name: string }[]>`
+      select u.id, u.display_name
+      from users u
+      where u.taggable
+        and u.display_name is not null
+        and lower(u.display_name) like ${`${escapeLike(prefix)}%`}
+        and exists (
+          select 1 from consents c
+          where c.user_id = u.id and c.event_id = ${input.eventId} and c.withdrawn_at is null
+        )
+      order by lower(u.display_name) asc, u.id asc
+      limit ${input.limit}
+    `;
+    return rows.map((row) => ({ userId: row.id, displayName: row.display_name }));
+  }
+
+  async insertPhotoTag(input: {
+    photoId: string;
+    userId: string;
+    taggedBy: string;
+  }): Promise<PhotoTagRow | null> {
+    // One statement: the opt-in is a `where` on the source row, so a concurrent opt-out
+    // cannot be raced, and `on conflict do nothing` keeps a 'removed' row untouched.
+    const rows = await this.sql<PhotoTagSql[]>`
+      insert into photo_tags (photo_id, user_id, tagged_by)
+      select ${input.photoId}::uuid, u.id, ${input.taggedBy}::uuid
+      from users u
+      where u.id = ${input.userId} and u.taggable and u.display_name is not null
+      on conflict (photo_id, user_id) do nothing
+      returning photo_id, user_id, tagged_by, state, created_at
+    `;
+    return rows[0] ? mapPhotoTag(rows[0]) : null;
+  }
+
+  async findPhotoTag(photoId: string, userId: string): Promise<PhotoTagRow | null> {
+    const rows = await this.sql<PhotoTagSql[]>`
+      select photo_id, user_id, tagged_by, state, created_at from photo_tags
+      where photo_id = ${photoId} and user_id = ${userId}
+    `;
+    return rows[0] ? mapPhotoTag(rows[0]) : null;
+  }
+
+  async removePhotoTag(photoId: string, userId: string): Promise<PhotoTagRow | null> {
+    const rows = await this.sql<PhotoTagSql[]>`
+      update photo_tags set state = 'removed'
+      where photo_id = ${photoId} and user_id = ${userId} and state = 'active'
+      returning photo_id, user_id, tagged_by, state, created_at
+    `;
+    return rows[0] ? mapPhotoTag(rows[0]) : null;
+  }
+
+  async listActivePhotoTagsForUser(userId: string): Promise<PhotoTagRow[]> {
+    const rows = await this.sql<PhotoTagSql[]>`
+      select photo_id, user_id, tagged_by, state, created_at from photo_tags
+      where user_id = ${userId} and state = 'active'
+      order by created_at desc, photo_id asc
+    `;
+    return rows.map(mapPhotoTag);
+  }
+
+  async listTaggedPhotosForUser(userId: string, eventId: string): Promise<TaggedPhotoRow[]> {
+    const rows = await this.sql<{
+      photo_id: string;
+      event_id: string;
+      thumb_key: string;
+      web_key: string;
+      tagged_by: string | null;
+      created_at: Date;
+    }[]>`
+      select pt.photo_id, p.event_id, t.s3_key as thumb_key, w.s3_key as web_key,
+             pt.tagged_by, pt.created_at
+      from photo_tags pt
+      join photos p on p.id = pt.photo_id
+      join derivatives t on t.photo_id = pt.photo_id and t.kind = 'thumb'
+      join derivatives w on w.photo_id = pt.photo_id and w.kind = 'web'
+      where pt.user_id = ${userId} and pt.state = 'active' and p.event_id = ${eventId}
+      order by pt.created_at desc, pt.photo_id asc
+    `;
+    return rows.map((row) => ({
+      photoId: row.photo_id,
+      eventId: row.event_id,
+      thumbKey: row.thumb_key,
+      webKey: row.web_key,
+      taggedBy: row.tagged_by,
+      createdAt: row.created_at,
+    }));
+  }
+
+  async listPhotoTags(photoId: string): Promise<PhotoTagWithNameRow[]> {
+    const rows = await this.sql<(PhotoTagSql & { display_name: string | null })[]>`
+      select pt.photo_id, pt.user_id, pt.tagged_by, pt.state, pt.created_at, u.display_name
+      from photo_tags pt
+      join users u on u.id = pt.user_id
+      where pt.photo_id = ${photoId} and pt.state = 'active'
+      order by pt.created_at asc, pt.user_id asc
+    `;
+    return rows.map((row) => ({ ...mapPhotoTag(row), displayName: row.display_name }));
+  }
+
+  async listAuditForTarget(target: string): Promise<AuditEntryRow[]> {
+    const rows = await this.sql<{
+      id: string;
+      actor_id: string | null;
+      action: string;
+      target: string;
+      meta: unknown;
+      created_at: Date;
+    }[]>`
+      select id, actor_id, action, target, meta, created_at from audit_log
+      where target = ${target}
+      order by created_at asc, id asc
+    `;
+    return rows.map((row) => ({
+      id: row.id,
+      actorId: row.actor_id,
+      action: row.action,
+      target: row.target,
+      // `audit_log.meta` is jsonb, and this driver hands it back as text, so it is parsed
+      // here. An unreadable value becomes `{}` rather than throwing: a malformed audit row
+      // must not break reading the rest of the trail.
+      meta: parseAuditMeta(row.meta),
+      createdAt: row.created_at,
+    }));
+  }
 }
 
 /** Maps the album constraints of migration 009 to their typed errors. */
@@ -2310,4 +2485,45 @@ function mapEventCode(row: EventCodeSql): EventCodeRow {
     expiresAt: row.expires_at,
     createdAt: row.created_at,
   };
+}
+
+// ---- tagging v6 (agent E) -----------------------------------------------------------------
+
+type TagProfileSql = { id: string; taggable: boolean; display_name: string | null };
+
+type PhotoTagSql = {
+  photo_id: string;
+  user_id: string;
+  tagged_by: string | null;
+  state: PhotoTagState;
+  created_at: Date;
+};
+
+function mapTagProfile(row: TagProfileSql): TagProfileRow {
+  return { userId: row.id, taggable: row.taggable, displayName: row.display_name };
+}
+
+function mapPhotoTag(row: PhotoTagSql): PhotoTagRow {
+  return {
+    photoId: row.photo_id,
+    userId: row.user_id,
+    taggedBy: row.tagged_by,
+    state: row.state,
+    createdAt: row.created_at,
+  };
+}
+
+/** `audit_log.meta` comes back as text from this driver; a non-object is reported as `{}`. */
+function parseAuditMeta(value: unknown): Record<string, unknown> {
+  const parsed = (() => {
+    if (typeof value !== "string") return value;
+    try {
+      return JSON.parse(value) as unknown;
+    } catch {
+      return null;
+    }
+  })();
+  return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+    ? (parsed as Record<string, unknown>)
+    : {};
 }

@@ -1116,3 +1116,19 @@ select {
 @media (max-width: 720px) {
   .photo-debug { grid-template-columns: 1fr; }
 }
+
+/* tagging v6 (agent E): the "Non sono io" button on a tagged photo. */
+.tag-remove {
+  position: absolute;
+  inset: auto 6px 6px 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.tag-remove:active { transform: scale(0.97); }

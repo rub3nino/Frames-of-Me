@@ -10,6 +10,9 @@ import {
   AlbumRecognitionLockedError,
   AlbumRecognitionNotAllowedError,
   DuplicateKeyError,
+  // v6 (agent E): tagging
+  normalizeDisplayName,
+  TAG_SEARCH_MIN_PREFIX,
 } from "./types.js";
 import type {
   AnchoredGallery,
@@ -57,6 +60,13 @@ import type {
   // v6 (agent B)
   EventCodeRow,
   IdentityProvider,
+  // v6 (agent E): tagging
+  AuditEntryRow,
+  PhotoTagRow,
+  PhotoTagWithNameRow,
+  TagProfileRow,
+  TaggableUserRow,
+  TaggedPhotoRow,
 } from "./types.js";
 
 /** Same cap as PostgresDatabase.findGalleriesByQueryVector. */
@@ -897,8 +907,24 @@ export class MemoryDatabase implements Database {
     return this.eventParticipants.has(`${eventId}:${email}`);
   }
 
-  async insertAudit(): Promise<void> {
-    return undefined;
+  // v6 (agent E): the rows are kept now (they used to be dropped), so `listAuditForTarget`
+  // answers here exactly as it does in Postgres and the tagging tests can assert the audit
+  // trail without a database. Nothing else reads them.
+  async insertAudit(input: {
+    actorId: string | null;
+    action: string;
+    target: string;
+    meta: Record<string, unknown>;
+  }): Promise<void> {
+    this.auditRows.push({
+      id: randomUUID(),
+      actorId: input.actorId,
+      action: input.action,
+      target: input.target,
+      // Copied, so a caller that reuses its meta object cannot rewrite history.
+      meta: { ...input.meta },
+      createdAt: new Date(),
+    });
   }
 
   async metrics(): Promise<Metrics> {
@@ -1865,6 +1891,158 @@ export class MemoryDatabase implements Database {
       .filter((row) => row.photographerId === photographerId && row.eventId === eventId)
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || compareText(b.id, a.id));
   }
+
+  // ---- tagging v6 (agent E): users.taggable / display_name, photo_tags -------------------
+
+  /** `users.taggable` / `users.display_name` (migration 013), keyed by user id. */
+  private readonly tagProfiles = new Map<string, TagProfileStored>();
+  /** `photo_tags`, keyed by `photo_id\0user_id` (the primary key of migration 013). */
+  private readonly photoTags = new Map<string, PhotoTagStored>();
+  /** `audit_log`, so `listAuditForTarget` works without Postgres. */
+  private readonly auditRows: AuditEntryRow[] = [];
+
+  async findTagProfile(userId: string): Promise<TagProfileRow | null> {
+    if (!this.users.has(userId)) return null;
+    const stored = this.tagProfiles.get(userId);
+    // The column defaults: `taggable false`, `display_name null`. Never "unknown means yes".
+    return {
+      userId,
+      taggable: stored?.taggable ?? false,
+      displayName: stored?.displayName ?? null,
+    };
+  }
+
+  async setTagProfile(
+    userId: string,
+    input: { taggable: boolean; displayName?: string | null },
+  ): Promise<TagProfileRow | null> {
+    const current = await this.findTagProfile(userId);
+    if (!current) return null;
+    const name =
+      input.displayName === undefined
+        ? current.displayName
+        : normalizeDisplayName(input.displayName);
+    if (input.taggable && !name) return null;
+    this.tagProfiles.set(userId, { taggable: input.taggable, displayName: name });
+    return { userId, taggable: input.taggable, displayName: name };
+  }
+
+  async searchTaggableUsers(input: {
+    eventId: string;
+    prefix: string;
+    limit: number;
+  }): Promise<TaggableUserRow[]> {
+    const prefix = input.prefix.trim().toLowerCase();
+    // Same second line of defence as Postgres: a short prefix returns nothing here too.
+    if (prefix.length < TAG_SEARCH_MIN_PREFIX) return [];
+    const rows: TaggableUserRow[] = [];
+    for (const [userId, profile] of this.tagProfiles) {
+      if (!profile.taggable || !profile.displayName) continue;
+      if (!profile.displayName.toLowerCase().startsWith(prefix)) continue;
+      const consented = this.consents.some(
+        (row) => row.userId === userId && row.eventId === input.eventId && !row.withdrawnAt,
+      );
+      if (!consented) continue;
+      rows.push({ userId, displayName: profile.displayName });
+    }
+    return rows
+      .sort(
+        (a, b) =>
+          compareText(a.displayName.toLowerCase(), b.displayName.toLowerCase()) ||
+          compareText(a.userId, b.userId),
+      )
+      .slice(0, input.limit);
+  }
+
+  async insertPhotoTag(input: {
+    photoId: string;
+    userId: string;
+    taggedBy: string;
+  }): Promise<PhotoTagRow | null> {
+    const profile = await this.findTagProfile(input.userId);
+    if (!profile || !profile.taggable || !profile.displayName) return null;
+    const key = photoTagKey(input.photoId, input.userId);
+    // Mirrors `on conflict (photo_id, user_id) do nothing`: an existing row, 'removed'
+    // included, is left exactly as it is, so a refused tag stays refused.
+    if (this.photoTags.has(key)) return null;
+    const row: PhotoTagStored = {
+      photoId: input.photoId,
+      userId: input.userId,
+      taggedBy: input.taggedBy,
+      state: "active",
+      createdAt: new Date(),
+    };
+    this.photoTags.set(key, row);
+    return { ...row };
+  }
+
+  async findPhotoTag(photoId: string, userId: string): Promise<PhotoTagRow | null> {
+    const row = this.photoTags.get(photoTagKey(photoId, userId));
+    return row ? { ...row } : null;
+  }
+
+  async removePhotoTag(photoId: string, userId: string): Promise<PhotoTagRow | null> {
+    const row = this.photoTags.get(photoTagKey(photoId, userId));
+    if (!row || row.state !== "active") return null;
+    row.state = "removed";
+    return { ...row };
+  }
+
+  async listActivePhotoTagsForUser(userId: string): Promise<PhotoTagRow[]> {
+    return [...this.photoTags.values()]
+      .filter((row) => row.userId === userId && row.state === "active")
+      .sort(
+        (a, b) =>
+          b.createdAt.getTime() - a.createdAt.getTime() || compareText(a.photoId, b.photoId),
+      )
+      .map((row) => ({ ...row }));
+  }
+
+  async listTaggedPhotosForUser(userId: string, eventId: string): Promise<TaggedPhotoRow[]> {
+    const rows: TaggedPhotoRow[] = [];
+    for (const tag of this.photoTags.values()) {
+      if (tag.userId !== userId || tag.state !== "active") continue;
+      const photo = this.photos.get(tag.photoId);
+      if (!photo || photo.eventId !== eventId) continue;
+      const thumb = this.derivatives.find((d) => d.photoId === photo.id && d.kind === "thumb");
+      const web = this.derivatives.find((d) => d.photoId === photo.id && d.kind === "web");
+      // The Postgres query inner-joins both derivatives: a photo still being processed is
+      // not listed, exactly as in the personal gallery.
+      if (!thumb || !web) continue;
+      rows.push({
+        photoId: photo.id,
+        eventId: photo.eventId,
+        thumbKey: thumb.s3Key,
+        webKey: web.s3Key,
+        taggedBy: tag.taggedBy,
+        createdAt: tag.createdAt,
+      });
+    }
+    return rows.sort(
+      (a, b) => b.createdAt.getTime() - a.createdAt.getTime() || compareText(a.photoId, b.photoId),
+    );
+  }
+
+  async listPhotoTags(photoId: string): Promise<PhotoTagWithNameRow[]> {
+    const rows = [...this.photoTags.values()].filter(
+      (row) => row.photoId === photoId && row.state === "active",
+    );
+    return rows
+      .sort(
+        (a, b) =>
+          a.createdAt.getTime() - b.createdAt.getTime() || compareText(a.userId, b.userId),
+      )
+      .map((row) => ({
+        ...row,
+        displayName: this.tagProfiles.get(row.userId)?.displayName ?? null,
+      }));
+  }
+
+  async listAuditForTarget(target: string): Promise<AuditEntryRow[]> {
+    return this.auditRows
+      .filter((row) => row.target === target)
+      .map((row) => ({ ...row }));
+  }
 }
 
 type FeedbackRow = {
@@ -1955,4 +2133,21 @@ function identityKey(provider: IdentityProvider, subject: string): string {
 
 function eventCodeKey(eventId: string, code: string): string {
   return `${eventId}\u0000${code}`;
+}
+
+// ---- tagging v6 (agent E) -----------------------------------------------------------------
+
+type TagProfileStored = { taggable: boolean; displayName: string | null };
+
+type PhotoTagStored = {
+  photoId: string;
+  userId: string;
+  taggedBy: string | null;
+  state: "active" | "removed";
+  createdAt: Date;
+};
+
+/** The `photo_tags` primary key (photo_id, user_id) as one map key. */
+function photoTagKey(photoId: string, userId: string): string {
+  return `${photoId}\u0000${userId}`;
 }

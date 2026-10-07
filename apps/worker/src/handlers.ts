@@ -53,6 +53,9 @@ const ORIGINAL_MISSING = "original missing";
 const MAIL_SUBJECTS: Record<EmailPayload["kind"], string> = {
   ready: "Le tue foto sono pronte",
   new: "Ci sono nuove foto per te",
+  // v6 E (agent E): a tag is a person<->photo link someone else asserted, so the tagged
+  // person is told about it. Enqueued by the tag route, sent by `sendGalleryMail` unchanged.
+  tagged: "Ti hanno taggato in una foto",
 };
 
 /** A failure that retrying cannot fix: the job fails terminally on the first attempt. */

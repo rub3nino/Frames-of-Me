@@ -958,3 +958,123 @@ export const googleCallbackQuerySchema = z.object({
   state: z.string().min(1).max(4096).optional(),
   error: z.string().min(1).max(200).optional(),
 });
+
+// ---- tagging v6 (agent E) -----------------------------------------------------------------
+//
+// Tagging makes the same person<->photo link that face recognition makes, minus the
+// biometrics, so the contract is written tight on purpose. Three rules live here and must
+// not be relaxed without re-reading section E of docs/v6-spec.md:
+//
+//   1. `tagSearchQuerySchema` has `.min(TAG_SEARCH_MIN_CHARS)`. With 6 000 participants a
+//      loose autocomplete is a searchable roster of everyone at the event. An empty or
+//      1-2 character query is not a short search, it is a directory dump.
+//   2. `taggableUserSchema` is `.strict()` and has no `email`. Adding one would hand every
+//      participant's address to anyone who can type three letters.
+//   3. The search is rate limited per session (`TAG_SEARCH_RATE_LIMIT`), because 3 characters
+//      times a loop is still an enumeration.
+
+/** Minimum length of an autocomplete query. See rule 1 above. */
+export const TAG_SEARCH_MIN_CHARS = 3;
+/** Longest autocomplete query accepted (a display name is at most 60 characters). */
+export const TAG_SEARCH_MAX_CHARS = 60;
+/** Suggestions returned at most. Short enough that the list is a pick, not a browse. */
+export const TAG_SEARCH_LIMIT = 8;
+/** Autocomplete calls allowed per session per window. See rule 3 above. */
+export const TAG_SEARCH_RATE_LIMIT = { windowSeconds: 60, max: 20 } as const;
+/** Tags a session may create per window: tagging is also an abuse vector, not just a read. */
+export const TAG_WRITE_RATE_LIMIT = { windowSeconds: 60 * 60, max: 60 } as const;
+/** Bounds of `users.display_name`. */
+export const DISPLAY_NAME_MIN_CHARS = 2;
+export const DISPLAY_NAME_MAX_CHARS = 60;
+
+/** The participant's own opt-in state. Their own e-mail is theirs, so it is not here either. */
+export const tagProfileSchema = z
+  .object({
+    taggable: z.boolean(),
+    displayName: z.string().nullable(),
+  })
+  .strict();
+
+/**
+ * The opt-in. `taggable` is required and never defaulted: a body that forgets it is a
+ * validation error, not an implicit "yes".
+ */
+export const tagProfileBodySchema = z
+  .object({
+    taggable: z.boolean(),
+    displayName: z
+      .string()
+      .trim()
+      .min(DISPLAY_NAME_MIN_CHARS)
+      .max(DISPLAY_NAME_MAX_CHARS)
+      .nullable()
+      .optional(),
+  })
+  .strict();
+
+/**
+ * `q` is `.min(TAG_SEARCH_MIN_CHARS)` after trimming, so "", "a" and "ab" are rejected by the
+ * schema itself — before any query runs. Do not add `.optional()` and do not lower the bound.
+ */
+export const tagSearchQuerySchema = z
+  .object({
+    q: z.string().trim().min(TAG_SEARCH_MIN_CHARS).max(TAG_SEARCH_MAX_CHARS),
+  })
+  .strict();
+
+/** One suggestion: an opaque id and a display name. No e-mail, ever. See rule 2 above. */
+export const taggableUserSchema = z
+  .object({
+    userId: z.string().uuid(),
+    displayName: z.string().min(1),
+  })
+  .strict();
+
+export const tagSearchResponseSchema = z
+  .object({ items: z.array(taggableUserSchema) })
+  .strict();
+
+export const tagCreateBodySchema = z
+  .object({
+    photoId: z.string().uuid(),
+    userId: z.string().uuid(),
+  })
+  .strict();
+
+export const tagSchema = z
+  .object({
+    photoId: z.string().uuid(),
+    userId: z.string().uuid(),
+    displayName: z.string().nullable(),
+    createdAt: z.string().datetime(),
+  })
+  .strict();
+
+/** A photo the caller is tagged in. Separate from the personal match gallery, which is untouched. */
+export const taggedPhotoSchema = z
+  .object({
+    photoId: z.string().uuid(),
+    thumbUrl: z.string().url(),
+    webUrl: z.string().url(),
+    createdAt: z.string().datetime(),
+  })
+  .strict();
+
+export const tagsMeResponseSchema = z
+  .object({
+    profile: tagProfileSchema,
+    items: z.array(taggedPhotoSchema),
+  })
+  .strict();
+
+export const photoTagsResponseSchema = z
+  .object({ items: z.array(tagSchema) })
+  .strict();
+
+export type TagProfile = z.infer<typeof tagProfileSchema>;
+export type TaggableUser = z.infer<typeof taggableUserSchema>;
+export type TagSearchResponse = z.infer<typeof tagSearchResponseSchema>;
+export type Tag = z.infer<typeof tagSchema>;
+export type TaggedPhoto = z.infer<typeof taggedPhotoSchema>;
+export type TagsMeResponse = z.infer<typeof tagsMeResponseSchema>;
+export type PhotoTagsResponse = z.infer<typeof photoTagsResponseSchema>;

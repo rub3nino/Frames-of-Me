@@ -90,6 +90,7 @@ import {
   verifyCallbackState,
 } from "./oauth.js";
 import { purgePhoto } from "./purge.js";
+import { registerTagRoutes } from "./routes.tags.js";
 
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -102,6 +103,7 @@ const HEALTH_TIMEOUT_MS = 2_000;
 const RATE_LIMIT_KEYS_MAX = 20_000;
 
 export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
+  registerTagRoutes(app, deps); // v6 E (agent E): every tagging route lives in routes.tags.ts
   const health = async (c: Context<AppEnv>) => {
     if (await databaseHealthy(deps)) return c.json({ ok: true });
     return c.json({ ok: false }, 503);
