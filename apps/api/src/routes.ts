@@ -661,6 +661,14 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       await deps.objects.delete(session.objectKey);
       throw new ApiError(409, MESSAGES.conflict);
     }
+    if (session.collection === "public") {
+      await deps.db.setPhotoModeration({
+        photoId,
+        status: "pending",
+        reason: null,
+        actorId: user.id,
+      });
+    }
     if (web) {
       await deps.db.upsertDerivative({ photoId, kind: "web", s3Key: session.objectKey });
     }
