@@ -1,0 +1,1029 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Frames of Me — Brand Identity</title>
+<meta name="description" content="Proposta di brand identity e redesign per Frames of Me (framesofme.com): logo, colori, tipografia, fotografia, motion e il redesign mobile-first di ogni pagina del sito e dell'app.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+<style>
+/* ============================================================================
+   FRAMES OF ME — Brand Identity  ·  "The warm gallery"
+   Single self-contained file. Tokens first, then system, then the document.
+   Direction: warm paper + ink + one honey signature. Instrument Serif as the
+   emotional display voice, Geist as the precise UI voice. The corner "focus
+   frame" is the connective motif across logo, capture, selection and reveal.
+   ============================================================================ */
+
+:root{
+  /* --- Warm neutral system (chosen from the use-scene: daylight, phones, joy) */
+  --paper:#FBFAF7;      /* base ground, warm off-white */
+  --surface:#FFFFFF;    /* cards, sheets, inputs */
+  --surface-2:#FFFEFC;  /* barely-raised */
+  --sunken:#F1EEE7;     /* wells, tracks, placeholders */
+
+  --ink:#1C1A17;        /* primary text, warm near-black */
+  --ink-2:#6B655C;      /* secondary */
+  --ink-3:#9A9389;      /* tertiary / hint */
+  --ink-4:#C3BDB2;      /* disabled */
+  --line:#E7E2D8;       /* hairline */
+  --line-2:#D8D2C6;     /* stronger */
+
+  /* --- Signature: one honey amber, used with rarity (mark / focus / match) */
+  --amber:#E3912F;
+  --amber-press:#C67C1F;
+  --amber-soft:#FBEAD2;
+  --amber-ink:#97590F;  /* amber as readable text/link on paper (≈5:1) */
+
+  /* --- Semantic, muted (never candy) */
+  --ok:#3E7D52;   --ok-soft:#E7F1E9;   --ok-ink:#2C6440;
+  --warn:#B5701A; --warn-soft:#FBEDD9; --warn-ink:#8A5110;
+  --bad:#C4463A;  --bad-soft:#FBE6E3;  --bad-ink:#9A3127;
+
+  /* --- Type */
+  --sans:"Geist",-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+  --mono:"Geist Mono",ui-monospace,"SF Mono",Menlo,monospace;
+  --serif:"Instrument Serif",Georgia,"Times New Roman",serif;
+
+  --fs-hero:clamp(2.9rem,1.6rem+5.6vw,5.5rem);
+  --fs-d1:clamp(2.2rem,1.5rem+3vw,3.6rem);
+  --fs-d2:clamp(1.7rem,1.3rem+1.8vw,2.5rem);
+  --fs-h2:clamp(1.3rem,1.15rem+0.7vw,1.7rem);
+  --fs-h3:1.15rem;
+  --fs-lead:clamp(1.05rem,1rem+0.3vw,1.25rem);
+  --fs-body:1rem; --fs-sm:.9375rem; --fs-xs:.8125rem; --fs-2xs:.6875rem;
+
+  /* --- Space (4-base) */
+  --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px; --s6:32px;
+  --s7:40px; --s8:56px; --s9:72px; --s10:96px; --s11:128px;
+
+  /* --- Shape */
+  --r-sm:8px; --r-md:12px; --r-lg:16px; --r-xl:22px; --r-pill:999px;
+
+  /* --- Depth: offset + soft blur only (never a glow) */
+  --sh-sm:0 1px 2px rgba(28,26,23,.05);
+  --sh-md:0 6px 20px rgba(28,26,23,.08),0 1px 3px rgba(28,26,23,.05);
+  --sh-lg:0 20px 50px rgba(28,26,23,.14),0 5px 14px rgba(28,26,23,.07);
+
+  /* --- Motion (Emil Kowalski's stronger curves) */
+  --ease-out:cubic-bezier(.23,1,.32,1);
+  --ease-in-out:cubic-bezier(.77,0,.175,1);
+  --ease-drawer:cubic-bezier(.32,.72,0,1);
+  --maxw:1120px;
+}
+
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;-webkit-text-size-adjust:100%}
+body{
+  margin:0;background:var(--paper);color:var(--ink);
+  font-family:var(--sans);font-size:var(--fs-body);line-height:1.5;
+  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+}
+::selection{background:var(--amber-soft);color:var(--ink)}
+:focus-visible{outline:none;box-shadow:0 0 0 3px var(--paper),0 0 0 6px var(--amber)}
+img{display:block;max-width:100%}
+a{color:var(--amber-ink);text-decoration:underline;text-underline-offset:2px;text-decoration-thickness:1px}
+h1,h2,h3,h4{margin:0;font-weight:600;letter-spacing:-.02em;text-wrap:balance}
+p{margin:0}
+.mono{font-family:var(--mono);font-feature-settings:"tnum";letter-spacing:.01em}
+.serif{font-family:var(--serif);font-weight:400;letter-spacing:-.01em;font-style:normal}
+
+/* ---- scrollbar ---- */
+*{scrollbar-width:thin;scrollbar-color:var(--line-2) transparent}
+*::-webkit-scrollbar{width:10px;height:10px}
+*::-webkit-scrollbar-thumb{background:var(--line-2);border-radius:99px;border:3px solid var(--paper)}
+
+/* ============================ layout ============================ */
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 20px}
+.section{padding:var(--s10) 0}
+.section--tight{padding:var(--s8) 0}
+.eyebrowless{} /* reminder: no kickers above headings */
+.lead{font-size:var(--fs-lead);color:var(--ink-2);line-height:1.5;max-width:58ch}
+.grid{display:grid;gap:var(--s5)}
+@media(min-width:720px){.cols-2{grid-template-columns:1fr 1fr}.cols-3{grid-template-columns:repeat(3,1fr)}.cols-4{grid-template-columns:repeat(4,1fr)}}
+.sec-head{display:flex;align-items:baseline;gap:var(--s4);flex-wrap:wrap;margin-bottom:var(--s7)}
+.sec-no{font-family:var(--mono);font-size:var(--fs-xs);color:var(--amber-ink);letter-spacing:.08em}
+.sec-head h2{font-size:var(--fs-d2)}
+.sec-head p{color:var(--ink-2);max-width:52ch;margin-left:auto}
+.rule{height:1px;background:var(--line);border:0;margin:0}
+
+/* ============================ top nav ============================ */
+.nav{position:sticky;top:0;z-index:200;background:rgba(251,250,247,.82);
+  backdrop-filter:saturate(160%) blur(16px);-webkit-backdrop-filter:saturate(160%) blur(16px);
+  border-bottom:1px solid var(--line)}
+.nav .wrap{display:flex;align-items:center;gap:var(--s4);height:56px}
+.nav nav{margin-left:auto;display:flex;gap:var(--s2);overflow:auto}
+.nav a{color:var(--ink-2);text-decoration:none;font-size:var(--fs-sm);padding:6px 10px;border-radius:var(--r-pill);white-space:nowrap}
+.nav a:hover{color:var(--ink);background:var(--sunken)}
+@media(max-width:720px){.nav nav{display:none}}
+
+/* ============================ logo / mark ============================ */
+.mark{--c:var(--amber);display:inline-block}
+.wordmark{display:inline-flex;align-items:center;gap:10px;font-weight:600;letter-spacing:-.03em;color:var(--ink)}
+.wordmark .n{font-size:1.15rem}
+
+/* ============================ buttons ============================ */
+.btn{appearance:none;border:1px solid transparent;font:inherit;font-weight:500;cursor:pointer;
+  border-radius:var(--r-pill);padding:11px 20px;display:inline-flex;align-items:center;gap:8px;
+  transition:transform 140ms var(--ease-out),background 160ms ease,border-color 160ms ease;line-height:1}
+.btn:active{transform:scale(.97)}
+.btn-primary{background:var(--ink);color:#fff}
+.btn-primary:hover{background:#000}
+.btn-secondary{background:var(--surface);color:var(--ink);border-color:var(--line-2)}
+.btn-secondary:hover{border-color:var(--ink-3);background:var(--surface-2)}
+.btn-ghost{background:transparent;color:var(--amber-ink);padding:11px 12px}
+.btn-ghost:hover{background:var(--amber-soft)}
+.btn-block{width:100%;justify-content:center}
+.btn-lg{padding:14px 26px;font-size:1.05rem}
+.btn[disabled]{opacity:.5;cursor:not-allowed}
+
+/* ============================ chips / badges ============================ */
+.chip{display:inline-flex;align-items:center;gap:6px;padding:5px 11px;border-radius:var(--r-pill);
+  font-size:var(--fs-xs);font-weight:500;background:var(--surface);border:1px solid var(--line)}
+.chip--sel{background:var(--ink);color:#fff;border-color:var(--ink)}
+.badge{display:inline-flex;align-items:center;gap:6px;padding:4px 9px;border-radius:var(--r-sm);
+  font-size:var(--fs-xs);font-weight:600;line-height:1}
+.badge .dot{width:7px;height:7px;border-radius:99px;background:currentColor}
+.b-ok{background:var(--ok-soft);color:var(--ok-ink)}
+.b-warn{background:var(--warn-soft);color:var(--warn-ink)}
+.b-bad{background:var(--bad-soft);color:var(--bad-ink)}
+.b-info{background:var(--amber-soft);color:var(--amber-ink)}
+.b-neutral{background:var(--sunken);color:var(--ink-2)}
+
+/* ============================ cards / swatches ============================ */
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);padding:var(--s5)}
+.swatch{border-radius:var(--r-md);overflow:hidden;border:1px solid var(--line);background:var(--surface)}
+.swatch .chipc{height:84px}
+.swatch .meta{padding:10px 12px;font-size:var(--fs-xs)}
+.swatch .meta b{display:block;font-weight:600;font-size:var(--fs-sm);letter-spacing:-.01em}
+.swatch .meta .hex{font-family:var(--mono);color:var(--ink-3)}
+
+/* ============================ inputs ============================ */
+.field{display:block;margin-bottom:var(--s4)}
+.field label{display:block;font-size:var(--fs-sm);font-weight:500;margin-bottom:6px}
+.input{width:100%;background:var(--surface);border:1px solid var(--line-2);border-radius:var(--r-md);
+  padding:12px 14px;font:inherit;color:var(--ink);transition:border-color 150ms ease,box-shadow 150ms ease}
+.input::placeholder{color:var(--ink-3)}
+.input:focus{outline:none;border-color:var(--amber);box-shadow:0 0 0 3px var(--amber-soft)}
+.caret{caret-color:var(--amber)}
+
+/* consent block */
+.consent{display:flex;gap:12px;align-items:flex-start;padding:16px;border:1px solid var(--line);
+  border-radius:var(--r-md);background:var(--surface)}
+.consent .box{flex:0 0 auto;width:26px;height:26px;border-radius:7px;border:2px solid var(--line-2);
+  display:grid;place-items:center;margin-top:1px;transition:.15s var(--ease-out)}
+.consent.on .box{background:var(--amber);border-color:var(--amber)}
+.consent .box svg{opacity:0;transition:opacity .15s}
+.consent.on .box svg{opacity:1}
+.consent .t{font-size:var(--fs-sm);color:var(--ink-2)}
+.consent .t b{color:var(--ink);font-weight:600}
+
+/* ============================ the FOCUS FRAME motif ============================ */
+.frame{position:relative}
+.frame::before,.frame::after,
+.frame>.fc1,.frame>.fc2{content:"";position:absolute;width:22px;height:22px;
+  border:2.5px solid var(--amber);pointer-events:none}
+.frame::before{top:8px;left:8px;border-right:0;border-bottom:0;border-radius:6px 0 0 0}
+.frame::after{top:8px;right:8px;border-left:0;border-bottom:0;border-radius:0 6px 0 0}
+.frame>.fc1{bottom:8px;left:8px;border-right:0;border-top:0;border-radius:0 0 0 6px}
+.frame>.fc2{bottom:8px;right:8px;border-left:0;border-top:0;border-radius:0 0 6px 0}
+
+/* ============================ photo grids ============================ */
+.pg{display:grid;gap:10px;grid-template-columns:repeat(2,1fr)}
+@media(min-width:560px){.pg{grid-template-columns:repeat(4,1fr)}}
+.pg img{width:100%;aspect-ratio:3/4;object-fit:cover;border-radius:12px;background:var(--sunken)}
+.masonry{columns:2;column-gap:10px}
+@media(min-width:560px){.masonry{columns:4}}
+.masonry img{width:100%;margin-bottom:10px;border-radius:12px;background:var(--sunken)}
+
+/* ============================ device & browser mockups ============================ */
+.showcase{display:grid;gap:var(--s6)}
+@media(min-width:900px){.showcase--phones{grid-template-columns:repeat(2,1fr)}}
+.mock{display:flex;flex-direction:column;gap:12px}
+.mock .cap{font-size:var(--fs-sm);color:var(--ink-2)}
+.mock .cap b{color:var(--ink);font-weight:600}
+.mock .cap .mono{color:var(--amber-ink);font-size:var(--fs-2xs);display:block;margin-top:2px}
+
+.phone{width:100%;max-width:360px;margin:0 auto;background:#000;border-radius:44px;padding:10px;
+  box-shadow:var(--sh-lg)}
+.phone .scr{background:var(--paper);border-radius:34px;overflow:hidden;position:relative;aspect-ratio:9/19.3}
+.phone .notch{position:absolute;top:10px;left:50%;transform:translateX(-50%);width:110px;height:26px;
+  background:#000;border-radius:99px;z-index:40}
+.scr-scroll{position:absolute;inset:0;overflow:auto}
+
+.browser{background:var(--surface);border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:var(--sh-md)}
+.browser .bar{display:flex;align-items:center;gap:8px;padding:11px 14px;border-bottom:1px solid var(--line);background:var(--surface-2)}
+.browser .dots{display:flex;gap:6px}
+.browser .dots i{width:11px;height:11px;border-radius:99px;background:var(--line-2);display:block}
+.browser .url{flex:1;background:var(--sunken);border-radius:8px;padding:5px 12px;font-size:var(--fs-xs);
+  color:var(--ink-3);font-family:var(--mono);max-width:360px}
+.browser .view{max-height:620px;overflow:auto}
+
+/* ---- in-screen app chrome (phone) ---- */
+.appbar{position:sticky;top:0;z-index:30;display:flex;align-items:center;gap:10px;padding:52px 18px 12px;
+  background:rgba(251,250,247,.9);backdrop-filter:blur(12px);border-bottom:1px solid var(--line)}
+.appbar .t{font-weight:600;font-size:.95rem}
+.appbar .sp{margin-left:auto}
+.screen-pad{padding:18px}
+.tabbar{position:sticky;bottom:0;display:flex;background:rgba(255,255,255,.92);backdrop-filter:blur(12px);
+  border-top:1px solid var(--line)}
+.tabbar a{flex:1;text-align:center;padding:10px 0 20px;color:var(--ink-3);text-decoration:none;font-size:var(--fs-2xs);font-weight:500}
+.tabbar a.on{color:var(--amber-ink)}
+.tabbar a svg{display:block;margin:0 auto 3px}
+
+/* hero recognition demo */
+.reco{position:relative;border-radius:var(--r-lg);overflow:hidden;background:var(--ink)}
+.reco .wall{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;padding:6px}
+.reco .wall img{aspect-ratio:1;object-fit:cover;border-radius:8px;filter:grayscale(.3) brightness(.62);
+  transition:filter 700ms var(--ease-out),transform 700ms var(--ease-out)}
+.reco.go .wall img[data-m]{filter:none;transform:scale(1.02);box-shadow:0 0 0 2px var(--amber)}
+.reco.go .wall img:not([data-m]){filter:grayscale(.6) brightness(.4)}
+.reco .scan{position:absolute;inset:0;pointer-events:none}
+.reco .scan .line{position:absolute;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,var(--amber),transparent);
+  top:0;opacity:0;animation:scan 2.6s var(--ease-in-out) infinite}
+.reco.go .scan .line{opacity:1}
+@keyframes scan{0%{top:2%}50%{top:97%}100%{top:2%}}
+
+.statline{display:flex;flex-wrap:wrap;gap:var(--s5) var(--s7);align-items:baseline}
+.stat b{font-family:var(--mono);font-size:1.9rem;font-weight:500;letter-spacing:-.02em;display:block}
+.stat span{font-size:var(--fs-sm);color:var(--ink-2)}
+
+/* type specimen */
+.spec{border-top:1px solid var(--line);padding:var(--s4) 0;display:flex;gap:var(--s5);align-items:baseline;flex-wrap:wrap}
+.spec .tag{font-family:var(--mono);font-size:var(--fs-2xs);color:var(--ink-3);flex:0 0 120px}
+
+/* do/don't */
+.dd{border-radius:var(--r-md);padding:14px 16px;font-size:var(--fs-sm)}
+.dd.do{background:var(--ok-soft);color:var(--ok-ink)}
+.dd.dont{background:var(--bad-soft);color:var(--bad-ink)}
+.dd b{display:block;margin-bottom:4px;font-weight:600}
+
+/* misc */
+.pill-row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.note{font-size:var(--fs-sm);color:var(--ink-2)}
+.kv{display:flex;justify-content:space-between;gap:16px;padding:12px 0;border-bottom:1px solid var(--line);font-size:var(--fs-sm)}
+.kv:last-child{border-bottom:0}
+.kv .k{color:var(--ink-2)}
+.kv .v{font-weight:500}
+.progress{height:8px;background:var(--sunken);border-radius:99px;overflow:hidden}
+.progress i{display:block;height:100%;background:var(--amber);border-radius:99px}
+.empty{text-align:center;padding:40px 20px;color:var(--ink-2)}
+.empty .fr{width:68px;height:68px;margin:0 auto 14px;border-radius:14px;background:var(--sunken);display:grid;place-items:center}
+
+/* ============================ VARIANTS (live preview) ============================ */
+/* Everything is tokenised on --amber*, so swapping 4 vars recolours the whole system. */
+:root[data-accent="sage"]{ --amber:#5E8C6A; --amber-press:#4C7557; --amber-soft:#E6EFE7; --amber-ink:#3C6450; }
+:root[data-accent="coral"]{ --amber:#E25C44; --amber-press:#C64A34; --amber-soft:#FBE5E0; --amber-ink:#A83724; }
+/* Display family toggle: force the emotional serif voice back to the UI grotesque. */
+body[data-type="sans"] .serif{font-family:var(--sans)!important;font-weight:600;letter-spacing:-.03em;font-style:normal}
+
+/* variant control bar */
+.vbar{position:sticky;top:56px;z-index:190;background:rgba(251,250,247,.9);
+  backdrop-filter:saturate(160%) blur(14px);-webkit-backdrop-filter:saturate(160%) blur(14px);
+  border-bottom:1px solid var(--line)}
+.vbar .wrap{display:flex;gap:18px;align-items:center;flex-wrap:wrap;padding:9px 20px;min-height:48px}
+.vbar .grp{display:flex;gap:8px;align-items:center}
+.vbar .lbl{color:var(--ink-3);font-size:var(--fs-2xs);text-transform:uppercase;letter-spacing:.07em;font-weight:600}
+.vseg{display:inline-flex;background:var(--sunken);border-radius:999px;padding:3px}
+.vseg button{appearance:none;border:0;background:transparent;font:inherit;font-size:var(--fs-xs);font-weight:500;
+  color:var(--ink-2);padding:6px 13px;border-radius:999px;cursor:pointer;display:inline-flex;align-items:center;gap:7px;
+  transition:transform 140ms var(--ease-out)}
+.vseg button:active{transform:scale(.96)}
+.vseg button[aria-pressed="true"]{background:var(--surface);color:var(--ink);box-shadow:var(--sh-sm)}
+.vseg .sw{width:12px;height:12px;border-radius:99px;display:inline-block}
+.vbar .hex{margin-left:auto;font-family:var(--mono);font-size:var(--fs-xs);color:var(--amber-ink)}
+@media(max-width:720px){.vbar .hex{margin-left:0;width:100%}}
+
+@media(prefers-reduced-motion:reduce){
+  *{animation-duration:.001ms!important;transition-duration:.001ms!important;scroll-behavior:auto}
+}
+</style>
+</head>
+<body>
+
+<!-- ============================ NAV ============================ -->
+<header class="nav">
+  <div class="wrap">
+    <span class="wordmark" aria-label="Frames of Me">
+      <svg class="mark" width="26" height="26" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+        <g stroke="var(--amber)" stroke-width="2.6" stroke-linecap="round">
+          <path d="M8 4H5a1 1 0 0 0-1 1v3"/><path d="M24 4h3a1 1 0 0 1 1 1v3"/>
+          <path d="M8 28H5a1 1 0 0 1-1-1v-3"/><path d="M24 28h3a1 1 0 0 0 1-1v-3"/>
+        </g>
+        <circle cx="16" cy="16" r="3.4" fill="var(--amber)"/>
+      </svg>
+      <span class="n">Frames of Me</span>
+    </span>
+    <nav>
+      <a href="#essenza">Essenza</a>
+      <a href="#logo">Logo</a>
+      <a href="#colore">Colore</a>
+      <a href="#tipografia">Tipografia</a>
+      <a href="#foto">Foto</a>
+      <a href="#componenti">Componenti</a>
+      <a href="#motion">Motion</a>
+      <a href="#partecipante">App</a>
+      <a href="#fotografo">Fotografi</a>
+      <a href="#admin">Admin</a>
+    </nav>
+  </div>
+</header>
+
+<!-- ============================ VARIANT SWITCHER ============================ -->
+<div class="vbar" role="region" aria-label="Varianti">
+  <div class="wrap">
+    <div class="grp">
+      <span class="lbl">Accento</span>
+      <div class="vseg" id="segAccent">
+        <button data-accent="honey" aria-pressed="true"><span class="sw" style="background:#E3912F"></span>Honey</button>
+        <button data-accent="sage" aria-pressed="false"><span class="sw" style="background:#5E8C6A"></span>Salvia</button>
+        <button data-accent="coral" aria-pressed="false"><span class="sw" style="background:#E25C44"></span>Corallo</button>
+      </div>
+    </div>
+    <div class="grp">
+      <span class="lbl">Display</span>
+      <div class="vseg" id="segType">
+        <button data-type="serif" aria-pressed="true">Serif</button>
+        <button data-type="sans" aria-pressed="false">Tutto Geist</button>
+      </div>
+    </div>
+    <span class="hex" id="accReadout">signature #E3912F · Honey + Instrument Serif</span>
+  </div>
+</div>
+
+<!-- ============================ COVER ============================ -->
+<section class="section" style="padding-top:var(--s9)">
+  <div class="wrap">
+    <div class="grid cols-2" style="align-items:center;gap:var(--s8)">
+      <div>
+        <div class="wordmark" style="margin-bottom:var(--s5)">
+          <svg width="40" height="40" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+            <g stroke="var(--amber)" stroke-width="2.6" stroke-linecap="round">
+              <path d="M8 4H5a1 1 0 0 0-1 1v3"/><path d="M24 4h3a1 1 0 0 1 1 1v3"/>
+              <path d="M8 28H5a1 1 0 0 1-1-1v-3"/><path d="M24 28h3a1 1 0 0 0 1-1v-3"/>
+            </g><circle cx="16" cy="16" r="3.4" fill="var(--amber)"/>
+          </svg>
+        </div>
+        <h1 class="serif" style="font-size:var(--fs-hero);line-height:1.02;letter-spacing:-.02em">
+          Rivediti.
+        </h1>
+        <p class="lead" style="margin-top:var(--s4)">
+          Proposta di <b style="color:var(--ink);font-weight:600">brand identity</b> e redesign per
+          <b style="color:var(--ink);font-weight:600">Frames of Me</b> — l'app che a un evento ti ritrova
+          tra migliaia di scatti partendo da un selfie. Un sistema caldo, chiaro e preciso: la foto è la
+          protagonista, l'interfaccia è solo la cornice.
+        </p>
+        <div class="pill-row" style="margin-top:var(--s5)">
+          <span class="chip"><span class="mono">framesofme.com</span></span>
+          <span class="chip">Mobile-first</span>
+          <span class="chip">Light only</span>
+          <span class="chip">Italiano</span>
+        </div>
+      </div>
+
+      <!-- Recognition demo: the ONE authored moment -->
+      <div>
+        <figure class="reco frame" id="reco" style="margin:0">
+          <span class="fc1"></span><span class="fc2"></span>
+          <div class="wall">
+            <img src="photos/event-01.jpg" alt=""><img src="photos/portrait-03.jpg" data-m alt="">
+            <img src="photos/event-07.jpg" alt=""><img src="photos/event-02.jpg" alt="">
+            <img src="photos/portrait-06.jpg" alt=""><img src="photos/event-04.jpg" alt="">
+            <img src="photos/portrait-03.jpg" data-m alt=""><img src="photos/event-09.jpg" alt="">
+            <img src="photos/event-12.jpg" alt=""><img src="photos/event-05.jpg" alt="">
+            <img src="photos/portrait-03.jpg" data-m alt=""><img src="photos/event-08.jpg" alt="">
+          </div>
+          <div class="scan"><span class="line"></span></div>
+        </figure>
+        <p class="note" style="text-align:center;margin-top:10px">
+          Il momento "Recognition": la cornice si posa, i tuoi scatti tornano a fuoco.
+        </p>
+      </div>
+    </div>
+
+    <hr class="rule" style="margin-top:var(--s9)">
+    <div class="statline" style="margin-top:var(--s6)">
+      <div class="stat"><b>~150k</b><span>foto per conferenza</span></div>
+      <div class="stat"><b>~6.000</b><span>partecipanti</span></div>
+      <div class="stat"><b>1</b><span>selfie per trovarti</span></div>
+      <div class="stat"><b>0</b><span>password da ricordare</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ ESSENZA ============================ -->
+<section class="section" id="essenza" style="background:var(--surface);border-block:1px solid var(--line)">
+  <div class="wrap">
+    <div class="sec-head"><span class="sec-no">01</span><h2>Essenza</h2>
+      <p>La sensazione da progettare: ritrovarsi è un piccolo momento di gioia, reso istantaneo e sicuro.</p></div>
+    <div class="grid cols-3">
+      <div>
+        <h3 class="serif" style="font-size:var(--fs-d1)">Caldo</h3>
+        <p class="note" style="margin-top:8px">Carta avorio, non grigio clinico. Parla di persone, non di database. La gioia di rivedersi in uno scatto bello.</p>
+      </div>
+      <div>
+        <h3 class="serif" style="font-size:var(--fs-d1)">Chiaro</h3>
+        <p class="note" style="margin-top:8px">Un solo accento, tanto spazio, gerarchia ovvia. Niente da sfogliare: vedi subito cosa fare e dove sono le tue foto.</p>
+      </div>
+      <div>
+        <h3 class="serif" style="font-size:var(--fs-d1)">Fidato</h3>
+        <p class="note" style="margin-top:8px">Tratta dati biometrici. La fiducia è una feature: consenso esplicito, "il selfie si cancella", copy onesto e calmo.</p>
+      </div>
+    </div>
+    <p class="lead" style="margin-top:var(--s7)">
+      Tre parole guida — <b style="color:var(--ink);font-weight:600">Caldo · Chiaro · Fidato</b>. Dove il sistema
+      attuale punta a "Apple-grade freddo", questa proposta sceglie una galleria d'autore calda: la precisione resta,
+      ma l'emozione del ritrovarsi diventa il centro.
+    </p>
+  </div>
+</section>
+
+<!-- ============================ LOGO ============================ -->
+<section class="section" id="logo">
+  <div class="wrap">
+    <div class="sec-head"><span class="sec-no">02</span><h2>Logo &amp; marchio</h2>
+      <p>Il marchio è una <b>cornice di messa a fuoco</b>: quattro angoli di mirino + un punto. È insieme mirino della
+      fotocamera e cornice del quadro — "ti troviamo, e ti incorniciamo".</p></div>
+
+    <div class="grid cols-2" style="gap:var(--s7);align-items:stretch">
+      <!-- primary lockup -->
+      <div class="card" style="display:flex;flex-direction:column;justify-content:center;gap:var(--s6);align-items:center;background:var(--paper)">
+        <span class="wordmark">
+          <svg width="46" height="46" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+            <g stroke="var(--amber)" stroke-width="2.6" stroke-linecap="round">
+              <path d="M8 4H5a1 1 0 0 0-1 1v3"/><path d="M24 4h3a1 1 0 0 1 1 1v3"/>
+              <path d="M8 28H5a1 1 0 0 1-1-1v-3"/><path d="M24 28h3a1 1 0 0 0 1-1v-3"/>
+            </g><circle cx="16" cy="16" r="3.4" fill="var(--amber)"/>
+          </svg>
+          <span style="font-size:1.7rem">Frames of Me</span>
+        </span>
+        <span class="note">Lockup orizzontale primario · marchio + wordmark in Geist Semibold</span>
+      </div>
+      <!-- app icon on ink -->
+      <div class="card" style="display:flex;flex-direction:column;gap:var(--s5);align-items:center;justify-content:center;background:var(--ink)">
+        <div style="width:112px;height:112px;border-radius:26px;background:var(--paper);display:grid;place-items:center;box-shadow:var(--sh-md)">
+          <svg width="66" height="66" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+            <g stroke="var(--amber)" stroke-width="2.4" stroke-linecap="round">
+              <path d="M8 4H5a1 1 0 0 0-1 1v3"/><path d="M24 4h3a1 1 0 0 1 1 1v3"/>
+              <path d="M8 28H5a1 1 0 0 1-1-1v-3"/><path d="M24 28h3a1 1 0 0 0 1-1v-3"/>
+            </g><circle cx="16" cy="16" r="3.6" fill="var(--amber)"/>
+          </svg>
+        </div>
+        <span class="note" style="color:#cfc9bd">App icon · il marchio da solo, mai storto</span>
+      </div>
+    </div>
+
+    <div class="grid cols-3" style="margin-top:var(--s6)">
+      <div class="card">
+        <b style="font-size:var(--fs-sm)">Area di rispetto</b>
+        <p class="note" style="margin:8px 0 14px">Minimo = altezza del punto centrale, su ogni lato.</p>
+        <div style="background:var(--sunken);border-radius:10px;padding:22px;display:grid;place-items:center">
+          <svg width="40" height="40" viewBox="0 0 32 32" fill="none"><g stroke="var(--amber)" stroke-width="2.6" stroke-linecap="round"><path d="M8 4H5a1 1 0 0 0-1 1v3"/><path d="M24 4h3a1 1 0 0 1 1 1v3"/><path d="M8 28H5a1 1 0 0 1-1-1v-3"/><path d="M24 28h3a1 1 0 0 0 1-1v-3"/></g><circle cx="16" cy="16" r="3.4" fill="var(--amber)"/></svg>
+        </div>
+      </div>
+      <div class="card">
+        <b style="font-size:var(--fs-sm)">Misura minima</b>
+        <p class="note" style="margin:8px 0 14px">Marchio ≥ 20px · lockup ≥ 120px di larghezza.</p>
+        <div style="display:flex;gap:16px;align-items:flex-end;justify-content:center;padding:14px 0">
+          <svg width="20" height="20" viewBox="0 0 32 32" fill="none"><g stroke="var(--amber)" stroke-width="3" stroke-linecap="round"><path d="M8 4H5a1 1 0 0 0-1 1v3"/><path d="M24 4h3a1 1 0 0 1 1 1v3"/><path d="M8 28H5a1 1 0 0 1-1-1v-3"/><path d="M24 28h3a1 1 0 0 0 1-1v-3"/></g><circle cx="16" cy="16" r="3.6" fill="var(--amber)"/></svg>
+          <svg width="40" height="40" viewBox="0 0 32 32" fill="none"><g stroke="var(--amber)" stroke-width="2.6" stroke-linecap="round"><path d="M8 4H5a1 1 0 0 0-1 1v3"/><path d="M24 4h3a1 1 0 0 1 1 1v3"/><path d="M8 28H5a1 1 0 0 1-1-1v-3"/><path d="M24 28h3a1 1 0 0 0 1-1v-3"/></g><circle cx="16" cy="16" r="3.4" fill="var(--amber)"/></svg>
+        </div>
+      </div>
+      <div class="card">
+        <b style="font-size:var(--fs-sm)">Usi ammessi</b>
+        <ul class="note" style="margin:8px 0 0;padding-left:18px;line-height:1.8">
+          <li>Marchio amber su carta o su ink</li>
+          <li>Wordmark ink su carta</li>
+          <li>Tutto-ink o tutto-bianco monocromo</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="grid cols-2" style="margin-top:var(--s6)">
+      <div class="dd do"><b>Fai</b>Marchio amber, punto centrato, wordmark in Geist. Monocromo quando serve.</div>
+      <div class="dd dont"><b>Non fare</b>Ruotarlo, allungarlo, metterci ombre/glow, cambiargli colore o affogarlo su una foto piena.</div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ COLORE ============================ -->
+<section class="section" id="colore" style="background:var(--surface);border-block:1px solid var(--line)">
+  <div class="wrap">
+    <div class="sec-head"><span class="sec-no">03</span><h2>Colore</h2>
+      <p>Neutri caldi che fanno da galleria + <b>un solo</b> accento honey, usato con rarità: marchio, messa a fuoco,
+      selezione, "match". Il colore vero lo portano le foto.</p></div>
+
+    <h3 style="font-size:var(--fs-h3);margin-bottom:var(--s4)">Neutri caldi — il sistema</h3>
+    <div class="grid cols-4">
+      <div class="swatch"><div class="chipc" style="background:var(--paper)"></div><div class="meta"><b>Paper</b><span class="hex">#FBFAF7 · ground</span></div></div>
+      <div class="swatch"><div class="chipc" style="background:var(--surface);box-shadow:inset 0 0 0 1px var(--line)"></div><div class="meta"><b>Surface</b><span class="hex">#FFFFFF · card/sheet</span></div></div>
+      <div class="swatch"><div class="chipc" style="background:var(--sunken)"></div><div class="meta"><b>Sunken</b><span class="hex">#F1EEE7 · well/track</span></div></div>
+      <div class="swatch"><div class="chipc" style="background:var(--line)"></div><div class="meta"><b>Line</b><span class="hex">#E7E2D8 · hairline</span></div></div>
+      <div class="swatch"><div class="chipc" style="background:var(--ink)"></div><div class="meta"><b style="color:var(--ink)">Ink</b><span class="hex">#1C1A17 · testo</span></div></div>
+      <div class="swatch"><div class="chipc" style="background:var(--ink-2)"></div><div class="meta"><b>Ink-2</b><span class="hex">#6B655C · secondario</span></div></div>
+      <div class="swatch"><div class="chipc" style="background:var(--ink-3)"></div><div class="meta"><b>Ink-3</b><span class="hex">#9A9389 · hint</span></div></div>
+      <div class="swatch"><div class="chipc" style="background:var(--ink-4)"></div><div class="meta"><b>Ink-4</b><span class="hex">#C3BDB2 · disabled</span></div></div>
+    </div>
+
+    <h3 id="accHeading" style="font-size:var(--fs-h3);margin:var(--s7) 0 var(--s4)">Accento — una honey, con rarità</h3>
+    <div class="grid cols-4" id="accentRow">
+      <div class="swatch"><div class="chipc" style="background:var(--amber)"></div><div class="meta"><b>Amber</b><span class="hex">#E3912F · signature</span></div></div>
+      <div class="swatch"><div class="chipc" style="background:var(--amber-press)"></div><div class="meta"><b>Amber press</b><span class="hex">#C67C1F</span></div></div>
+      <div class="swatch"><div class="chipc" style="background:var(--amber-soft)"></div><div class="meta"><b>Amber soft</b><span class="hex">#FBEAD2 · selezione</span></div></div>
+      <div class="swatch"><div class="chipc" style="background:var(--amber-ink)"></div><div class="meta"><b style="color:var(--amber-ink)">Amber ink</b><span class="hex">#97590F · link/testo</span></div></div>
+    </div>
+
+    <h3 style="font-size:var(--fs-h3);margin:var(--s7) 0 var(--s4)">Semantici — spenti, mai caramella</h3>
+    <div class="grid cols-3">
+      <div class="swatch"><div class="chipc" style="background:var(--ok)"></div><div class="meta"><b>Success</b><span class="hex">#3E7D52 · completato</span></div></div>
+      <div class="swatch"><div class="chipc" style="background:var(--warn)"></div><div class="meta"><b>Warning</b><span class="hex">#B5701A · in coda</span></div></div>
+      <div class="swatch"><div class="chipc" style="background:var(--bad)"></div><div class="meta"><b>Danger</b><span class="hex">#C4463A · errore</span></div></div>
+    </div>
+
+    <div class="grid cols-2" style="margin-top:var(--s6)">
+      <div class="dd do"><b>Regole</b>Testo mai nero puro (#1C1A17). Un'azione primaria per vista in ink; l'amber marca "match", selezione, focus. Stato = icona + etichetta + colore, mai colore da solo.</div>
+      <div class="dd dont"><b>Mai</b>Gradient di testo, gradient decorativi, glow colorati, border-left colorati, amber sparso ovunque come coriandoli.</div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ TIPOGRAFIA ============================ -->
+<section class="section" id="tipografia">
+  <div class="wrap">
+    <div class="sec-head"><span class="sec-no">04</span><h2>Tipografia</h2>
+      <p>Due voci con ruoli distinti: <b>Instrument Serif</b> per l'emozione (solo display), <b>Geist</b> per tutto il
+      resto — UI, testo, dati. La gerarchia nasce da dimensione + peso + spazio.</p></div>
+
+    <div class="grid cols-2" style="gap:var(--s7)">
+      <div class="card">
+        <span class="chip b-info" style="display:inline-flex">Display · emozione</span>
+        <p class="serif" style="font-size:clamp(2.4rem,1.5rem+3vw,4rem);line-height:1.04;margin:16px 0 8px">Rivediti.</p>
+        <p class="note">Instrument Serif · solo titoli grandi e momenti emotivi. Mai nel corpo, mai come kicker.</p>
+      </div>
+      <div class="card">
+        <span class="chip b-neutral" style="display:inline-flex">UI · precisione</span>
+        <p style="font-size:2rem;font-weight:600;letter-spacing:-.03em;margin:16px 0 8px">Trova le mie foto</p>
+        <p class="note">Geist 400 / 500 / 600. Il tracking si stringe sui titoli grandi (floor −0.04em); corpo 0.</p>
+      </div>
+    </div>
+
+    <div style="margin-top:var(--s7)">
+      <div class="spec"><span class="tag">serif hero</span><span class="serif" style="font-size:3rem;line-height:1">Le tue foto, trovate.</span></div>
+      <div class="spec"><span class="tag">Geist 600 · h1</span><span style="font-size:2rem;font-weight:600;letter-spacing:-.03em">Apri la tua galleria</span></div>
+      <div class="spec"><span class="tag">Geist 600 · h2</span><span style="font-size:1.5rem;font-weight:600;letter-spacing:-.02em">Il tuo viso resta tuo</span></div>
+      <div class="spec"><span class="tag">Geist 400 · body</span><span style="font-size:1rem;max-width:60ch;color:var(--ink-2)">Usiamo il selfie solo per trovarti e lo cancelliamo subito dopo. Puoi chiedere la cancellazione dei tuoi dati in ogni momento.</span></div>
+      <div class="spec"><span class="tag">Geist Mono · dati</span><span class="mono" style="font-size:1rem">4.218 foto · 61% · ID a1f9-73c2</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ FOTO ============================ -->
+<section class="section" id="foto" style="background:var(--surface);border-block:1px solid var(--line)">
+  <div class="wrap">
+    <div class="sec-head"><span class="sec-no">05</span><h2>Fotografia</h2>
+      <p>La foto è il prodotto. Grandi, pulite, angoli 12–16px, nessuna cornice pesante. Ombra solo quando una foto
+      "galleggia" davvero. Foto reali (Pexels) — mai placeholder.</p></div>
+
+    <div class="masonry">
+      <img src="photos/portrait-01.jpg" alt=""><img src="photos/event-03.jpg" alt="">
+      <img src="photos/portrait-07.jpg" alt=""><img src="photos/event-11.jpg" alt="">
+      <img src="photos/portrait-11.jpg" alt=""><img src="photos/event-07.jpg" alt="">
+      <img src="photos/portrait-04.jpg" alt=""><img src="photos/event-01.jpg" alt="">
+      <img src="photos/portrait-13.jpg" alt=""><img src="photos/event-09.jpg" alt="">
+      <img src="photos/portrait-08.jpg" alt=""><img src="photos/event-12.jpg" alt="">
+    </div>
+
+    <div class="grid cols-3" style="margin-top:var(--s6)">
+      <div class="dd do"><b>Fai</b>Griglie allineate, gap costante, il volto mai tagliato dal centro sicuro della thumbnail. Carica da WebP + fallback.</div>
+      <div class="dd do"><b>Fai</b>La cornice di messa a fuoco amber segnala lo scatto selezionato o il "match", non un bordo decorativo.</div>
+      <div class="dd dont"><b>Non fare</b>Maschere organiche che fingono un ritaglio, filtri pesanti, watermark invadenti, cornici spesse.</div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ COMPONENTI ============================ -->
+<section class="section" id="componenti">
+  <div class="wrap">
+    <div class="sec-head"><span class="sec-no">06</span><h2>Componenti</h2>
+      <p>Precisi, con tutti gli stati (hover, active, disabled, loading, error, empty, focus). Press = scale(0.97).</p></div>
+
+    <div class="grid cols-2" style="gap:var(--s7)">
+      <div class="card">
+        <b style="font-size:var(--fs-sm)">Bottoni</b>
+        <div class="pill-row" style="margin:16px 0 10px">
+          <button class="btn btn-primary">Trova le mie foto</button>
+          <button class="btn btn-secondary">Scarica</button>
+          <button class="btn btn-ghost">Salta</button>
+          <button class="btn btn-primary" disabled>Invio…</button>
+        </div>
+        <p class="note">Primario = ink pieno, bianco. Secondario = superficie + hairline. Press scala, mai glow.</p>
+      </div>
+
+      <div class="card">
+        <b style="font-size:var(--fs-sm)">Chip &amp; stato</b>
+        <div class="pill-row" style="margin:16px 0 10px">
+          <span class="chip">Tutte</span>
+          <span class="chip chip--sel">Selezionate · 3</span>
+          <span class="badge b-ok"><span class="dot"></span>Pronta</span>
+          <span class="badge b-warn"><span class="dot"></span>In coda</span>
+          <span class="badge b-bad"><span class="dot"></span>Errore</span>
+          <span class="badge b-info"><span class="dot"></span>Match</span>
+        </div>
+        <p class="note">Stato sempre icona/dot + etichetta + colore. Semantici spenti, non caramella.</p>
+      </div>
+
+      <div class="card">
+        <b style="font-size:var(--fs-sm)">Campi</b>
+        <div style="margin-top:16px">
+          <div class="field"><label>La tua email</label>
+            <input class="input caret" type="email" placeholder="nome@esempio.it" value="giulia@esempio.it"></div>
+          <div class="field" style="margin-bottom:0"><label>La tua età</label>
+            <input class="input caret" type="text" inputmode="numeric" placeholder="es. 28"></div>
+        </div>
+        <p class="note" style="margin-top:12px">Focus = bordo amber + anello soft. Label sempre visibile.</p>
+      </div>
+
+      <div class="card">
+        <b style="font-size:var(--fs-sm)">Consenso (il momento di fiducia)</b>
+        <div class="consent on" style="margin-top:16px" id="consentDemo">
+          <span class="box"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M5 12l4 4 10-10" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          <span class="t"><b>Acconsento</b> al trattamento del selfie per trovarmi nelle foto. Il file del selfie
+          si cancella subito dopo la ricerca. Posso revocare in ogni momento.</span>
+        </div>
+        <p class="note" style="margin-top:12px">Mai pre-selezionato, target ampio, copy che spiega il <i>perché</i>. Nessun dark pattern.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ MOTION ============================ -->
+<section class="section" id="motion" style="background:var(--surface);border-block:1px solid var(--line)">
+  <div class="wrap">
+    <div class="sec-head"><span class="sec-no">07</span><h2>Motion</h2>
+      <p>Un solo momento d'autore — "Recognition" — poi feedback rapido e silenzioso. Curve forti di Emil Kowalski,
+      uscita più veloce dell'entrata, sempre un path per <span class="mono">prefers-reduced-motion</span>.</p></div>
+    <div class="grid cols-2" style="gap:var(--s7);align-items:center">
+      <div>
+        <div class="kv"><span class="k">Press feedback</span><span class="v mono">100–160ms · scale .97</span></div>
+        <div class="kv"><span class="k">Dropdown / sheet</span><span class="v mono">150–250ms · ease-out</span></div>
+        <div class="kv"><span class="k">Overlay / layout</span><span class="v mono">&lt;300ms</span></div>
+        <div class="kv"><span class="k">Recognition (una volta)</span><span class="v mono">~640ms</span></div>
+        <div class="kv"><span class="k">ease-out</span><span class="v mono">cubic-bezier(.23,1,.32,1)</span></div>
+        <div class="kv"><span class="k">ease-in-out</span><span class="v mono">cubic-bezier(.77,0,.175,1)</span></div>
+      </div>
+      <div>
+        <button class="btn btn-secondary" onclick="document.getElementById('reco2').classList.toggle('go')">Riproduci "Recognition"</button>
+        <figure class="reco frame go" id="reco2" style="margin:14px 0 0">
+          <span class="fc1"></span><span class="fc2"></span>
+          <div class="wall">
+            <img src="photos/event-02.jpg" alt=""><img src="photos/portrait-06.jpg" data-m alt="">
+            <img src="photos/event-08.jpg" alt=""><img src="photos/event-10.jpg" alt="">
+            <img src="photos/portrait-06.jpg" data-m alt=""><img src="photos/event-04.jpg" alt="">
+            <img src="photos/event-11.jpg" alt=""><img src="photos/portrait-06.jpg" data-m alt="">
+          </div><div class="scan"><span class="line"></span></div>
+        </figure>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ VOCE ============================ -->
+<section class="section section--tight">
+  <div class="wrap">
+    <div class="sec-head"><span class="sec-no">08</span><h2>Voce</h2>
+      <p>Italiano calmo, umano, diretto. Frasi corte. Spiega sempre il perché di ciò che è sensibile.</p></div>
+    <div class="grid cols-2">
+      <div class="dd do"><b>Suona così</b>"Scatta un selfie: lo usiamo solo per trovarti e poi lo cancelliamo."</div>
+      <div class="dd dont"><b>Non così</b>"La nostra AI rivoluzionaria analizza il tuo volto!"</div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ REDESIGN: PARTECIPANTE ============================ -->
+<section class="section" id="partecipante" style="background:var(--ink);color:#F3EFE6;border-block:1px solid #000">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="sec-no" style="color:var(--amber)">09</span>
+      <h2 style="color:#fff">Redesign · Partecipante</h2>
+      <p style="color:#c9c2b4">Mobile-first, il cuore emotivo. Flusso forzato: email → link → consenso → selfie → attesa → galleria.
+      Calma + delizia, zero attrito.</p>
+    </div>
+
+    <div class="showcase showcase--phones">
+
+      <!-- 1. Landing -->
+      <div class="mock">
+        <div class="phone"><div class="scr"><div class="notch"></div><div class="scr-scroll">
+          <div class="appbar"><span class="wordmark"><svg width="20" height="20" viewBox="0 0 32 32" fill="none"><g stroke="var(--amber)" stroke-width="3" stroke-linecap="round"><path d="M8 4H5a1 1 0 0 0-1 1v3"/><path d="M24 4h3a1 1 0 0 1 1 1v3"/><path d="M8 28H5a1 1 0 0 1-1-1v-3"/><path d="M24 28h3a1 1 0 0 0 1-1v-3"/></g><circle cx="16" cy="16" r="3.6" fill="var(--amber)"/></svg><span style="font-size:.9rem">Frames of Me</span></span></div>
+          <div class="screen-pad">
+            <span class="badge b-info"><span class="dot"></span>4.000+ foto · Conferenza 2026</span>
+            <h3 class="serif" style="font-size:2.6rem;line-height:1.02;margin:14px 0 10px;color:var(--ink)">Le tue foto,<br>trovate in un selfie.</h3>
+            <p class="note">Ti cerchiamo tra tutti gli scatti e ti mostriamo solo quelli in cui compari. Niente da sfogliare.</p>
+            <button class="btn btn-primary btn-block btn-lg" style="margin-top:16px">Trova le mie foto</button>
+            <div class="frame" style="margin-top:18px;border-radius:14px;overflow:hidden">
+              <span class="fc1"></span><span class="fc2"></span>
+              <img src="photos/event-07.jpg" alt="" style="aspect-ratio:4/3;object-fit:cover;width:100%">
+            </div>
+            <div class="pg" style="margin-top:10px;grid-template-columns:repeat(3,1fr)">
+              <img src="photos/portrait-03.jpg" alt=""><img src="photos/portrait-06.jpg" alt=""><img src="photos/portrait-11.jpg" alt="">
+            </div>
+          </div>
+        </div></div></div>
+        <p class="cap"><b>Landing</b> — prova il meccanismo nel primo viewport, una CTA sola.<span class="mono">/ · landing/index.html</span></p>
+      </div>
+
+      <!-- 2. Iscrizione -->
+      <div class="mock">
+        <div class="phone"><div class="scr"><div class="notch"></div><div class="scr-scroll">
+          <div class="appbar"><span class="t">Accesso</span></div>
+          <div class="screen-pad">
+            <h3 class="serif" style="font-size:2rem;color:var(--ink);line-height:1.05">Ti mandiamo un link.</h3>
+            <p class="note" style="margin:8px 0 18px">Niente password. Ti arriva un link di accesso via email.</p>
+            <div class="field"><label>La tua email</label><input class="input caret" value="giulia@esempio.it"></div>
+            <div class="field"><label>La tua età</label><input class="input caret" placeholder="es. 28"></div>
+            <button class="btn btn-primary btn-block">Inviami il link di accesso</button>
+            <button class="btn btn-ghost btn-block" style="margin-top:8px">Continua con il consenso del genitore</button>
+            <p class="note" style="font-size:var(--fs-xs);margin-top:14px;color:var(--ink-3)">Richiedendo il link accetti l'informativa privacy.</p>
+          </div>
+        </div></div></div>
+        <p class="cap"><b>Iscrizione</b> — magic-link, età per il minore, errori gentili.<span class="mono">Iscrizione.tsx</span></p>
+      </div>
+
+      <!-- 3. Consenso -->
+      <div class="mock">
+        <div class="phone"><div class="scr"><div class="notch"></div><div class="scr-scroll">
+          <div class="appbar"><span class="t">Consenso</span></div>
+          <div class="screen-pad">
+            <h3 class="serif" style="font-size:2rem;color:var(--ink);line-height:1.05">Il tuo viso resta tuo.</h3>
+            <p class="note" style="margin:8px 0 18px">Prima di cercarti, ti chiediamo il permesso — spiegato chiaro.</p>
+            <div class="consent on" style="margin-bottom:12px"><span class="box"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M5 12l4 4 10-10" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="t"><b>Uso del selfie</b> solo per trovarti nelle foto dell'evento.</span></div>
+            <div class="consent"><span class="box"></span><span class="t"><b>Il file si cancella</b> subito dopo la ricerca. Resta solo il vettore legato alla tua galleria.</span></div>
+            <ul class="note" style="font-size:var(--fs-xs);margin:14px 0 18px;padding-left:18px;line-height:1.9">
+              <li>Puoi revocare e cancellare i dati quando vuoi</li>
+              <li>Nessuna impronta riutilizzabile fuori dall'evento</li>
+            </ul>
+            <button class="btn btn-primary btn-block">Acconsento e continuo</button>
+          </div>
+        </div></div></div>
+        <p class="cap"><b>Consenso GDPR</b> — Art. 9, esplicito, mai pre-spuntato.<span class="mono">Selfie.tsx / ConsensoGenitore.tsx</span></p>
+      </div>
+
+      <!-- 4. Selfie -->
+      <div class="mock">
+        <div class="phone"><div class="scr"><div class="notch"></div><div class="scr-scroll" style="background:#0d0c0b">
+          <div style="position:relative;height:100%;min-height:640px;display:flex;flex-direction:column">
+            <img src="photos/portrait-04.jpg" alt="" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:.9">
+            <div style="position:absolute;inset:0;background:linear-gradient(180deg,rgba(0,0,0,.5),rgba(0,0,0,.1) 30%,rgba(0,0,0,.65))"></div>
+            <div style="position:relative;padding:52px 18px 0;color:#fff"><span class="t" style="font-weight:600">Scatta un selfie</span></div>
+            <div style="position:relative;margin:auto;width:220px;height:280px" class="frame"><span class="fc1"></span><span class="fc2"></span></div>
+            <div style="position:relative;padding:0 18px 32px;color:#fff;text-align:center">
+              <p style="font-size:var(--fs-sm);opacity:.9;margin-bottom:16px">Segui le indicazioni: lo scatto parte da solo.</p>
+              <div style="width:70px;height:70px;border-radius:99px;border:4px solid #fff;margin:0 auto;background:rgba(255,255,255,.2)"></div>
+              <p class="mono" style="font-size:var(--fs-2xs);opacity:.7;margin-top:14px">Un primo piano, jpeg o png · lo cancelliamo dopo</p>
+            </div>
+          </div>
+        </div></div></div>
+        <p class="cap"><b>Selfie</b> — la cornice di messa a fuoco guida l'inquadratura, scatto automatico.<span class="mono">Selfie.tsx</span></p>
+      </div>
+
+      <!-- 5. Attesa -->
+      <div class="mock">
+        <div class="phone"><div class="scr"><div class="notch"></div><div class="scr-scroll">
+          <div class="appbar"><span class="t">La tua galleria</span></div>
+          <div class="screen-pad" style="display:flex;flex-direction:column;min-height:560px;justify-content:center;text-align:center">
+            <div class="frame" style="width:120px;height:120px;margin:0 auto 22px;border-radius:18px;background:var(--sunken);display:grid;place-items:center">
+              <span class="fc1"></span><span class="fc2"></span>
+              <svg width="40" height="40" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="var(--amber)" stroke-width="2"/><path d="M12 7v5l3 2" stroke="var(--amber)" stroke-width="2" stroke-linecap="round"/></svg>
+            </div>
+            <h3 class="serif" style="font-size:1.9rem;color:var(--ink)">Ti stiamo cercando…</h3>
+            <p class="note" style="margin:8px auto 18px;max-width:30ch">Confrontiamo il tuo viso con gli scatti dell'evento. Ti avvisiamo via email appena è pronta.</p>
+            <div class="progress" style="max-width:220px;margin:0 auto 10px"><i style="width:64%"></i></div>
+            <p class="mono" style="font-size:var(--fs-xs);color:var(--ink-3)">3.980 / 6.200 scatti analizzati</p>
+          </div>
+        </div></div></div>
+        <p class="cap"><b>Attesa</b> — stato onesto, progresso reale, "puoi chiudere, ti avvisiamo".<span class="mono">Attesa.tsx</span></p>
+      </div>
+
+      <!-- 6. Galleria -->
+      <div class="mock">
+        <div class="phone"><div class="scr"><div class="notch"></div><div class="scr-scroll">
+          <div class="appbar"><span class="t">Le tue foto</span><span class="sp"></span><span class="badge b-ok"><span class="dot"></span>Pronta</span></div>
+          <div style="padding:12px 18px 0;display:flex;gap:8px;align-items:center">
+            <span class="chip chip--sel">Selezionate · 2</span>
+            <button class="btn btn-primary" style="padding:8px 14px;font-size:var(--fs-sm);margin-left:auto">Scarica</button>
+          </div>
+          <div class="screen-pad" style="padding-top:12px">
+            <div class="pg" style="grid-template-columns:repeat(2,1fr)">
+              <div class="frame" style="border-radius:12px;overflow:hidden"><span class="fc1"></span><span class="fc2"></span><img src="photos/portrait-01.jpg" style="aspect-ratio:3/4;object-fit:cover" alt=""></div>
+              <div class="frame" style="border-radius:12px;overflow:hidden"><span class="fc1"></span><span class="fc2"></span><img src="photos/event-01.jpg" style="aspect-ratio:3/4;object-fit:cover" alt=""></div>
+              <img src="photos/event-12.jpg" alt=""><img src="photos/portrait-13.jpg" alt="">
+              <img src="photos/event-09.jpg" alt=""><img src="photos/portrait-11.jpg" alt="">
+            </div>
+          </div>
+          <div class="tabbar">
+            <a class="on"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.8"/><rect x="14" y="3" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.8"/><rect x="3" y="14" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.8"/><rect x="14" y="14" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.8"/></svg>Galleria</a>
+            <a><svg width="20" height="20" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="8" r="4" stroke="currentColor" stroke-width="1.8"/><path d="M4 21c0-4 3.6-7 8-7s8 3 8 7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>I miei dati</a>
+          </div>
+        </div></div></div>
+        <p class="cap"><b>Galleria</b> — l'artefatto guida: griglia grande, selezione = cornice amber + tick, download preciso.<span class="mono">Galleria.tsx</span></p>
+      </div>
+
+      <!-- 7. I miei dati -->
+      <div class="mock">
+        <div class="phone"><div class="scr"><div class="notch"></div><div class="scr-scroll">
+          <div class="appbar"><span class="t">I miei dati</span></div>
+          <div class="screen-pad">
+            <h3 class="serif" style="font-size:1.9rem;color:var(--ink);line-height:1.05">Tu comandi i tuoi dati.</h3>
+            <p class="note" style="margin:8px 0 18px">Trasparenza totale su cosa teniamo e per quanto.</p>
+            <div class="card" style="padding:4px 16px;margin-bottom:14px">
+              <div class="kv"><span class="k">Email</span><span class="v">giulia@esempio.it</span></div>
+              <div class="kv"><span class="k">Vettore del volto</span><span class="v"><span class="badge b-info"><span class="dot"></span>Attivo</span></span></div>
+              <div class="kv"><span class="k">File del selfie</span><span class="v" style="color:var(--ok-ink)">Cancellato</span></div>
+              <div class="kv"><span class="k">Foto nella galleria</span><span class="v mono">14</span></div>
+            </div>
+            <button class="btn btn-secondary btn-block" style="margin-bottom:8px">Scarica i miei dati</button>
+            <button class="btn btn-block" style="color:var(--bad-ink);background:var(--bad-soft)">Cancella il mio volto e le gallerie</button>
+          </div>
+        </div></div></div>
+        <p class="cap"><b>I miei dati (GDPR self-service)</b> — export e cancellazione a un tap, azione distruttiva protetta.<span class="mono">IMieiDati.tsx</span></p>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============================ REDESIGN: FOTOGRAFO ============================ -->
+<section class="section" id="fotografo" style="background:var(--surface);border-block:1px solid var(--line)">
+  <div class="wrap">
+    <div class="sec-head"><span class="sec-no">10</span><h2>Redesign · Fotografo</h2>
+      <p>Desktop, da laptop tra una sessione e l'altra. Controllo + slancio: veloce, leggibile, mai in ansia per un
+      upload fallito. Drag-drop è l'eroe, metriche in mono.</p></div>
+
+    <div class="browser">
+      <div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="url">framesofme.com/fotografi/upload</span></div>
+      <div class="view">
+        <div style="display:grid;grid-template-columns:200px 1fr;min-height:520px">
+          <!-- sidebar -->
+          <aside style="border-right:1px solid var(--line);padding:18px 14px;background:var(--paper)">
+            <span class="wordmark" style="font-size:.95rem;margin-bottom:22px"><svg width="20" height="20" viewBox="0 0 32 32" fill="none"><g stroke="var(--amber)" stroke-width="3" stroke-linecap="round"><path d="M8 4H5a1 1 0 0 0-1 1v3"/><path d="M24 4h3a1 1 0 0 1 1 1v3"/><path d="M8 28H5a1 1 0 0 1-1-1v-3"/><path d="M24 28h3a1 1 0 0 0 1-1v-3"/></g><circle cx="16" cy="16" r="3.6" fill="var(--amber)"/></svg>Fotografi</span>
+            <nav style="display:flex;flex-direction:column;gap:2px;font-size:var(--fs-sm)">
+              <a style="text-decoration:none;color:var(--ink);background:var(--amber-soft);padding:9px 12px;border-radius:10px;font-weight:500">Upload</a>
+              <a style="text-decoration:none;color:var(--ink-2);padding:9px 12px;border-radius:10px">Album</a>
+              <a style="text-decoration:none;color:var(--ink-2);padding:9px 12px;border-radius:10px">Copertura</a>
+              <a style="text-decoration:none;color:var(--ink-2);padding:9px 12px;border-radius:10px">Qualità</a>
+              <a style="text-decoration:none;color:var(--ink-2);padding:9px 12px;border-radius:10px">Statistiche</a>
+            </nav>
+          </aside>
+          <!-- content -->
+          <div style="padding:24px 28px">
+            <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:4px">
+              <h3 style="font-size:1.5rem;font-weight:600;letter-spacing:-.02em">Upload · Conferenza 2026</h3>
+              <span class="badge b-ok" style="margin-left:auto"><span class="dot"></span>In ascolto</span>
+            </div>
+            <p class="note" style="margin-bottom:18px">Trascina una cartella: carichiamo, deduplichiamo per sha256 e riprendiamo da soli dopo un errore.</p>
+
+            <div class="frame" style="border:2px dashed var(--line-2);border-radius:16px;background:var(--paper);padding:34px;text-align:center;margin-bottom:20px">
+              <span class="fc1"></span><span class="fc2"></span>
+              <svg width="38" height="38" viewBox="0 0 24 24" fill="none" style="margin:0 auto 10px"><path d="M12 15V4M8 8l4-4 4 4" stroke="var(--amber)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" stroke="var(--ink-3)" stroke-width="2" stroke-linecap="round"/></svg>
+              <b>Trascina qui la cartella dello shoot</b>
+              <p class="note" style="font-size:var(--fs-sm);margin-top:4px">oppure <a>scegli una cartella</a> · jpeg, png · fino a 60 MB</p>
+            </div>
+
+            <div class="statline" style="margin-bottom:16px">
+              <div class="stat"><b>4.218</b><span>caricate</span></div>
+              <div class="stat"><b style="color:var(--ok-ink)">4.196</b><span>indicizzate</span></div>
+              <div class="stat"><b style="color:var(--warn-ink)">19</b><span>in coda</span></div>
+              <div class="stat"><b style="color:var(--bad-ink)">3</b><span>errori</span></div>
+            </div>
+            <div class="progress" style="margin-bottom:18px"><i style="width:82%"></i></div>
+
+            <div class="card" style="padding:4px 16px">
+              <div class="kv"><span class="k">IMG_4821.jpg <span class="mono" style="color:var(--ink-3)">· 8.4 MB</span></span><span class="badge b-ok"><span class="dot"></span>Indicizzata · 3 volti</span></div>
+              <div class="kv"><span class="k">IMG_4822.jpg <span class="mono" style="color:var(--ink-3)">· 9.1 MB</span></span><span class="badge b-warn"><span class="dot"></span>In coda</span></div>
+              <div class="kv"><span class="k">IMG_4823.png <span class="mono" style="color:var(--ink-3)">· 62 MB</span></span><span class="badge b-bad"><span class="dot"></span>Oltre 60 MB</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="cap" style="margin-top:12px"><b>Upload</b> — done/failed inequivocabile, ripresa automatica, nessuna ansia. Album · Copertura · Qualità · Statistiche condividono questa shell.</p>
+  </div>
+</section>
+
+<!-- ============================ REDESIGN: ADMIN ============================ -->
+<section class="section" id="admin">
+  <div class="wrap">
+    <div class="sec-head"><span class="sec-no">11</span><h2>Redesign · Admin</h2>
+      <p>Desktop, tu + 3 colleghi con pari poteri. Chiarezza + sicurezza: tutto leggibile a colpo d'occhio, azioni
+      distruttive sempre dietro conferma, si vede chi ha fatto cosa.</p></div>
+
+    <div class="browser">
+      <div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="url">framesofme.com/admin</span></div>
+      <div class="view">
+        <div style="display:grid;grid-template-columns:210px 1fr;min-height:560px">
+          <aside style="border-right:1px solid var(--line);padding:18px 14px;background:var(--paper)">
+            <span class="wordmark" style="font-size:.95rem;margin-bottom:22px"><svg width="20" height="20" viewBox="0 0 32 32" fill="none"><g stroke="var(--amber)" stroke-width="3" stroke-linecap="round"><path d="M8 4H5a1 1 0 0 0-1 1v3"/><path d="M24 4h3a1 1 0 0 1 1 1v3"/><path d="M8 28H5a1 1 0 0 1-1-1v-3"/><path d="M24 28h3a1 1 0 0 0 1-1v-3"/></g><circle cx="16" cy="16" r="3.6" fill="var(--amber)"/></svg>Admin</span>
+            <nav style="display:flex;flex-direction:column;gap:2px;font-size:var(--fs-sm)">
+              <a style="text-decoration:none;color:var(--ink);background:var(--amber-soft);padding:9px 12px;border-radius:10px;font-weight:500">Dashboard</a>
+              <a style="text-decoration:none;color:var(--ink-2);padding:9px 12px;border-radius:10px">Eventi</a>
+              <a style="text-decoration:none;color:var(--ink-2);padding:9px 12px;border-radius:10px">Gallerie</a>
+              <a style="text-decoration:none;color:var(--ink-2);padding:9px 12px;border-radius:10px">Foto</a>
+              <a style="text-decoration:none;color:var(--ink-2);padding:9px 12px;border-radius:10px">Link accesso</a>
+              <a style="text-decoration:none;color:var(--ink-2);padding:9px 12px;border-radius:10px">GDPR</a>
+            </nav>
+          </aside>
+          <div style="padding:24px 28px">
+            <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:20px">
+              <h3 style="font-size:1.5rem;font-weight:600;letter-spacing:-.02em">Conferenza 2026</h3>
+              <span class="badge b-ok" style="margin-left:auto"><span class="dot"></span>Live · giorno 2 di 3</span>
+            </div>
+
+            <div class="grid cols-4" style="gap:14px;margin-bottom:22px">
+              <div class="card" style="padding:16px"><span class="note" style="font-size:var(--fs-xs)">Foto indicizzate</span><p class="mono" style="font-size:1.7rem;margin-top:4px">147.302</p></div>
+              <div class="card" style="padding:16px"><span class="note" style="font-size:var(--fs-xs)">Partecipanti</span><p class="mono" style="font-size:1.7rem;margin-top:4px">5.841</p></div>
+              <div class="card" style="padding:16px"><span class="note" style="font-size:var(--fs-xs)">Job in coda</span><p class="mono" style="font-size:1.7rem;margin-top:4px;color:var(--warn-ink)">214</p></div>
+              <div class="card" style="padding:16px"><span class="note" style="font-size:var(--fs-xs)">Job in errore</span><p class="mono" style="font-size:1.7rem;margin-top:4px;color:var(--bad-ink)">6</p></div>
+            </div>
+
+            <h4 style="font-size:var(--fs-sm);font-weight:600;margin-bottom:10px">Attività recente</h4>
+            <div class="card" style="padding:4px 16px">
+              <div class="kv"><span class="k"><b style="color:var(--ink);font-weight:600">M. Rossi</b> ha invitato un fotografo <span class="mono" style="color:var(--ink-3)">· 12:04</span></span><span class="badge b-info"><span class="dot"></span>Invito</span></div>
+              <div class="kv"><span class="k"><b style="color:var(--ink);font-weight:600">Sistema</b> retention: 3 selfie cancellati <span class="mono" style="color:var(--ink-3)">· 11:58</span></span><span class="badge b-ok"><span class="dot"></span>GDPR</span></div>
+              <div class="kv"><span class="k"><b style="color:var(--ink);font-weight:600">A. Bianchi</b> ha ri-processato 6 job <span class="mono" style="color:var(--ink-3)">· 11:30</span></span><span class="badge b-warn"><span class="dot"></span>Retry</span></div>
+            </div>
+
+            <div class="card" style="margin-top:18px;border-color:var(--bad-soft);background:var(--bad-soft)">
+              <b style="font-size:var(--fs-sm);color:var(--bad-ink)">Zona azioni distruttive</b>
+              <p class="note" style="font-size:var(--fs-sm);margin:6px 0 12px">Cancellare un evento rimuove gallerie, vettori e foto. Irreversibile, richiede doppia conferma.</p>
+              <button class="btn" style="color:var(--bad-ink);background:#fff;border:1px solid var(--bad)">Cancella evento…</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="cap" style="margin-top:12px"><b>Dashboard</b> — numeri leggibili, audit "chi ha fatto cosa", distruttivo guardato. Eventi/Gallerie/Foto/Link/GDPR condividono sidebar + tabelle precise.</p>
+  </div>
+</section>
+
+<!-- ============================ FOOTER ============================ -->
+<footer class="section section--tight" style="background:var(--ink);color:#c9c2b4;border-top:1px solid #000">
+  <div class="wrap">
+    <div class="grid cols-2" style="align-items:center">
+      <div>
+        <span class="wordmark" style="color:#fff"><svg width="24" height="24" viewBox="0 0 32 32" fill="none"><g stroke="var(--amber)" stroke-width="2.6" stroke-linecap="round"><path d="M8 4H5a1 1 0 0 0-1 1v3"/><path d="M24 4h3a1 1 0 0 1 1 1v3"/><path d="M8 28H5a1 1 0 0 1-1-1v-3"/><path d="M24 28h3a1 1 0 0 0 1-1v-3"/></g><circle cx="16" cy="16" r="3.4" fill="var(--amber)"/></svg><span>Frames of Me</span></span>
+        <p class="note" style="color:#8f897c;margin-top:10px;max-width:46ch">Proposta di brand identity · <span class="mono">framesofme.com</span> · foto reali da Pexels (vedi CREDITS.md).</p>
+      </div>
+      <p class="note" style="color:#8f897c;text-align:right">© 2026 Frames of Me<br>Caldo · Chiaro · Fidato</p>
+    </div>
+  </div>
+</footer>
+
+<script>
+  // One authored moment: play Recognition once when the hero scrolls into view.
+  (function(){
+    var reco=document.getElementById('reco'); if(!reco) return;
+    if(matchMedia('(prefers-reduced-motion:reduce)').matches){reco.classList.add('go');return;}
+    var io=new IntersectionObserver(function(es){
+      es.forEach(function(e){ if(e.isIntersecting){ setTimeout(function(){reco.classList.add('go')},350); io.disconnect(); } });
+    },{threshold:.4});
+    io.observe(reco);
+  })();
+  // Consent demo toggle
+  (function(){var c=document.getElementById('consentDemo');if(c)c.addEventListener('click',function(){c.classList.toggle('on')});})();
+
+  // Variant switcher — swap accent tokens + display family live.
+  (function(){
+    var ACC={
+      honey:{name:'Honey', names:['Honey','Honey press','Honey soft','Honey ink'],
+        hex:['#E3912F · signature','#C67C1F','#FBEAD2 · selezione','#97590F · link/testo'], sig:'#E3912F'},
+      sage:{name:'Salvia', names:['Salvia','Salvia press','Salvia soft','Salvia ink'],
+        hex:['#5E8C6A · signature','#4C7557','#E6EFE7 · selezione','#3C6450 · link/testo'], sig:'#5E8C6A'},
+      coral:{name:'Corallo', names:['Corallo','Corallo press','Corallo soft','Corallo ink'],
+        hex:['#E25C44 · signature','#C64A34','#FBE5E0 · selezione','#A83724 · link/testo'], sig:'#E25C44'}
+    };
+    var typeName={serif:'Instrument Serif', sans:'Geist'};
+    var state={accent:'honey', type:'serif'};
+    var readout=document.getElementById('accReadout');
+    var heading=document.getElementById('accHeading');
+    var rowSwatches=document.querySelectorAll('#accentRow .swatch');
+    function press(seg,attr,val){ seg.querySelectorAll('button').forEach(function(b){ b.setAttribute('aria-pressed', b.getAttribute(attr)===val); }); }
+    function render(){
+      document.documentElement.setAttribute('data-accent', state.accent);
+      document.body.setAttribute('data-type', state.type);
+      var a=ACC[state.accent];
+      rowSwatches.forEach(function(sw,i){ var b=sw.querySelector('.meta b'), h=sw.querySelector('.hex');
+        if(b&&a.names[i])b.textContent=a.names[i]; if(h&&a.hex[i])h.textContent=a.hex[i]; });
+      if(heading)heading.textContent='Accento — una '+a.name.toLowerCase()+', con rarità';
+      if(readout)readout.textContent='signature '+a.sig+' · '+a.name+' + '+typeName[state.type];
+    }
+    document.getElementById('segAccent').addEventListener('click',function(e){
+      var b=e.target.closest('button'); if(!b)return; state.accent=b.dataset.accent; press(this,'data-accent',state.accent); render(); });
+    document.getElementById('segType').addEventListener('click',function(e){
+      var b=e.target.closest('button'); if(!b)return; state.type=b.dataset.type; press(this,'data-type',state.type); render(); });
+    render();
+  })();
+</script>
+</body>
+</html>

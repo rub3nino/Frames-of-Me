@@ -60,7 +60,7 @@ export function registerResetRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       });
       await deps.mailer.send({
         to: email,
-        subject: "Reimposta la password Frames of Me",
+        subject: "Reimposta la password di Frames of Me",
         text: `${webOrigin(deps.env)}/registrati?reset=${encodeURIComponent(token)}`,
       });
     }

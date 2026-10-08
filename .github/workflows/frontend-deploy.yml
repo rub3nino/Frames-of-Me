@@ -73,7 +73,7 @@ jobs:
               - 'frontend/packages/ui/**'
               - 'frontend/packages/api-client/**'
 
-  # ── landing → framesofme.com (static, no build) ────────────────────────────────
+  # ── landing → framesofme.com (static, no build) ────────────────────────────
   deploy-landing:
     needs: changes
     if: needs.changes.outputs.landing == 'true'
@@ -108,7 +108,7 @@ jobs:
           echo "would publish $SRC_DIR -> $APP_SUBDOMAIN ($DEPLOY_PATH)"
           test -f "$SRC_DIR/index.html"
 
-  # ── partecipanti → app.framesofme.com (Vite SPA) ───────────────────────────────
+  # ── partecipanti → app.framesofme.com (Vite SPA) ───────────────────────────
   deploy-partecipanti:
     needs: changes
     if: needs.changes.outputs.partecipanti == 'true'
@@ -154,7 +154,7 @@ jobs:
           echo "would publish $APP_DIR/dist -> $APP_SUBDOMAIN ($DEPLOY_PATH)"
           test -f dist/index.html
 
-  # ── fotografi → foto.framesofme.com (Vite SPA) ─────────────────────────────────
+  # ── fotografi → foto.framesofme.com (Vite SPA) ─────────────────────────────
   deploy-fotografi:
     needs: changes
     if: needs.changes.outputs.fotografi == 'true'
@@ -186,7 +186,7 @@ jobs:
           echo "would publish $APP_DIR/dist -> $APP_SUBDOMAIN ($DEPLOY_PATH)"
           test -f dist/index.html
 
-  # ── admin → admin.framesofme.com (Vite SPA) ────────────────────────────────────
+  # ── admin → admin.framesofme.com (Vite SPA) ────────────────────────────────
   deploy-admin:
     needs: changes
     if: needs.changes.outputs.admin == 'true'
