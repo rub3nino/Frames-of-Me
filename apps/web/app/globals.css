@@ -192,6 +192,18 @@ input[type="checkbox"] {
 
 .button.quiet { border-color: var(--line-strong); }
 
+/*
+ * The one destructive button in the app: rejecting a photo purges the original bytes. It is
+ * deliberately NOT the same shape as `.primary` (approve), so the two are never confused at
+ * a glance by someone working through a queue at speed.
+ */
+.button.danger {
+  background: var(--accent);
+  color: var(--paper);
+  border-color: var(--ink);
+  box-shadow: inset 0 0 0 2px var(--paper);
+}
+
 .button:active:not(:disabled) { transform: scale(0.97); }
 
 .button:disabled { opacity: 0.4; cursor: not-allowed; }
@@ -1213,6 +1225,31 @@ select {
 .moderation-strip .thumb-link[data-selected="true"] { outline: 3px solid var(--ink); }
 
 .moderation-strip .thumb.empty { display: block; width: 88px; height: 88px; background: var(--skeleton); }
+
+/*
+ * The rejection confirmation. It sits above the photo rather than floating over it: the
+ * moderator must read it, and a panel in the flow cannot be dismissed by a stray click the
+ * way an overlay can.
+ */
+.moderation-confirm {
+  margin-top: 16px;
+  padding: 16px;
+  display: grid;
+  gap: 12px;
+  border: 2px solid var(--accent);
+  background: var(--paper);
+}
+
+.moderation-confirm h3 { margin: 0; }
+
+.moderation-confirm p { margin: 0; }
+
+.moderation-confirm .list { margin: 0; }
+
+.moderation-confirm .list code { word-break: break-all; }
+
+/* The standing warning under the keyboard legend. */
+.fine.warn { color: var(--accent); }
 
 kbd {
   border: 1px solid var(--line-strong);

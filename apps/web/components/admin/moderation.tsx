@@ -22,7 +22,17 @@ import { EventNeeded, formatWhen, shortId } from "@/components/admin/shared";
  *    for a network round-trip;
  *  - every verdict is applied optimistically and the request flies in the background; a
  *    failure comes back as a line in "Da rifare", it never blocks the queue;
- *  - A approve, R reject, → next, ← back, X select, shift+A / shift+R on the selection.
+ *  - A approve, → next, ← back, X select, shift+A on the selection: one keystroke each,
+ *    because approving is the common verdict and it is harmless.
+ *
+ * REJECTION IS NOT THE MIRROR OF APPROVAL, and this screen must not let anyone believe it
+ * is. `rejected` runs `purgePhoto` on the api side: the faces, the derivatives AND the
+ * original bytes are destroyed, with no undo and no copy left anywhere. The word is a trap
+ * for anyone arriving from the previous console, where the negative verdict was `blocked` —
+ * a reversible hide. So R (and shift+R) only ASK: they open a confirmation that spells the
+ * consequence out, and while it is open every queue shortcut is inert, so nothing can be
+ * confirmed by a keystroke. Destroying takes two deliberate acts on that dialog: tick the
+ * acknowledgement, then press the one destructive button.
  *
  * THE API IS AGENT C'S (spec section C2) and is not in this branch. This screen is written
  * against the documented shapes:
@@ -42,6 +52,16 @@ const PREFETCH = 4;
 type Verdict = "approved" | "rejected";
 
 type Failed = { id: string; state: Verdict; message: string };
+
+/**
+ * A rejection waiting to be confirmed. `ids` is captured when the dialog opens, so what the
+ * dialog names is exactly what gets destroyed even if the queue moves underneath it.
+ */
+type PendingReject = {
+  ids: string[];
+  /** Where it came from, so the queue advances the way the direct path would have. */
+  origin: "current" | "selection" | "retry";
+};
 
 function itemsOf(data: ModerationQueueResponse): ModerationQueueItem[] {
   const list = data.photos ?? data.items ?? [];
@@ -66,6 +86,8 @@ export function ModerationSection({ event }: { event: AdminEvent | null }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [done, setDone] = useState(0);
   const [failed, setFailed] = useState<Failed[]>([]);
+  const [pendingReject, setPendingReject] = useState<PendingReject | null>(null);
+  const [acknowledged, setAcknowledged] = useState(false);
   const [loading, setLoading] = useState(false);
   const [unavailable, setUnavailable] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -179,29 +201,93 @@ export function ModerationSection({ event }: { event: AdminEvent | null }) {
     });
   }, []);
 
-  const judge = useCallback(
-    (verdict: Verdict) => {
-      if (!current) return;
-      send(current.id, verdict);
-      setQueue((rows) => rows.filter((row) => row.id !== current.id));
+  /** Opens the confirmation. Nothing is sent and nothing leaves the queue yet. */
+  const askReject = useCallback((ids: string[], origin: PendingReject["origin"]) => {
+    if (ids.length === 0) return;
+    // The acknowledgement always starts untouched: it is per rejection, not per session.
+    setAcknowledged(false);
+    setPendingReject({ ids, origin });
+  }, []);
+
+  const cancelReject = useCallback(() => {
+    setPendingReject(null);
+    setAcknowledged(false);
+  }, []);
+
+  /** The photo on screen. Only ever called with "rejected" from the confirmation. */
+  const applyToCurrent = useCallback(
+    (verdict: Verdict, id: string) => {
+      send(id, verdict);
+      setQueue((rows) => rows.filter((row) => row.id !== id));
       setDone((value) => value + 1);
       setIndex((value) => Math.min(value, Math.max(0, pending.length - 2)));
     },
-    [current, pending.length, send],
+    [pending.length, send],
+  );
+
+  /** The selection. Only ever called with "rejected" from the confirmation. */
+  const applyToSelection = useCallback(
+    (verdict: Verdict, ids: string[]) => {
+      const judged = new Set(ids);
+      for (const id of ids) send(id, verdict);
+      setQueue((rows) => rows.filter((row) => !judged.has(row.id)));
+      setDone((value) => value + ids.length);
+      setSelected((rows) => {
+        const next = new Set(rows);
+        for (const id of ids) next.delete(id);
+        return next;
+      });
+      setIndex(0);
+    },
+    [send],
+  );
+
+  const judge = useCallback(
+    (verdict: Verdict) => {
+      if (!current) return;
+      // Approving is immediate; rejecting is irreversible, so it only asks.
+      if (verdict === "rejected") {
+        askReject([current.id], "current");
+        return;
+      }
+      applyToCurrent("approved", current.id);
+    },
+    [applyToCurrent, askReject, current],
   );
 
   const judgeSelection = useCallback(
     (verdict: Verdict) => {
       if (selected.size === 0) return;
       const ids = [...selected];
-      for (const id of ids) send(id, verdict);
-      setQueue((rows) => rows.filter((row) => !selected.has(row.id)));
-      setDone((value) => value + ids.length);
-      setSelected(new Set());
-      setIndex(0);
+      if (verdict === "rejected") {
+        askReject(ids, "selection");
+        return;
+      }
+      applyToSelection("approved", ids);
     },
-    [selected, send],
+    [applyToSelection, askReject, selected],
   );
+
+  /**
+   * The only path that ever sends `rejected`. Both gates must be satisfied: an open
+   * confirmation and a ticked acknowledgement.
+   */
+  const confirmReject = useCallback(() => {
+    if (!pendingReject || !acknowledged) return;
+    const { ids, origin } = pendingReject;
+    setPendingReject(null);
+    setAcknowledged(false);
+    if (origin === "retry") {
+      for (const id of ids) send(id, "rejected");
+      return;
+    }
+    if (origin === "current") {
+      const id = ids[0];
+      if (id) applyToCurrent("rejected", id);
+      return;
+    }
+    applyToSelection("rejected", ids);
+  }, [acknowledged, applyToCurrent, applyToSelection, pendingReject, send]);
 
   const toggle = useCallback(() => {
     if (!current) return;
@@ -216,6 +302,17 @@ export function ModerationSection({ event }: { event: AdminEvent | null }) {
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
+      if (pendingReject) {
+        // A confirmation is open. Escape withdraws it; every other key is inert, so no
+        // keystroke can confirm a purge and no stray A/R flies past a question the
+        // moderator has not answered yet. This is checked before the form-field guard
+        // below, so Escape still works while the acknowledgement checkbox has focus.
+        if (e.key === "Escape") {
+          e.preventDefault();
+          cancelReject();
+        }
+        return;
+      }
       const target = e.target as HTMLElement | null;
       if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
       const key = e.key.toLowerCase();
@@ -256,7 +353,7 @@ export function ModerationSection({ event }: { event: AdminEvent | null }) {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [judge, judgeSelection, toggle, pending.length]);
+  }, [judge, judgeSelection, toggle, pending.length, pendingReject, cancelReject]);
 
   // Keep a page ahead: at four photos from the end, ask for the next page.
   useEffect(() => {
@@ -269,9 +366,14 @@ export function ModerationSection({ event }: { event: AdminEvent | null }) {
       <h2>Moderazione</h2>
       <EventNeeded event={event} />
       <p className="fine">
-        <kbd>A</kbd> approva · <kbd>R</kbd> rifiuta · <kbd>→</kbd> avanti · <kbd>←</kbd> indietro ·{" "}
-        <kbd>X</kbd> seleziona · <kbd>shift</kbd>+<kbd>A</kbd>/<kbd>R</kbd> sulla selezione. Il verdetto
-        parte subito: la coda non aspetta la rete.
+        <kbd>A</kbd> approva · <kbd>R</kbd> chiede conferma per rifiutare · <kbd>→</kbd> avanti ·{" "}
+        <kbd>←</kbd> indietro · <kbd>X</kbd> seleziona · <kbd>shift</kbd>+<kbd>A</kbd>/<kbd>R</kbd>{" "}
+        sulla selezione. L&apos;approvazione parte subito: la coda non aspetta la rete.
+      </p>
+      <p className="fine warn">
+        <strong>Rifiutare cancella la foto per sempre</strong>: originale, copie e volti vengono
+        eliminati e non si possono recuperare. Non è «nascondi». Per questo nessun tasto da solo
+        rifiuta: <kbd>R</kbd> apre una conferma.
       </p>
       <div className="form-grid">
         <label>
@@ -316,6 +418,61 @@ export function ModerationSection({ event }: { event: AdminEvent | null }) {
         {loading ? " · carico…" : ""}
       </p>
 
+      {pendingReject ? (
+        <div className="moderation-confirm" role="alertdialog" aria-labelledby="reject-title">
+          <h3 id="reject-title">
+            {pendingReject.ids.length === 1
+              ? "Cancellare questa foto per sempre?"
+              : `Cancellare ${pendingReject.ids.length} foto per sempre?`}
+          </h3>
+          <p>
+            Rifiutare non nasconde: <strong>cancella</strong>. Vengono eliminati il file
+            originale, le copie (anteprima e versione web) e i volti rilevati.{" "}
+            <strong>L&apos;operazione non si può annullare</strong> e non resta nessuna copia da
+            cui recuperare la foto.
+          </p>
+          <p className="fine">
+            Se vuoi solo toglierla dalla galleria in attesa di decidere, chiudi questa finestra e
+            lasciala «in attesa»: resta fuori dall&apos;album senza essere cancellata.
+          </p>
+          <ul className="list">
+            {pendingReject.ids.map((id) => (
+              <li key={id}>
+                <code>{shortId(id)}</code>
+              </li>
+            ))}
+          </ul>
+          <label className="consent">
+            <input
+              type="checkbox"
+              checked={acknowledged}
+              onChange={(e) => setAcknowledged(e.target.checked)}
+            />
+            Ho capito: i file originali vengono cancellati e non si possono recuperare.
+          </label>
+          <div className="actions inline">
+            {/*
+              The only control in the app that sends `rejected`. Disabled until the
+              acknowledgement above is ticked, and no keyboard shortcut reaches it: while this
+              panel is open the queue keys do nothing but Escape (see the keydown handler).
+            */}
+            <button
+              className="button danger"
+              type="button"
+              disabled={!acknowledged}
+              onClick={confirmReject}
+            >
+              {pendingReject.ids.length === 1
+                ? "Cancella definitivamente"
+                : `Cancella definitivamente ${pendingReject.ids.length} foto`}
+            </button>
+            <button className="button primary" type="button" onClick={cancelReject}>
+              Annulla (Esc)
+            </button>
+          </div>
+        </div>
+      ) : null}
+
       {current ? (
         <div className="moderation-stage">
           {imageOf(current) ? (
@@ -352,8 +509,13 @@ export function ModerationSection({ event }: { event: AdminEvent | null }) {
               <button className="button primary" type="button" onClick={() => judge("approved")}>
                 Approva (A)
               </button>
-              <button className="button quiet" type="button" onClick={() => judge("rejected")}>
-                Rifiuta (R)
+              <button
+                className="button quiet"
+                type="button"
+                onClick={() => judge("rejected")}
+                title="Chiede conferma: rifiutare cancella la foto per sempre"
+              >
+                Rifiuta… (R)
               </button>
               <button className="button" type="button" onClick={toggle}>
                 {selected.has(current.id) ? "Deseleziona (X)" : "Seleziona (X)"}
@@ -364,8 +526,13 @@ export function ModerationSection({ event }: { event: AdminEvent | null }) {
                 <button className="button primary" type="button" onClick={() => judgeSelection("approved")}>
                   Approva {selected.size} (shift+A)
                 </button>
-                <button className="button quiet" type="button" onClick={() => judgeSelection("rejected")}>
-                  Rifiuta {selected.size} (shift+R)
+                <button
+                  className="button quiet"
+                  type="button"
+                  onClick={() => judgeSelection("rejected")}
+                  title="Chiede conferma: rifiutare cancella le foto per sempre"
+                >
+                  Rifiuta… {selected.size} (shift+R)
                 </button>
               </div>
             ) : null}
@@ -407,8 +574,20 @@ export function ModerationSection({ event }: { event: AdminEvent | null }) {
                   <code>{shortId(row.id)}</code> {row.state === "approved" ? "approva" : "rifiuta"}
                 </span>
                 <span className="error-text">{row.message}</span>
-                <button className="linkish" type="button" onClick={() => send(row.id, row.state)}>
-                  Riprova
+                {/*
+                  A rejection that failed destroyed nothing, so retrying it is a fresh
+                  irreversible act and goes through the same confirmation.
+                */}
+                <button
+                  className="linkish"
+                  type="button"
+                  onClick={() =>
+                    row.state === "rejected"
+                      ? askReject([row.id], "retry")
+                      : send(row.id, row.state)
+                  }
+                >
+                  {row.state === "rejected" ? "Riprova…" : "Riprova"}
                 </button>
               </li>
             ))}
