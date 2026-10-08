@@ -5,17 +5,17 @@
 # path filters, and ONLY the affected app's deploy job runs. Each app ships to
 # its own subdomain on its own cadence.
 #
-#   apps/landing       -> rephoto.it (+ www)     static files, "frozen" (rarely changes)
-#   apps/partecipanti  -> app.rephoto.it          Vite SPA build -> dist/
-#   apps/fotografi     -> foto.rephoto.it         Vite SPA build -> dist/
-#   apps/admin         -> admin.rephoto.it        Vite SPA build -> dist/
+#   apps/landing       -> framesofme.com (+ www)     static files, "frozen" (rarely changes)
+#   apps/partecipanti  -> app.framesofme.com          Vite SPA build -> dist/
+#   apps/fotografi     -> foto.framesofme.com         Vite SPA build -> dist/
+#   apps/admin         -> admin.framesofme.com        Vite SPA build -> dist/
 #
 # Shared-package fan-out:
 #   - packages/ui         changes  -> redeploy ALL apps (it is the design system/CSS)
 #   - packages/api-client changes  -> redeploy the three SPAs (landing doesn't use it)
 #
 # Prod wiring: each app is served behind a reverse proxy that routes /v1/* to the
-# API (api.rephoto.it), so the browser sees the API as same-origin and the
+# API (api.framesofme.com), so the browser sees the API as same-origin and the
 # session cookie works without CORS. The build itself is origin-agnostic because
 # packages/api-client defaults to `/v1` — there is NO build-time API URL to set.
 # (If you ever need to point a build elsewhere, that is the proxy's job, not a
@@ -73,7 +73,7 @@ jobs:
               - 'frontend/packages/ui/**'
               - 'frontend/packages/api-client/**'
 
-  # ── landing → rephoto.it (static, no build) ────────────────────────────────
+  # ── landing → framesofme.com (static, no build) ────────────────────────────────
   deploy-landing:
     needs: changes
     if: needs.changes.outputs.landing == 'true'
@@ -83,8 +83,8 @@ jobs:
       group: deploy-landing
       cancel-in-progress: false
     env:
-      APP_SUBDOMAIN: rephoto.it
-      DEPLOY_PATH: /srv/www/rephoto.it            # TODO: adjust to your server's docroot
+      APP_SUBDOMAIN: framesofme.com
+      DEPLOY_PATH: /srv/www/framesofme.com            # TODO: adjust to your server's docroot
       SRC_DIR: frontend/apps/landing              # static files published as-is
     steps:
       - uses: actions/checkout@v4
@@ -108,7 +108,7 @@ jobs:
           echo "would publish $SRC_DIR -> $APP_SUBDOMAIN ($DEPLOY_PATH)"
           test -f "$SRC_DIR/index.html"
 
-  # ── partecipanti → app.rephoto.it (Vite SPA) ───────────────────────────────
+  # ── partecipanti → app.framesofme.com (Vite SPA) ───────────────────────────────
   deploy-partecipanti:
     needs: changes
     if: needs.changes.outputs.partecipanti == 'true'
@@ -117,8 +117,8 @@ jobs:
       group: deploy-partecipanti
       cancel-in-progress: false
     env:
-      APP_SUBDOMAIN: app.rephoto.it
-      DEPLOY_PATH: /srv/www/app.rephoto.it        # TODO: adjust to your server's docroot
+      APP_SUBDOMAIN: app.framesofme.com
+      DEPLOY_PATH: /srv/www/app.framesofme.com        # TODO: adjust to your server's docroot
       APP_DIR: frontend/apps/partecipanti
     steps:
       - uses: actions/checkout@v4
@@ -130,7 +130,7 @@ jobs:
       - name: Install & build
         working-directory: ${{ env.APP_DIR }}
         # No API URL env needed: the client defaults to /v1 and the prod proxy
-        # routes /v1 -> api.rephoto.it (same-origin, cookie-friendly).
+        # routes /v1 -> api.framesofme.com (same-origin, cookie-friendly).
         run: |
           npm ci || npm install
           npm run build
@@ -154,7 +154,7 @@ jobs:
           echo "would publish $APP_DIR/dist -> $APP_SUBDOMAIN ($DEPLOY_PATH)"
           test -f dist/index.html
 
-  # ── fotografi → foto.rephoto.it (Vite SPA) ─────────────────────────────────
+  # ── fotografi → foto.framesofme.com (Vite SPA) ─────────────────────────────────
   deploy-fotografi:
     needs: changes
     if: needs.changes.outputs.fotografi == 'true'
@@ -163,8 +163,8 @@ jobs:
       group: deploy-fotografi
       cancel-in-progress: false
     env:
-      APP_SUBDOMAIN: foto.rephoto.it
-      DEPLOY_PATH: /srv/www/foto.rephoto.it       # TODO: adjust to your server's docroot
+      APP_SUBDOMAIN: foto.framesofme.com
+      DEPLOY_PATH: /srv/www/foto.framesofme.com       # TODO: adjust to your server's docroot
       APP_DIR: frontend/apps/fotografi
     steps:
       - uses: actions/checkout@v4
@@ -186,7 +186,7 @@ jobs:
           echo "would publish $APP_DIR/dist -> $APP_SUBDOMAIN ($DEPLOY_PATH)"
           test -f dist/index.html
 
-  # ── admin → admin.rephoto.it (Vite SPA) ────────────────────────────────────
+  # ── admin → admin.framesofme.com (Vite SPA) ────────────────────────────────────
   deploy-admin:
     needs: changes
     if: needs.changes.outputs.admin == 'true'
@@ -195,8 +195,8 @@ jobs:
       group: deploy-admin
       cancel-in-progress: false
     env:
-      APP_SUBDOMAIN: admin.rephoto.it
-      DEPLOY_PATH: /srv/www/admin.rephoto.it      # TODO: adjust to your server's docroot
+      APP_SUBDOMAIN: admin.framesofme.com
+      DEPLOY_PATH: /srv/www/admin.framesofme.com      # TODO: adjust to your server's docroot
       APP_DIR: frontend/apps/admin
     steps:
       - uses: actions/checkout@v4

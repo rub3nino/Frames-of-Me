@@ -10,7 +10,7 @@ const base = {
   S3_REGION: "eu-central-1",
   SESSION_SECRET: "0123456789abcdef0123456789abcdef",
   FACE_ENGINE: "fake",
-  SMTP_FROM: "RePhoto <noreply@example.com>",
+  SMTP_FROM: "Frames of Me <noreply@example.com>",
   WEB_ORIGIN: "http://localhost:3000",
   API_ORIGIN: "http://localhost:8787",
 };
@@ -106,7 +106,7 @@ test("send() maps the message onto sendMail with SMTP_FROM", async () => {
     text: string;
   };
   assert.equal(mail.from.address, "noreply@example.com");
-  assert.equal(mail.from.name, "RePhoto");
+  assert.equal(mail.from.name, "Frames of Me");
   assert.deepEqual(mail.to.map((t) => t.address), ["p@example.com"]);
   assert.equal(mail.subject, "Magic link");
   assert.equal(mail.text, "Hello\n.\nBye");

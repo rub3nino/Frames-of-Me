@@ -1,5 +1,5 @@
 /* ============================================================================
-   RePhoto — Motion engine (v2 · dependency-free · light only)
+   Frames of Me — Motion engine (v2 · dependency-free · light only)
    impeccable animate: one authored moment ("Recognition"), the rest is quiet
    feedback. Arrivals use cubic-bezier(.16,1,.3,1). Exit faster than entrance.
    Compositor-safe props. Every motion has a reduced-motion path.

@@ -1,4 +1,4 @@
-<svg width="178" height="40" viewBox="0 0 178 40" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="RePhoto">
+<svg width="178" height="40" viewBox="0 0 178 40" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Frames of Me">
   <g transform="translate(0,-2)">
     <g stroke="currentColor" stroke-width="3.6" stroke-linecap="round" fill="none" transform="translate(2,2) scale(0.36)">
       <path d="M22 36 V28 a6 6 0 0 1 6-6 H36"/>
@@ -8,5 +8,5 @@
     </g>
     <circle cx="20" cy="22" r="2.7" fill="var(--c-accent, #0071E3)"/>
   </g>
-  <text x="48" y="28" font-family="Geist, -apple-system, system-ui, sans-serif" font-size="23" font-weight="600" letter-spacing="-0.6" fill="currentColor">RePhoto</text>
+  <text x="48" y="28" font-family="Geist, -apple-system, system-ui, sans-serif" font-size="23" font-weight="600" letter-spacing="-0.6" fill="currentColor">Frames of Me</text>
 </svg>

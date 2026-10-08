@@ -1,4 +1,4 @@
-# RePhoto — throughput della pipeline di riconoscimento (v6 F1)
+# Frames of Me — throughput della pipeline di riconoscimento (v6 F1)
 
 Data della misura: **2026-10-07**. Strumento: [`scripts/bench/index-throughput.ts`](../scripts/bench/index-throughput.ts)
 (vedi [`scripts/bench/README.md`](../scripts/bench/README.md)). Codice: branch `v6/ops` sopra `8ac072a`.

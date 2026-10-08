@@ -1,4 +1,4 @@
-"""RePhoto face service: FastAPI front for insightface (SCRFD + ArcFace) on CPU.
+"""Frames of Me face service: FastAPI front for insightface (SCRFD + ArcFace) on CPU.
 
 Endpoints (see README.md):
   GET  /health        -> { ok, version, max_faces_cap, model, providers }
@@ -297,7 +297,7 @@ def create_app(*, analyzer: Analyzer | None = None, liveness: NoLiveness | Silen
             log.info("liveness method: %s", app.state.liveness.method)
         yield
 
-    app = FastAPI(title="RePhoto face service", version=SERVICE_VERSION, lifespan=lifespan, docs_url=None, redoc_url=None)
+    app = FastAPI(title="Frames of Me face service", version=SERVICE_VERSION, lifespan=lifespan, docs_url=None, redoc_url=None)
     app.state.analyzer = analyzer
     app.state.liveness = liveness
     app.state.settings = settings

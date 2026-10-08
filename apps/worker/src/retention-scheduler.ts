@@ -47,9 +47,9 @@ import type { WorkerDeps } from "./handlers.js";
 
 /** Italian, like every other message this system sends. */
 const ALARM_SUBJECT: Record<RetentionAlarmMail, string> = {
-  failed: "RePhoto: la retention non è stata messa in coda",
-  job_error: "RePhoto: il job di retention è finito in errore",
-  skipped: "RePhoto: la retention non gira da più di due finestre",
+  failed: "Frames of Me: la retention non è stata messa in coda",
+  job_error: "Frames of Me: il job di retention è finito in errore",
+  skipped: "Frames of Me: la retention non gira da più di due finestre",
 };
 
 const ALARM_BODY: Record<RetentionAlarmMail, string> = {
@@ -295,7 +295,7 @@ async function notifyResolved(
   ].join("\n");
   try {
     for (const to of recipients) {
-      await deps.mailer.send({ to, subject: "RePhoto: retention rientrata", text });
+      await deps.mailer.send({ to, subject: "Frames of Me: retention rientrata", text });
     }
     result.mailed.push({ eventId: input.row.eventId, alarm: previous, kind: "resolved" });
   } catch (error) {

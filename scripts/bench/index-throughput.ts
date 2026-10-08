@@ -1,4 +1,4 @@
-// RePhoto — face pipeline throughput benchmark (v6 F1).
+// Frames of Me — face pipeline throughput benchmark (v6 F1).
 //
 // Answers the one number the whole production deployment is sized from and that had never been
 // measured: how many photos per hour does one host take through derive -> index -> attach with
@@ -39,7 +39,7 @@ import { createSql, DuplicateKeyError, migrate, PostgresDatabase } from "@rephot
 import type { JobLogEntry, WorkerDeps } from "../../apps/worker/src/handlers.ts";
 import { runWorkerLoop } from "../../apps/worker/src/loop.ts";
 
-const HELP = `RePhoto face pipeline throughput benchmark (v6 F1).
+const HELP = `Frames of Me face pipeline throughput benchmark (v6 F1).
 
 Usage:
   node --env-file=.env --import tsx scripts/bench/index-throughput.ts [options]
@@ -559,7 +559,7 @@ const mib = (bytes: number | null): string =>
   bytes === null ? "n/a" : `${(bytes / 1024 ** 2).toFixed(0)} MiB`;
 
 console.log("");
-console.log("================ RePhoto face pipeline throughput ================");
+console.log("================ Frames of Me face pipeline throughput ================");
 console.log(`measured at          ${report.measuredAt}`);
 console.log(`source               ${report.source} (${report.sourceImages} distinct image(s))`);
 if (!representative) console.log("representative       NO -- upper bound only, see the warning above");

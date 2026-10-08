@@ -1,4 +1,4 @@
-# RePhoto face service. Build context is apps/face-service:
+# Frames of Me face service. Build context is apps/face-service:
 #   docker build -t rephoto-face-service apps/face-service
 # The model pack (~280 MB download, ~190 MB kept) and the anti-spoofing weights are fetched
 # at build time into /models, so the running container needs no network access.

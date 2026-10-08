@@ -1,5 +1,5 @@
 #!/bin/sh
-# RePhoto — MinIO provisioning, run once per `docker compose up` by the `minio-init` service.
+# Frames of Me — MinIO provisioning, run once per `docker compose up` by the `minio-init` service.
 # Bind-mounted read-only into the container (compose.yml); it runs inside the MinIO image, which
 # ships `mc` at /usr/bin/mc.
 #

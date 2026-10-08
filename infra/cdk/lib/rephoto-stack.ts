@@ -110,7 +110,7 @@ export class RephotoStack extends cdk.Stack {
 
     // ------------------------------------------------------------------ encryption + storage
     const key = new kms.Key(this, "Key", {
-      description: "RePhoto data at rest (S3, RDS)",
+      description: "Frames of Me data at rest (S3, RDS)",
       enableKeyRotation: true,
       removalPolicy: RemovalPolicy.RETAIN,
     });
@@ -540,7 +540,7 @@ export class RephotoStack extends cdk.Stack {
       compress: true,
     };
     distribution = new cloudfront.Distribution(this, "Cdn", {
-      comment: "RePhoto web + api",
+      comment: "Frames of Me web + api",
       defaultBehavior: dynamic,
       additionalBehaviors: {
         "/_next/static/*": {
@@ -560,7 +560,7 @@ export class RephotoStack extends cdk.Stack {
     });
 
     // ------------------------------------------------------------------ alarms
-    const alarmTopic = new sns.Topic(this, "Alarms", { displayName: "RePhoto alarms" });
+    const alarmTopic = new sns.Topic(this, "Alarms", { displayName: "Frames of Me alarms" });
     if (props.alarmEmail) {
       alarmTopic.addSubscription(new sns_subs.EmailSubscription(props.alarmEmail));
     }

@@ -1,4 +1,4 @@
-# RePhoto — override for the TEST CAMPAIGN box (docs/test-readiness.md, docs/v5-test-readiness-spec.md § E).
+# Frames of Me — override for the TEST CAMPAIGN box (docs/test-readiness.md, docs/v5-test-readiness-spec.md § E).
 #
 #   docker compose --env-file .env.production -f compose.yml -f compose.test.yml up -d
 #   (the scripts in scripts/ address the running containers by project name and need no -f)

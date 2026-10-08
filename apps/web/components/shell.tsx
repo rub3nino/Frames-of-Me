@@ -16,7 +16,7 @@ export function Shell({
     <div className={wide ? "shell shell-wide" : "shell"}>
       <header className="top">
         <Link className="mark" href="/">
-          RePhoto
+          Frames of Me
         </Link>
         {signOut ? <SignOut /> : null}
       </header>

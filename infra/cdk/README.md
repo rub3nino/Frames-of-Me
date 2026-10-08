@@ -1,4 +1,4 @@
-# RePhoto — stack AWS di riferimento (CDK v2)
+# Frames of Me — stack AWS di riferimento (CDK v2)
 
 Uno stack, `RephotoStack`, in **eu-central-1**. È il modello di deploy descritto in `docs/v2-spec.md` §7: non viene applicato da nessuna pipeline, si applica a mano con `cdk deploy`. Questa cartella non fa parte dei workspace npm del repo: ha il suo `package.json`.
 

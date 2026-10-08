@@ -1,9 +1,9 @@
 /* ============================================================================
-   RePhoto — Landing (marketing) stylesheet
+   Frames of Me — Landing (marketing) stylesheet
    A gentle shift from the Apple base toward an editorial/Notion feel:
    thin hairline separators, a high-contrast editorial serif for display,
    soft pastel feature cards, black CTAs — fonts & colors taken from the
-   reference the user pinned (OG Image.Design). RePhoto-only content.
+   reference the user pinned (OG Image.Design). Frames of Me-only content.
    Isolated here so the functional app pages (blue accent, Geist) are untouched.
    Motion follows Emil Kowalski's rules (strong curves, <300ms, stagger 30–80ms).
    Load after tokens.css + base.css + components.css.

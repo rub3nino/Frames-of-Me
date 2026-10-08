@@ -60,7 +60,7 @@ export function registerResetRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       });
       await deps.mailer.send({
         to: email,
-        subject: "Reimposta la password RePhoto",
+        subject: "Reimposta la password Frames of Me",
         text: `${webOrigin(deps.env)}/registrati?reset=${encodeURIComponent(token)}`,
       });
     }

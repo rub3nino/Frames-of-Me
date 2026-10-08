@@ -1,6 +1,6 @@
-# RePhoto v4 — installazione self-hosted
+# Frames of Me v4 — installazione self-hosted
 
-Tutto quello che serve per far girare RePhoto su **un solo VPS Linux** senza AWS: InsightFace al posto di Rekognition, Postgres + pgvector per i vettori, MinIO per le foto, Caddy per TLS e routing, posta via SMTP autenticato verso un provider, backup giornaliero su un secondo disco. La specifica è `docs/v4-selfhost-spec.md`; questo file è il runbook.
+Tutto quello che serve per far girare Frames of Me su **un solo VPS Linux** senza AWS: InsightFace al posto di Rekognition, Postgres + pgvector per i vettori, MinIO per le foto, Caddy per TLS e routing, posta via SMTP autenticato verso un provider, backup giornaliero su un secondo disco. La specifica è `docs/v4-selfhost-spec.md`; questo file è il runbook.
 
 Contenuto di `deploy/`:
 
@@ -340,7 +340,7 @@ Scegliere un provider transazionale con un piano adeguato ai volumi (6.000 parte
    - **DKIM**: i record CNAME/TXT che il provider mostra dopo la verifica del dominio (selettore e chiave pubblica).
    - **DMARC**: TXT su `_dmarc.example.com`, `v=DMARC1; p=quarantine; rua=mailto:dmarc@example.com` (iniziare con `p=none` se il dominio manda posta anche da altri sistemi).
    - Il provider segnala quando SPF/DKIM risultano verificati; finché non lo sono, i messaggi vanno in spam o vengono rifiutati.
-3. In `.env.production`: `SMTP_HOST=smtp.provider`, `SMTP_PORT=587`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_SECURE=false`, `SMTP_STARTTLS=true`, `SMTP_FROM=RePhoto <noreply@example.com>`; poi `docker compose up -d api worker`. Con un provider che espone solo la 465 (TLS implicito): `SMTP_PORT=465`, `SMTP_SECURE=true` (è anche il default su quella porta). `SMTP_STARTTLS=auto` (il default del codice) cifra se il server lo offre e resta in chiaro altrimenti: va bene per Mailpit in locale, in produzione tenere `true` così un endpoint sbagliato fallisce invece di mandare le credenziali in chiaro.
+3. In `.env.production`: `SMTP_HOST=smtp.provider`, `SMTP_PORT=587`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_SECURE=false`, `SMTP_STARTTLS=true`, `SMTP_FROM=Frames of Me <noreply@example.com>`; poi `docker compose up -d api worker`. Con un provider che espone solo la 465 (TLS implicito): `SMTP_PORT=465`, `SMTP_SECURE=true` (è anche il default su quella porta). `SMTP_STARTTLS=auto` (il default del codice) cifra se il server lo offre e resta in chiaro altrimenti: va bene per Mailpit in locale, in produzione tenere `true` così un endpoint sbagliato fallisce invece di mandare le credenziali in chiaro.
 4. Prova: richiedere un magic link dalla pagina pubblica e controllare `scripts/logs.sh api` (un errore SMTP — credenziali, quota, TLS — compare lì come eccezione della richiesta) e la cartella spam del destinatario. Gli header `Authentication-Results` del messaggio ricevuto devono riportare `spf=pass dkim=pass`.
 
 **Perché non un Postfix "vero" sul VPS.** Un server di posta che consegna direttamente ai destinatari richiede: IP con reputazione (gli IP dei VPS sono spesso in blocklist dalla nascita), PTR/rDNS corretto, DKIM gestito in casa, feedback loop con Gmail/Microsoft, gestione di bounce e rate limiting per destinatario; Gmail e Outlook limitano o rifiutano in silenzio la posta da IP nuovi che mandano 1.000 messaggi in dieci minuti, cioè esattamente il picco dei selfie. Con un provider la consegna è il suo problema; con 6.000 partecipanti un magic link finito in spam è un partecipante che non entra. L'api parla con il provider in SMTP autenticato e cifrato: non serve nessun hop intermedio.

@@ -243,7 +243,7 @@ export function assertGoogleClaims(
 /**
  * The verified e-mail, lowercased, or null. **This is the only way the rest of the code is
  * allowed to learn the address**: an unverified `email` claim is dropped on the floor, so a
- * Google account with an unconfirmed address can never take over a RePhoto account.
+ * Google account with an unconfirmed address can never take over a Frames of Me account.
  */
 export function verifiedEmail(claims: GoogleClaims): string | null {
   if (!claims.emailVerified || !claims.email) return null;

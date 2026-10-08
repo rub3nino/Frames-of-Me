@@ -46,7 +46,7 @@ export function Shell({ title, sub, action, children }: { title: string; sub?: R
   return (
     <div className="ad-wrap">
       <aside className="sidebar">
-        <a className="ad-brand" href="/admin"><Mark /> RePhoto</a>
+        <a className="ad-brand" href="/admin"><Mark /> Frames of Me</a>
         <nav style={{ display: "flex", flexDirection: "column" }} aria-label="Sezioni">
           {NAV_GROUPS.map((g) => (
             <div className="nav-group" key={g.label}>

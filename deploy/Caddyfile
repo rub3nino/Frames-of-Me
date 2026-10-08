@@ -1,4 +1,4 @@
-# RePhoto v4 — Caddy 2 (image caddy:2-alpine). Placeholders `{$NAME}` come from the
+# Frames of Me v4 — Caddy 2 (image caddy:2-alpine). Placeholders `{$NAME}` come from the
 # container environment (compose.yml → .env.production).
 #
 # Sites:
