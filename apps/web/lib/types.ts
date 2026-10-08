@@ -58,6 +58,19 @@ export type GalleryDownloadResponse = {
   urls: { photoId: string; url: string }[];
 };
 
+export type PublicGalleryItem = {
+  photoId: string;
+  thumbUrl: string;
+  webUrl: string;
+  createdAt: string;
+  originalReady: boolean;
+};
+
+export type PublicGalleryResponse = {
+  items: PublicGalleryItem[];
+  nextCursor: string | null;
+};
+
 export type UploadMode = "single" | "multipart";
 
 export type UploadInitResponse = {

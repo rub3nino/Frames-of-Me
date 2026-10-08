@@ -15,6 +15,7 @@ export const SELFIE_LIVENESS_FIELD = "liveness";
 export const selfieLivenessSchema = z.enum(["challenge", "file"]);
 export type SelfieLiveness = z.infer<typeof selfieLivenessSchema>;
 export const SELFIE_RATE_LIMIT = { max: 5, windowSeconds: 60 * 60 } as const;
+export const PUBLIC_UPLOAD_RATE_LIMIT = { max: 20, windowSeconds: 60 * 60 } as const;
 /** 10 MiB: the largest body the api accepts (selfie multipart of 8 MiB plus overhead). */
 export const API_BODY_MAX_BYTES = 10_485_760;
 export const MAGIC_LINK_RATE_LIMIT = { perEmail: 3, perIp: 20, windowSeconds: 60 * 60 } as const;
@@ -156,6 +157,37 @@ export const galleryQuerySchema = z
   })
   .strict();
 
+export const publicGalleryQuerySchema = z
+  .object({
+    cursor: z.string().min(1).optional(),
+    limit: z.coerce.number().int().min(1).max(GALLERY_PAGE_MAX).default(GALLERY_PAGE_DEFAULT),
+  })
+  .strict();
+
+export const publicPhotoReportSchema = z.object({ reason: z.string().trim().min(3).max(500) }).strict();
+export const photoModerationSchema = z.object({
+  status: z.enum(["approved", "pending", "blocked"]),
+  reason: z.string().trim().max(500).nullable().default(null),
+}).strict();
+
+export function encodePublicGalleryCursor(input: { createdAt: Date; photoId: string }): string {
+  return Buffer.from(`${input.createdAt.toISOString()}|${input.photoId}`, "utf8").toString("base64url");
+}
+
+export function decodePublicGalleryCursor(raw: string): { createdAt: Date; photoId: string } | null {
+  try {
+    const text = Buffer.from(raw, "base64url").toString("utf8");
+    const separator = text.indexOf("|");
+    if (separator <= 0) return null;
+    const createdAt = new Date(text.slice(0, separator));
+    const photoId = text.slice(separator + 1);
+    if (!Number.isFinite(createdAt.getTime()) || !z.string().uuid().safeParse(photoId).success) return null;
+    return { createdAt, photoId };
+  } catch {
+    return null;
+  }
+}
+
 export const galleryItemSchema = z
   .object({
     photoId: z.string().uuid(),
@@ -252,6 +284,10 @@ export function decodeGalleryCursor(
 export const uploadStageSchema = z.enum(["original", "web"]);
 export type UploadStage = z.infer<typeof uploadStageSchema>;
 
+/** The public stream is user-contributed; the official stream is photographer-curated. */
+export const photoCollectionSchema = z.enum(["public", "official"]);
+export type PhotoCollection = z.infer<typeof photoCollectionSchema>;
+
 export const originalStatusSchema = z.enum(["pending", "present"]);
 export type OriginalStatus = z.infer<typeof originalStatusSchema>;
 
@@ -269,6 +305,7 @@ const uploadTagsSchema = z
 export const uploadInitOriginalBodySchema = z
   .object({
     eventId: z.string().uuid(),
+    collection: photoCollectionSchema.default("official"),
     filename: z.string().min(1).max(200),
     contentType: imageContentTypeSchema,
     sha256: sha256Schema,
@@ -287,6 +324,7 @@ export const uploadInitOriginalBodySchema = z
 export const uploadInitWebBodySchema = z
   .object({
     eventId: z.string().uuid(),
+    collection: photoCollectionSchema.default("official"),
     filename: z.string().min(1).max(200),
     contentType: z.literal("image/jpeg"),
     sha256: sha256Schema,

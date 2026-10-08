@@ -339,6 +339,9 @@ input[type="checkbox"] {
   gap: 4px;
 }
 
+.public-grid .cell { display: block; }
+.public-grid .cell img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
 .cell {
   position: relative;
   aspect-ratio: 1;
