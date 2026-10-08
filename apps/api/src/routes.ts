@@ -305,9 +305,11 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const status = galleryStatus(latest?.status ?? null, gallery !== null, page.total);
     // v5 (D): `not_me` items stay in the page with the flag; the web hides them under "Nascoste".
     const feedbackByPhoto = new Map(feedbackRows.map((row) => [row.photoId, row.verdict]));
-    const items = [];
-    for (const row of page.items) {
-      items.push({
+    // Presigning is HMAC and a string build, no I/O, but it was 2 awaits per row serialised
+    // 60 rows deep. `Promise.all` is main's fix (`presignVariantUrls`, d477c3a) and keeps the
+    // response order, which the cursor depends on.
+    const items = await Promise.all(
+      page.items.map(async (row) => ({
         photoId: row.photoId,
         thumbUrl: await deps.objects.presignGet(row.thumbKey),
         webUrl: await deps.objects.presignGet(row.webKey),
@@ -316,8 +318,8 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
         createdAt: row.createdAt.toISOString(),
         originalReady: row.originalReady,
         feedback: feedbackByPhoto.get(row.photoId) ?? null,
-      });
-    }
+      })),
+    );
     const last = page.items[page.items.length - 1];
     const nextCursor =
       page.items.length === limit && last
@@ -342,14 +344,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const body = galleryDownloadBodySchema.safeParse(await readJson(c));
     if (!body.success) throw new ApiError(400, MESSAGES.validation);
     const photos = await ownedPhotos(deps, user, event, body.data.photoIds);
-    const urls = [];
-    for (const photo of photos) {
-      urls.push({
-        photoId: photo.id,
-        url: await deps.objects.presignGet(variantKey(photo, body.data.variant)),
-      });
-    }
-    return c.json({ urls });
+    return c.json({ urls: await presignVariantUrls(deps, photos, body.data.variant) });
   });
 
   app.post("/v1/events/:slug/gallery/zip", async (c) => {
@@ -1021,14 +1016,13 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const { cursor: rawCursor, limit, ...filters } = query.data;
     void rawCursor;
     const page = await deps.db.listPhotosAdmin(filters, { limit, ...(cursor ? { cursor } : {}) });
-    const photos = [];
-    for (const photo of page.items) {
-      photos.push({
+    const photos = await Promise.all(
+      page.items.map(async (photo) => ({
         ...adminPhoto(photo),
         thumbUrl:
           photo.status === "indexed" ? await deps.objects.presignGet(objectKeys.thumb(photo.id)) : null,
-      });
-    }
+      })),
+    );
     return c.json({
       photos,
       nextCursor: page.nextCursor
@@ -1671,6 +1665,25 @@ async function ownedPhotos(
 function variantKey(photo: PhotoRow, variant: DownloadVariant): string {
   if (variant === "web" || photo.originalStatus === "pending") return objectKeys.web(photo.id);
   return photo.originalKey;
+}
+
+/**
+ * Presigned download URLs for the given photos, IN REQUEST ORDER (ported from main's
+ * d477c3a). The order is part of the contract: the client pairs the urls with the ids it
+ * sent, so `Promise.all` over a `map` is required here and `Promise.race`-shaped anything is
+ * not. Presigning does no I/O, so this is a latency fix only — 60 serial HMACs per page.
+ */
+function presignVariantUrls(
+  deps: AppDeps,
+  photos: PhotoRow[],
+  variant: DownloadVariant,
+): Promise<Array<{ photoId: string; url: string }>> {
+  return Promise.all(
+    photos.map(async (photo) => ({
+      photoId: photo.id,
+      url: await deps.objects.presignGet(variantKey(photo, variant)),
+    })),
+  );
 }
 
 /** The extension follows the object actually served (see `variantKey`). */

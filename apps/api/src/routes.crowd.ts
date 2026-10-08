@@ -291,9 +291,10 @@ export function registerCrowdRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       limit,
       ...(cursor ? { cursor } : {}),
     });
-    const photos = [];
-    for (const row of page.items) {
-      photos.push({
+    // Order is the contract (the cursor is the last row of the page), so `Promise.all` over a
+    // `map` rather than anything that reorders.
+    const photos = await Promise.all(
+      page.items.map(async (row) => ({
         id: row.id,
         albumId: row.albumId,
         uploaderId: row.uploaderId,
@@ -301,8 +302,8 @@ export function registerCrowdRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
         thumbUrl: await deps.objects.presignGet(row.thumbKey),
         webUrl: await deps.objects.presignGet(row.webKey),
         mine: row.uploaderId === user.id,
-      });
-    }
+      })),
+    );
     const used = await deps.db.countAlbumPhotosByUploader(album.id, user.id);
     return c.json({
       photos,
@@ -437,9 +438,8 @@ export function registerCrowdRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       limit: query.data.limit,
       ...(cursor ? { cursor } : {}),
     });
-    const items = [];
-    for (const row of page.items) {
-      items.push({
+    const items = await Promise.all(
+      page.items.map(async (row) => ({
         photoId: row.photoId,
         albumId: row.albumId,
         eventId: row.eventId,
@@ -451,8 +451,8 @@ export function registerCrowdRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
         notMeReports: row.notMeReports,
         thumbUrl: row.thumbKey ? await deps.objects.presignGet(row.thumbKey) : null,
         webUrl: row.webKey ? await deps.objects.presignGet(row.webKey) : null,
-      });
-    }
+      })),
+    );
     return c.json({
       items,
       nextCursor: page.nextCursor ? encodeCrowdCursor(page.nextCursor) : null,
