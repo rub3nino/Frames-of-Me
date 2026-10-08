@@ -592,6 +592,19 @@ export interface Database {
    */
   countAlbumPhotosByUploader(albumId: string, uploaderId: string): Promise<number>;
   /**
+   * The BURST gate of the crowd upload path (`ALBUM_UPLOAD_MAX_PER_HOUR`): upload sessions
+   * this uploader has STARTED in the album since `since`, whatever became of them.
+   *
+   * Sessions, not photos, and deliberately regardless of `status`: an aborted or abandoned
+   * session still cost a presigned PUT and possibly the bytes behind it, so a loop that
+   * inits and walks away has to count. `countAlbumPhotosByUploader` is the other, absolute
+   * cap and counts rows that landed.
+   *
+   * `photographer_id` is the uploader here (migration 009's `comment on column`); there is
+   * no `uploader_id` column in this model.
+   */
+  countAlbumUploadsSince(albumId: string, uploaderId: string, since: Date): Promise<number>;
+  /**
    * Writes `moderation_state` and, for a human ruling, `moderated_by` / `moderated_at`.
    * `moderatorId` null is the automatic path (the screening hook, the report threshold):
    * the state moves but the two audit columns stay empty, so a queue row still reads as

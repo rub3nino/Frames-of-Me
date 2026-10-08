@@ -138,6 +138,26 @@ export const envSchema = z
     ),
     /** Comma-separated IPs or CIDRs that skip both limits (the test room's NAT). */
     RATE_LIMIT_EXEMPT_IPS: z.preprocess(blankToUndefined, z.string().default("")),
+    /**
+     * Crowd-album uploads one participant may START per album per hour; 0 disables the
+     * limit. This is a BURST gate and is not the same thing as `albums.max_photos_per_user`,
+     * which is an absolute cap on the album and is `null` (unlimited) by default — on such
+     * an album this is the only thing standing between one account and the bucket.
+     *
+     * Read per request, so the event-day value can be raised without a restart.
+     */
+    ALBUM_UPLOAD_MAX_PER_HOUR: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().int().min(0).default(20),
+    ),
+    /**
+     * Optional shared limiter for horizontally scaled api instances
+     * (see apps/api/src/distributed-rate-limit.ts). When it is absent every limiter still
+     * holds — the crowd-upload gate falls back to counting `upload_sessions` — so this is a
+     * latency optimisation on the hot path, never the thing that makes a limit correct.
+     */
+    UPSTASH_REDIS_REST_URL: z.preprocess(blankToUndefined, z.string().url().optional()),
+    UPSTASH_REDIS_REST_TOKEN: optionalText,
     /** Comma-separated emails upserted as admin when the api boots. */
     BOOTSTRAP_ADMINS: z.preprocess(blankToUndefined, z.string().default("")),
     WEB_ORIGIN: z.string().url(),
@@ -291,6 +311,23 @@ export const envSchema = z
           message: "required when S3_ENDPOINT is set",
         });
       }
+    }
+    // A URL without a token is a limiter that will 401 on every call, i.e. a limiter that
+    // silently falls back to the database count forever. Refuse to boot instead.
+    if (env.UPSTASH_REDIS_REST_URL && !env.UPSTASH_REDIS_REST_TOKEN) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["UPSTASH_REDIS_REST_TOKEN"],
+        message: "required when UPSTASH_REDIS_REST_URL is set",
+      });
+    }
+    // And a token with no URL is a configuration someone believes is doing something.
+    if (env.UPSTASH_REDIS_REST_TOKEN && !env.UPSTASH_REDIS_REST_URL) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["UPSTASH_REDIS_REST_URL"],
+        message: "required when UPSTASH_REDIS_REST_TOKEN is set",
+      });
     }
     if (env.MAIL_TRANSPORT === "smtp") {
       if (!env.SMTP_HOST) {

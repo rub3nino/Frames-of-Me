@@ -1162,6 +1162,22 @@ export const REPORT_NOTE_MAX = 500;
 /** Reports per participant are counted over this window (REPORT_PER_USER). */
 export const REPORT_RATE_LIMIT = { windowSeconds: 60 * 60 } as const;
 
+/**
+ * Crowd-album uploads per participant are counted over this window
+ * (`ALBUM_UPLOAD_MAX_PER_HOUR`, ported from main's `PUBLIC_UPLOAD_RATE_LIMIT`).
+ *
+ * Counted per `(album, uploader)`, which under this model means
+ * `(upload_sessions.album_id, upload_sessions.photographer_id)`: since migration 009
+ * `photographer_id` IS the uploader, and for a crowd album it is the participant (the
+ * schema says so in a `comment on column`). There is no `uploader_id` here.
+ *
+ * Why an album and not an event: an event can hold several crowd albums with different
+ * `uploads_open` and `max_photos_per_user` settings, and the gate belongs where those live.
+ * It is deliberately NOT a substitute for `albums.max_photos_per_user`: that is an absolute
+ * cap on the album (and defaults to `null`, unlimited), this bounds the burst.
+ */
+export const ALBUM_UPLOAD_RATE_LIMIT = { windowSeconds: 60 * 60 } as const;
+
 export const reportBodySchema = z
   .object({
     reason: reportReasonSchema,

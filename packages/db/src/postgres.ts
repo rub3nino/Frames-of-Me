@@ -2755,6 +2755,20 @@ export class PostgresDatabase implements Database {
     return rows[0]?.count ?? 0;
   }
 
+  async countAlbumUploadsSince(
+    albumId: string,
+    uploaderId: string,
+    since: Date,
+  ): Promise<number> {
+    const rows = await this.sql<{ count: number }[]>`
+      select count(*)::int as count from upload_sessions
+      where album_id = ${albumId}
+        and photographer_id = ${uploaderId}
+        and created_at >= ${since}
+    `;
+    return rows[0]?.count ?? 0;
+  }
+
   async recordRetentionRun(input: {
     eventId: string;
     outcome: RetentionOutcome;

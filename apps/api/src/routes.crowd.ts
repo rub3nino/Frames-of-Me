@@ -23,6 +23,7 @@
 import { randomUUID } from "node:crypto";
 import type { Hono } from "hono";
 import {
+  ALBUM_UPLOAD_RATE_LIMIT,
   albumPhotosQuerySchema,
   albumUploadInitBodySchema,
   moderateBodySchema,
@@ -45,9 +46,11 @@ import {
   type UploadSessionRow,
 } from "@rephoto/db";
 import type { AppDeps, AppEnv } from "./deps.js";
+import { incrementSharedLimit } from "./distributed-rate-limit.js";
 import { ApiError, MESSAGES } from "./errors.js";
 import { decodeCursor, encodeCursor, readJson, requireRole, requireUser, since } from "./http.js";
 import { purgePhoto } from "./purge.js";
+import { rateLimitExempt } from "./routes.js";
 import { noopScreening } from "./screening.js";
 
 export function registerCrowdRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
@@ -60,6 +63,12 @@ export function registerCrowdRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const body = albumUploadInitBodySchema.safeParse(await readJson(c));
     if (!body.success) throw new ApiError(400, MESSAGES.validation);
     const input = body.data;
+
+    // The burst gate, ported from main's `PUBLIC_UPLOAD_RATE_LIMIT`. This path had NO rate
+    // limit at all: `assertBelowCap` below bounds the total an uploader may hold in the
+    // album, which is a different property and does nothing whatever when
+    // `max_photos_per_user` is null — the column's default.
+    await assertUploadRate(deps, c.get("ip"), album, user.id);
 
     // Clause 4 of C2: approved + pending in this album, below the album's cap. Checked here
     // and again at complete, because an init is cheap to repeat and the cap must hold on the
@@ -551,6 +560,57 @@ async function crowdAlbumForUpload(
   await assertOnEventList(deps, event, email);
   await deps.db.addEventMember({ userId, eventId: event.id, source: "upload" });
   return album;
+}
+
+/**
+ * The burst gate on the crowd upload path, ported from main's `PUBLIC_UPLOAD_RATE_LIMIT`
+ * (this path had no rate limit of any kind). Counts the sessions this uploader has started
+ * in THIS album in the last hour, and 429s at `ALBUM_UPLOAD_MAX_PER_HOUR`.
+ *
+ * Why this flow gets the shared limiter rather than an in-process `Map` window like
+ * self-registration or tagging: the three kinds of limiter in this repo are spelled out in
+ * distributed-rate-limit.ts, and the decision for THIS flow is that the in-process kind is
+ * not good enough. A `Map` window multiplies by the replica count, and unlike registration
+ * (whose hard backstop is `event_codes.max_uses`, one statement in the database) a crowd
+ * upload has no backstop at all on the default album: `max_photos_per_user` is nullable and
+ * null means unlimited. The thing being bounded is bytes written to object storage by an
+ * authenticated stranger, so the limit has to be real with any number of replicas.
+ *
+ * So: Upstash when it is configured (no query on the hot path), and a `upload_sessions`
+ * count otherwise — which is exact and cross-replica on its own. The database is the
+ * correctness floor and Redis is the optimisation, never the reverse. A Redis error is
+ * logged and falls back rather than failing the upload, because the fallback is correct.
+ */
+async function assertUploadRate(
+  deps: AppDeps,
+  ip: string,
+  album: AlbumRow,
+  userId: string,
+): Promise<void> {
+  const max = deps.env.ALBUM_UPLOAD_MAX_PER_HOUR;
+  if (max <= 0 || rateLimitExempt(deps, ip)) return;
+  let started: number | null = null;
+  try {
+    started = await incrementSharedLimit({
+      ...(deps.env.UPSTASH_REDIS_REST_URL ? { url: deps.env.UPSTASH_REDIS_REST_URL } : {}),
+      ...(deps.env.UPSTASH_REDIS_REST_TOKEN ? { token: deps.env.UPSTASH_REDIS_REST_TOKEN } : {}),
+      // Album, not event: sibling crowd albums have their own `uploads_open` and caps.
+      key: `rephoto:album-upload:${album.id}:${userId}`,
+      windowSeconds: ALBUM_UPLOAD_RATE_LIMIT.windowSeconds,
+    });
+  } catch (error) {
+    console.error(`shared upload limiter unavailable: ${String(error)}`);
+  }
+  if (started === null) {
+    // `+ 1` counts the request being authorised now, which the INCR above already did.
+    started =
+      (await deps.db.countAlbumUploadsSince(
+        album.id,
+        userId,
+        since(ALBUM_UPLOAD_RATE_LIMIT.windowSeconds),
+      )) + 1;
+  }
+  if (started > max) throw new ApiError(429, MESSAGES.rateLimited);
 }
 
 /** Clause 4 of C2: approved + pending in this album, strictly below the album's cap. */

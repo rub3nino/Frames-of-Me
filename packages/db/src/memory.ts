@@ -2334,6 +2334,19 @@ export class MemoryDatabase implements Database {
     return count;
   }
 
+  async countAlbumUploadsSince(
+    albumId: string,
+    uploaderId: string,
+    since: Date,
+  ): Promise<number> {
+    let count = 0;
+    for (const upload of this.uploads.values()) {
+      if (upload.albumId !== albumId || upload.photographerId !== uploaderId) continue;
+      if (upload.createdAt >= since) count += 1;
+    }
+    return count;
+  }
+
   // ---- privacy and retention scheduling v6 (agent G) ---------------------------------------
 
   async findConsentState(userId: string, eventId: string): Promise<ConsentState> {

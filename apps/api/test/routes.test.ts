@@ -25,6 +25,7 @@ import {
 import { createApp } from "../src/app.ts";
 import { hashPassword, sha256Hex } from "../src/crypto.ts";
 import type { AppDeps } from "../src/deps.ts";
+import { incrementSharedLimit } from "../src/distributed-rate-limit.ts";
 import { MESSAGES } from "../src/errors.ts";
 import type { Mailer, MailMessage } from "../src/mailer.ts";
 import type {
@@ -2395,6 +2396,102 @@ test("BOOTSTRAP_ADMINS upserts admins at boot", async () => {
   assert.equal(parsed.BOOTSTRAP_ADMINS, "x@example.com");
   assert.equal(parsed.RATE_LIMIT_EXEMPT_IPS, "10.0.0.0/8");
   assert.equal(parsed.MAGIC_LINK_PER_IP, 0);
+});
+
+test("the shared rate limiter is optional, needs both halves, and falls back when it breaks", async () => {
+  const base = {
+    DATABASE_URL: "postgres://x",
+    S3_BUCKET: "b",
+    S3_REGION: "eu-central-1",
+    SESSION_SECRET: "test-session-secret-value",
+    FACE_ENGINE: "fake",
+    SMTP_HOST: "localhost",
+    SMTP_PORT: "1025",
+    SMTP_FROM: "noreply@rephoto.local",
+    WEB_ORIGIN: "http://localhost:3000",
+    API_ORIGIN: "http://localhost:8787",
+  };
+  // Neither half: the limiter is simply absent and the database count is the whole story.
+  const none = envSchema.parse(base);
+  assert.equal(none.UPSTASH_REDIS_REST_URL, undefined);
+  assert.equal(none.UPSTASH_REDIS_REST_TOKEN, undefined);
+  assert.equal(none.ALBUM_UPLOAD_MAX_PER_HOUR, 20);
+  // Half of it configured is a limiter that would 401 forever, or a token pointing nowhere:
+  // both refuse to boot rather than silently degrade.
+  assert.throws(() => envSchema.parse({ ...base, UPSTASH_REDIS_REST_URL: "https://x.upstash.io" }));
+  assert.throws(() => envSchema.parse({ ...base, UPSTASH_REDIS_REST_TOKEN: "tok" }));
+  const both = envSchema.parse({
+    ...base,
+    UPSTASH_REDIS_REST_URL: "https://x.upstash.io/",
+    UPSTASH_REDIS_REST_TOKEN: "tok",
+    ALBUM_UPLOAD_MAX_PER_HOUR: "3",
+  });
+  assert.equal(both.UPSTASH_REDIS_REST_URL, "https://x.upstash.io/");
+  assert.equal(both.ALBUM_UPLOAD_MAX_PER_HOUR, 3);
+
+  // And the limiter itself: null when unconfigured, the INCR result when it answers, a throw
+  // when it does not — which is what lets the call site fall back instead of failing closed.
+  assert.equal(await incrementSharedLimit({ key: "k", windowSeconds: 60 }), null);
+  assert.equal(
+    await incrementSharedLimit({ token: "t", key: "k", windowSeconds: 60 }),
+    null,
+    "a token without a url is still unconfigured",
+  );
+  assert.equal(
+    await incrementSharedLimit({ url: "https://x.y", key: "k", windowSeconds: 60 }),
+    null,
+    "a url without a token is still unconfigured",
+  );
+
+  const realFetch = globalThis.fetch;
+  const calls: Array<{ url: string; body: unknown; auth: string | undefined }> = [];
+  try {
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      calls.push({
+        url: String(input),
+        body: JSON.parse(String(init?.body)),
+        auth: headers.get("authorization") ?? undefined,
+      });
+      return new Response(JSON.stringify([{ result: 7 }, { result: 1 }]), { status: 200 });
+    }) as typeof globalThis.fetch;
+    assert.equal(
+      await incrementSharedLimit({
+        url: "https://x.upstash.io/",
+        token: "tok",
+        key: "rephoto:album-upload:a:u",
+        windowSeconds: 3600,
+      }),
+      7,
+    );
+    assert.deepEqual(calls, [
+      {
+        // The trailing slash of the configured URL must not double up.
+        url: "https://x.upstash.io/pipeline",
+        body: [
+          ["INCR", "rephoto:album-upload:a:u"],
+          ["EXPIRE", "rephoto:album-upload:a:u", 3600],
+        ],
+        auth: "Bearer tok",
+      },
+    ]);
+
+    globalThis.fetch = (async () => new Response("nope", { status: 500 })) as typeof globalThis.fetch;
+    await assert.rejects(
+      incrementSharedLimit({ url: "https://x.y", token: "t", key: "k", windowSeconds: 60 }),
+      /shared rate limiter returned 500/,
+    );
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify([{ result: "not a number" }]), {
+        status: 200,
+      })) as typeof globalThis.fetch;
+    await assert.rejects(
+      incrementSharedLimit({ url: "https://x.y", token: "t", key: "k", windowSeconds: 60 }),
+      /invalid count/,
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });
 
 // ---- integration fix 2: rematch is defence in depth on consent -----------------------------

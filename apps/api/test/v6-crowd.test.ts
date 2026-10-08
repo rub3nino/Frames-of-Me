@@ -1166,6 +1166,112 @@ test("complete refuses bytes stored under a content type the PUT was not signed 
   assert.equal(await h.db.findPhotoByAlbumSha(h.crowd.id, sha256(bytes)), null);
 });
 
+// ---- the burst gate (ported from main's PUBLIC_UPLOAD_RATE_LIMIT) -------------------------
+
+test("crowd uploads are rate limited per participant per album, and the limit is per album", async () => {
+  // Main had `PUBLIC_UPLOAD_RATE_LIMIT` on its participant upload path; this branch had no
+  // rate limit of any kind here. `max_photos_per_user` is NOT a substitute: it is null by
+  // default, and this album leaves it null on purpose so the 429 can only be the burst gate.
+  const h = await harness({}, {}, { ALBUM_UPLOAD_MAX_PER_HOUR: "3" });
+  assert.equal(h.crowd.maxPhotosPerUser, null, "the absolute cap must be off for this test");
+  const anna = await participant(h, "anna@example.com");
+
+  for (let n = 0; n < 3; n += 1) {
+    const res = await upload(h, h.crowd.id, anna.cookie, `shot-${n}`);
+    assert.equal(res.status, 201, `upload ${n} should be allowed`);
+  }
+  const limited = await upload(h, h.crowd.id, anna.cookie, "shot-4");
+  assert.equal(limited.status, 429);
+  assert.deepEqual(limited.body, { error: MESSAGES.rateLimited });
+
+  // Another participant is unaffected: the window is per (album, uploader).
+  const bruno = await participant(h, "bruno@example.com");
+  assert.equal((await upload(h, h.crowd.id, bruno.cookie, "bruno-1")).status, 201);
+
+  // And so is a sibling crowd album, which has its own uploads_open and its own cap.
+  const other = await h.db.createAlbum({
+    eventId: h.event.id,
+    slug: "secondo",
+    name: "Secondo album",
+    kind: "crowd",
+  });
+  assert.equal((await upload(h, other.id, anna.cookie, "altro-1")).status, 201);
+});
+
+test("the burst gate counts sessions that were started, not photos that landed", async () => {
+  // An init that never completes still cost a presigned PUT, so a loop that inits and walks
+  // away has to count. This is why the fallback counts `upload_sessions` rather than photos.
+  const h = await harness({}, {}, { ALBUM_UPLOAD_MAX_PER_HOUR: "2" });
+  const anna = await participant(h, "anna@example.com");
+  const init = (n: number) => {
+    const bytes = Buffer.from(`abandoned-${n}`);
+    return h.app.request(
+      json(
+        "POST",
+        `/v1/albums/${h.crowd.id}/uploads/init`,
+        {
+          filename: "polaroid.jpg",
+          contentType: "image/jpeg",
+          sha256: sha256(bytes),
+          bytes: bytes.byteLength,
+        },
+        anna.cookie,
+      ),
+    );
+  };
+  assert.equal((await init(0)).status, 201);
+  assert.equal((await init(1)).status, 201);
+  assert.equal((await h.db.countAlbumPhotosByUploader(h.crowd.id, anna.user.id)), 0);
+  const third = await init(2);
+  assert.equal(third.status, 429);
+  assert.deepEqual(await third.json(), { error: MESSAGES.rateLimited });
+});
+
+test("ALBUM_UPLOAD_MAX_PER_HOUR = 0 disables the burst gate, and exempt IPs skip it", async () => {
+  const off = await harness({}, {}, { ALBUM_UPLOAD_MAX_PER_HOUR: "0" });
+  const anna = await participant(off, "anna@example.com");
+  for (let n = 0; n < 4; n += 1) {
+    assert.equal((await upload(off, off.crowd.id, anna.cookie, `off-${n}`)).status, 201);
+  }
+
+  // The test room's NAT: one IP, many participants, all behind the exempt CIDR.
+  const exempt = await harness(
+    {},
+    {},
+    { ALBUM_UPLOAD_MAX_PER_HOUR: "1", RATE_LIMIT_EXEMPT_IPS: "10.20.0.0/16" },
+  );
+  const bruno = await participant(exempt, "bruno@example.com");
+  const initFrom = (ip: string, n: number) => {
+    const bytes = Buffer.from(`nat-${ip}-${n}`);
+    return exempt.app.request(
+      new Request(`http://api.local/v1/albums/${exempt.crowd.id}/uploads/init`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          cookie: bruno.cookie,
+          "x-forwarded-for": ip,
+        },
+        body: JSON.stringify({
+          filename: "polaroid.jpg",
+          contentType: "image/jpeg",
+          sha256: sha256(bytes),
+          bytes: bytes.byteLength,
+        }),
+      }),
+    );
+  };
+  for (let n = 0; n < 3; n += 1) {
+    assert.equal((await initFrom("10.20.33.44", n)).status, 201, `exempt attempt ${n}`);
+  }
+  // The same account from an IP outside the CIDR is gated again — and it is gated at once,
+  // because the exemption skips the CHECK and not the RECORDING: the database fallback
+  // counts `upload_sessions` rows, and the three exempt inits wrote three of them. This is
+  // main's behaviour too, and it is the honest one for a count of what actually happened.
+  // (The Redis path differs: an exempt call never reaches the INCR. Documented, not a bug —
+  // the two paths agree on the common case, where nothing is exempt.)
+  assert.equal((await initFrom("198.51.100.7", 0)).status, 429);
+});
+
 // ---- Section G, hard rule: the personal match galleries are untouched ---------------------
 
 test("a personal match gallery still works, and a withheld photo leaves it", async () => {
