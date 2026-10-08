@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { Screen, CheckIcon } from "../ui";
+import { Screen } from "../ui";
 import { api, EVENT_SLUG } from "../lib/api";
 import {
   CHALLENGE_STEPS, LivenessError, STEP_LABELS, cameraSupported,
@@ -64,7 +64,7 @@ export default function Selfie() {
 
   if (phase === "consent") {
     return (
-      <Screen tabbar>
+      <Screen>
         <form className="stack" onSubmit={saveConsent}>
           <div>
             <h1>Scatta un selfie</h1>
@@ -72,7 +72,6 @@ export default function Selfie() {
           </div>
           <label className="check">
             <input type="checkbox" checked={accepted} onChange={(e) => setAccepted(e.target.checked)} />
-            <span className="box"><CheckIcon /></span>
             <span className="check-label">{CONSENT_TEXT}</span>
           </label>
           <div className="reassure">
@@ -91,7 +90,7 @@ export default function Selfie() {
   if (phase === "capture") {
     const challenging = mode === "camera" && !file;
     return (
-      <Screen tabbar>
+      <Screen>
         <form className="stack" onSubmit={send}>
           <div>
             <h1>Scatta un selfie</h1>
@@ -204,7 +203,7 @@ function SearchResult() {
   }, []);
   const ready = status === "ready";
   return (
-    <Screen center tabbar>
+    <Screen center>
       <div className="stack" style={{ textAlign: "center" }}>
         <h1>{ready ? "Le tue foto sono pronte" : "Confronto in corso…"}</h1>
         <p className="dek">{ready ? "Apri la tua galleria." : "Ci vuole qualche secondo. Puoi chiudere la pagina: ti avvisiamo per email."}</p>

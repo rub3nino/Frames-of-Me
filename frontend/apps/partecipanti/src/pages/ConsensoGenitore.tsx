@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Screen, CheckIcon } from "../ui";
+import { Screen } from "../ui";
 import { api } from "../lib/api";
 
 export default function ConsensoGenitore() {
@@ -59,12 +59,10 @@ export default function ConsensoGenitore() {
 
         <label className="check">
           <input type="checkbox" checked={c1} onChange={(e) => setC1(e.target.checked)} />
-          <span className="box"><CheckIcon /></span>
           <span className="check-label">Confermo di essere il genitore o tutore del minore indicato.</span>
         </label>
         <label className="check">
           <input type="checkbox" checked={c2} onChange={(e) => setC2(e.target.checked)} />
-          <span className="box"><CheckIcon /></span>
           <span className="check-label">Acconsento all'uso del selfie del minore per riconoscerlo nelle foto dell'evento. Il selfie viene cancellato dopo la ricerca.</span>
         </label>
 

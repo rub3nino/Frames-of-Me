@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { AppBar, TabBar } from "../ui";
+import { AppBar } from "../ui";
 import { api, EVENT_SLUG } from "../lib/api";
 
 type Item = { photoId: string; thumbUrl: string; webUrl: string; score: number; source: "match" | "attach"; createdAt?: string };
@@ -103,7 +103,7 @@ export default function Galleria() {
   return (
     <>
       <AppBar />
-      <main className="screen screen--tabbar" style={{ maxWidth: 820 }}>
+      <main className="screen screen--wide" style={{ maxWidth: 820 }}>
         {!resp && <div className="gallery-grid">{Array.from({ length: 8 }).map((_, i) => <div key={i} className="skeleton" style={{ aspectRatio: "4/5" }} />)}</div>}
 
         {status === "queued" && (
@@ -181,8 +181,6 @@ export default function Galleria() {
       {viewer !== null && items[viewer] && (
         <PhotoViewer slug={slug} items={items} index={viewer} onIndex={setViewer} onClose={() => setViewer(null)} />
       )}
-
-      <TabBar />
     </>
   );
 }

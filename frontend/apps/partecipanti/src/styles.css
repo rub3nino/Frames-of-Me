@@ -1,103 +1,224 @@
-/* Participant app shell — mobile-first, phone-like column on desktop.
-   Reuses the design-system components; adds only the app frame. */
-body { background: var(--c-canvas); }
+/* ============================================================================
+   Frames of Me — app partecipante: regole di pagina, non del design system
 
-.appbar-c { position: sticky; top: 0; z-index: var(--z-header); height: var(--header-h);
-  display: flex; align-items: center; justify-content: center; padding-inline: var(--s-5);
-  background: var(--mat-bar); backdrop-filter: var(--mat-blur); -webkit-backdrop-filter: var(--mat-blur);
-  border-bottom: 1px solid var(--c-line); }
-.appbar-c .brand { display: inline-flex; align-items: center; gap: var(--s-2); color: var(--c-ink); font-weight: var(--fw-semibold); font-size: 1.0625rem; letter-spacing: var(--tr-tight); }
-.appbar-c .brand svg { width: 26px; height: 26px; }
+   Tutto qui è composizione di primitive che esistono già in `components.css`
+   (.btn, .field, .check, .box, .callout, .empty, .skel, .chip, .esito,
+   .score, .segmented, .summary, .mini-tappe, .toast). Nessun colore proprio,
+   nessun ruolo nuovo: solo `var(--…)` dei RUOLI della prima metà di
+   `tokens.css`. Gli alias di transizione in fondo a quel file non sono citati
+   da nessuna riga di questo foglio: quando quel blocco verrà cancellato, qui
+   non si rompe niente.
 
-.screen { width: 100%; max-width: 460px; margin-inline: auto; padding: var(--s-6) var(--s-5) var(--s-9); }
-.screen-center { min-height: calc(100dvh - var(--header-h)); display: grid; align-content: center; }
-.screen h1 { font-size: var(--fs-h1); }
-.screen .dek { color: var(--c-ink-3); font-size: var(--fs-sm); margin-top: var(--s-2); }
-.stack > * + * { margin-top: var(--s-4); }
+   Le uniche misure scritte a mano sono tre larghezze di colonna e le
+   proporzioni delle foto, perché `tokens.css` non ha un ruolo per la
+   larghezza di una pagina: la pagina di accesso le scrive così da prima, e
+   ognuna porta il motivo accanto.
+   ============================================================================ */
 
-/* age choice (radio cards) */
-.agecards { display: grid; gap: var(--s-3); }
-.agecard { display: flex; align-items: center; gap: var(--s-3); padding: var(--s-4); border: 1px solid var(--c-line-2); border-radius: var(--r-md); cursor: pointer; transition: border-color var(--dur-2), background var(--dur-2); }
-.agecard:hover { border-color: var(--c-ink-4); }
-.agecard input { accent-color: var(--c-accent); width: 20px; height: 20px; }
-.agecard.sel { border-color: var(--c-accent); background: var(--c-accent-soft); }
-.agecard .t { display: block; font-weight: var(--fw-medium); }
-.agecard .s { display: block; font-size: var(--fs-xs); color: var(--c-ink-3); margin-top: 2px; }
+body { background: var(--surface-page); }
 
-/* selfie / liveness */
-.consent-text { font-size: var(--fs-sm); color: var(--c-ink-2); line-height: 1.55; }
-.reassure { display: flex; gap: var(--s-3); align-items: flex-start; padding: var(--s-4); border-radius: var(--r-md);
-  background: var(--c-success-soft); color: var(--c-success-ink); font-size: var(--fs-sm); line-height: 1.5; }
-.reassure svg { width: 20px; height: 20px; flex: none; margin-top: 1px; }
-.live { display: grid; gap: var(--s-4); justify-items: center; }
-.live-frame { position: relative; width: 100%; max-width: 300px; aspect-ratio: 3/4; max-height: 42vh;
-  border-radius: var(--r-xl); overflow: hidden; background: #0b0b0c; }
-.live-frame video { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); } /* mirror preview */
-.live-guide { position: absolute; inset: 0; pointer-events: none;
-  background:
-    radial-gradient(42% 32% at 50% 44%, transparent 98%, rgba(0,0,0,.28) 100%); }
-.live-guide::before { content:""; position:absolute; left:50%; top:44%; width:58%; height:62%; transform:translate(-50%,-50%);
-  border: 1.5px dashed rgba(255,255,255,.7); border-radius: 50%; }
-.live-steps { display: flex; gap: 8px; list-style: none; padding: 0; margin: 0; }
-.live-steps li { width: 26px; height: 4px; border-radius: 999px; background: var(--c-line-2); }
-.live-steps li[data-state="active"] { background: var(--c-accent); }
-.live-steps li[data-state="done"] { background: var(--c-success); }
-.live-step { font-weight: var(--fw-medium); color: var(--c-ink); text-align: center; }
-.live-hint { font-size: var(--fs-xs); color: var(--c-ink-3); text-align: center; }
-.preview { width: 100%; max-width: 300px; aspect-ratio: 3/4; object-fit: cover; border-radius: var(--r-xl); margin-inline: auto; display: block; }
-.shutter { width: 72px; height: 72px; border-radius: 50%; background: var(--c-accent); display: grid; place-items: center; color: #fff;
-  box-shadow: 0 0 0 5px var(--c-surface), 0 0 0 7px var(--c-line-2); }
-.shutter svg { width: 28px; height: 28px; }
+/* --- Il guscio ---------------------------------------------------------------
+   Una barra alta 48 px e una colonna. Niente barra laterale, niente percorso,
+   niente barra in fondo: il perché sta in `ui.tsx`. */
+.appbar {
+  position: sticky; top: 0; z-index: var(--z-panel);
+  height: var(--topbar-h);
+  display: flex; align-items: center; justify-content: center; gap: var(--space-3);
+  padding-inline: var(--space-4);
+  background: var(--surface-page);
+  border-bottom: 1px solid var(--line-subtle);
+}
+/* Con un'azione i due elementi vanno ai capi della riga. */
+.appbar[data-azione] { justify-content: space-between; }
+.appbar__marca {
+  display: inline-flex; align-items: center; gap: var(--space-2);
+  color: var(--text-primary);
+  font-size: var(--text-md); font-weight: var(--weight-semibold); letter-spacing: -0.01em;
+}
+.marchio { width: 22px; height: 22px; }
 
-.center-glyph { width: 56px; height: 56px; color: var(--c-accent); margin: 0 auto var(--s-5); display:block; }
-.masked { font-family: var(--font-mono); }
-.muted-link { background: none; border: 0; color: var(--c-accent-ink); font: inherit; cursor: pointer; padding: 0; text-decoration: underline; text-underline-offset: 2px; }
+/* 460 px: la colonna del telefono, tenuta anche sul desktop perché il flusso
+   è una frase e non una tabella. 820 px solo per la griglia di foto. */
+.screen { width: 100%; max-width: 460px; margin-inline: auto; padding: var(--space-6) var(--space-5) var(--space-10); }
+.screen--wide { max-width: 820px; }
+.screen-center { min-height: calc(100dvh - var(--topbar-h)); display: grid; align-content: center; }
 
-/* Reserve space for the fixed tabbar on authenticated pages */
-.screen--tabbar { padding-bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom) + var(--s-6)); }
-.screen-center.screen--tabbar { min-height: calc(100dvh - var(--header-h) - var(--tabbar-h)); }
+/* --- Ritmo verticale --------------------------------------------------------
+   20 tra i blocchi, 8 dentro un gruppo: i due gradini di `tokens.css`, non
+   una terza misura inventata. */
+.colonna { display: flex; flex-direction: column; gap: var(--space-5); }
+.gruppo  { display: flex; flex-direction: column; gap: var(--space-2); }
 
-/* ---- Photo viewer (full-screen single photo) -------------------------- */
-.viewer { position: fixed; inset: 0; z-index: var(--z-toast); display: grid;
-  grid-template-rows: 1fr auto; background: #0b0b0c; padding: max(var(--s-4), env(safe-area-inset-top)) var(--s-4) max(var(--s-4), env(safe-area-inset-bottom));
-  animation: viewer-in var(--dur-3) var(--ease-out); }
-@keyframes viewer-in { from { opacity: 0; } to { opacity: 1; } }
-@media (prefers-reduced-motion: reduce) { .viewer { animation: none; } }
-.viewer-stage { position: relative; min-height: 0; display: grid; place-items: center; }
-.viewer-img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: var(--r-md); }
-.viewer-close { position: absolute; top: 0; right: 0; width: 42px; height: 42px; border-radius: 50%;
-  display: grid; place-items: center; color: #fff; background: rgba(0,0,0,.4); backdrop-filter: blur(6px); }
-.viewer-close svg { width: 22px; height: 22px; }
-.viewer-nav { position: absolute; top: 50%; transform: translateY(-50%); width: 44px; height: 44px; border-radius: 50%;
-  display: grid; place-items: center; color: #fff; background: rgba(0,0,0,.4); backdrop-filter: blur(6px);
-  transition: opacity var(--dur-2); }
-.viewer-nav:disabled { opacity: .3; pointer-events: none; }
-.viewer-nav svg { width: 24px; height: 24px; }
-.viewer-prev { left: 0; }
-.viewer-next { right: 0; }
-.viewer-bar { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); padding-top: var(--s-4); }
-.viewer-count { color: rgba(255,255,255,.8); font-size: var(--fs-sm); font-feature-settings: "tnum" 1; }
+/* Il titolo di pagina è 24. I 30 px sono dell'accesso, e solo suoi. */
+.titolo {
+  font-size: var(--text-xl); font-weight: var(--weight-semibold);
+  letter-spacing: -0.01em; line-height: var(--leading-tight);
+}
+.dek { font-size: var(--text-md); line-height: var(--leading-prose); color: var(--text-secondary); }
+.prosa { font-size: var(--text-md); line-height: var(--leading-prose); color: var(--text-secondary); }
+.prosa b, .prosa strong { color: var(--text-primary); font-weight: var(--weight-medium); }
+.nota {
+  font-size: var(--text-xs); line-height: var(--leading-snug); color: var(--text-tertiary);
+  border-top: 1px solid var(--line-subtle); padding-top: var(--space-4);
+}
+.riga { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-3); }
+.riga--fine { justify-content: flex-end; }
+.mascherata { font-family: var(--font-mono); }
+.num { font-variant-numeric: tabular-nums; }
 
-/* Open-in-viewer affordance on a gallery cell (selection stays on the body) */
-.cell-open { position: absolute; bottom: 10px; right: 10px; width: 30px; height: 30px; border-radius: 50%;
-  display: grid; place-items: center; color: var(--c-ink); background: rgba(255,255,255,.7); backdrop-filter: blur(6px);
-  border: 1.5px solid #fff; box-shadow: var(--shadow-sm); transition: background var(--dur-2), transform var(--dur-2) var(--ease-out); }
-.cell-open:hover { background: #fff; transform: scale(1.05); }
-.cell-open svg { width: 16px; height: 16px; }
+/* --- Dichiarazioni da spuntare ----------------------------------------------
+   Una casella per frase, dentro un `.box`, divise da una linea. Non sono
+   interruttori: non accendono una modalità, restano nella frase, e il segno
+   è blu perché il significato sta nelle parole accanto. */
+.dichiara { padding: var(--space-2) var(--space-4); }
+.dichiara__voce {
+  display: flex; align-items: flex-start; gap: var(--space-2);
+  padding: var(--space-3) 0; cursor: pointer;
+  font-size: var(--text-base); line-height: var(--leading-snug);
+}
+.dichiara__voce + .dichiara__voce { border-top: 1px solid var(--line-subtle); }
+.dichiara__voce input { margin-top: 2px; }
 
-/* ---- I miei dati (GDPR self-service) ---------------------------------- */
-.block { padding-block: var(--s-6); border-top: 1px solid var(--c-line); }
-.block:first-of-type { border-top: 0; padding-top: 0; }
-.block h3 { font-size: var(--fs-h3); margin-bottom: var(--s-2); }
-.block p { color: var(--c-ink-2); font-size: var(--fs-sm); line-height: 1.55; }
-.block .actions { margin-top: var(--s-4); }
-.block .banner { margin-top: var(--s-3); }
-.status-row { display: flex; align-items: center; gap: var(--s-3); margin-bottom: var(--s-3); }
-.status-row .when { color: var(--c-ink-3); font-size: var(--fs-sm); font-feature-settings: "tnum" 1; }
-.danger-zone { margin-top: var(--s-5); border: 1px solid var(--c-danger-soft); border-radius: var(--r-lg); padding: var(--s-5); }
-.danger-zone h3 { color: var(--c-danger-ink); }
-.danger-zone p { color: var(--c-ink-2); }
-.modal .modal-row { display: flex; justify-content: flex-end; gap: var(--s-3); margin-top: var(--s-6); }
+/* --- Selfie: la ripresa -----------------------------------------------------
+   Il fondo del quadro è la superficie inversa, che è l'unico nero del sistema.
+   Nessuna sfumatura sopra il viso: i gradienti sono vietati, quindi la guida
+   è la cornice di messa a fuoco del marchio, disegnata a tratto. */
+.ripresa { display: flex; flex-direction: column; align-items: center; gap: var(--space-4); }
+.ripresa__quadro {
+  position: relative; width: 100%; max-width: 300px;
+  aspect-ratio: 3 / 4; max-height: 46vh;
+  border-radius: var(--radius-md); overflow: hidden;
+  background: var(--surface-inverse);
+}
+.ripresa__quadro video, .ripresa__quadro img { width: 100%; height: 100%; object-fit: cover; }
+/* L'anteprima è specchiata perché chi si guarda si aspetta uno specchio; lo
+   scatto che parte NON lo è (lo fa `captureFrame`). */
+.ripresa__quadro video { transform: scaleX(-1); }
+.ripresa__guida { position: absolute; inset: 0; pointer-events: none; color: var(--text-on-inverse); }
+.ripresa__guida svg { width: 100%; height: 100%; }
+.ripresa__passo { font-size: var(--text-md); font-weight: var(--weight-medium); text-align: center; }
+.ripresa__aiuto { font-size: var(--text-sm); color: var(--text-tertiary); text-align: center; }
+
+/* --- Attesa e galleria: la griglia ------------------------------------------
+   104 px è la cella minima: tre per riga su un telefono piccolo, e la foto
+   resta riconoscibile. 4/5 è il ritaglio del ritratto. */
+.griglia { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: var(--space-2); }
+.cella { position: relative; }
+.cella__foto {
+  aspect-ratio: 4 / 5; overflow: hidden;
+  border-radius: var(--radius-md); background: var(--surface-sunken);
+}
+.cella__foto img { width: 100%; height: 100%; object-fit: cover; }
+/* Il blu è selezione: è esattamente il suo mestiere. Ma la selezione non è
+   solo colore — porta il segno di spunta qui sotto. */
+.cella[aria-selected="true"] .cella__foto { box-shadow: inset 0 0 0 2px var(--accent); }
+.cella__segno {
+  position: absolute; top: var(--space-2); left: var(--space-2);
+  width: 20px; height: 20px; border-radius: var(--radius-full);
+  display: grid; place-items: center;
+  background: var(--surface-raised); color: var(--text-tertiary);
+  box-shadow: var(--shadow-raised);
+}
+.cella__segno svg { width: 12px; height: 12px; }
+.cella[aria-selected="true"] .cella__segno { background: var(--accent); color: var(--text-on-inverse); }
+.cella[aria-selected="false"] .cella__segno svg { visibility: hidden; }
+.cella__apri { position: absolute; bottom: var(--space-2); right: var(--space-2); }
+.cella__dato {
+  display: flex; align-items: center; gap: var(--space-2);
+  padding-top: var(--space-1); font-size: var(--text-xs); color: var(--text-tertiary);
+}
+/* Lo scheletro prende la forma della cella che arriverà. Respira, non gira. */
+.cella--attesa { height: auto; aspect-ratio: 4 / 5; border-radius: var(--radius-md); }
+
+.sezione__testa { display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-3); }
+.sezione__testa h2 { font-size: var(--text-lg); font-weight: var(--weight-semibold); }
+/* Il titolo di gruppo apribile è un pulsante, non un titolo colorato. Non
+   anima: aprire un gruppo è un filtro, e sui filtri non c'è movimento. */
+.sezione__apri {
+  display: flex; align-items: center; gap: var(--space-2);
+  padding: 0; border: 0; background: none; color: var(--text-primary); cursor: pointer;
+  font: inherit;
+}
+.sezione__apri svg { width: 16px; height: 16px; color: var(--text-tertiary); }
+.sezione + .sezione { margin-top: var(--space-8); }
+
+/* --- La barra della selezione -----------------------------------------------
+   È una `.summary`: una riga di riepilogo con le azioni, non un secondo nero
+   che galleggia. Resta appiccicata in fondo perché le foto scorrono. */
+.barra-sel {
+  position: sticky; bottom: 0; z-index: var(--z-panel);
+  margin-top: var(--space-5);
+  padding-bottom: max(var(--space-3), env(safe-area-inset-bottom));
+  box-shadow: var(--shadow-float);
+}
+.barra-sel__n { font-weight: var(--weight-semibold); font-variant-numeric: tabular-nums; }
+.barra-sel__fine { margin-left: auto; display: flex; align-items: center; gap: var(--space-2); }
+
+/* --- Il visore a tutto schermo ----------------------------------------------
+   Una foto sola sul nero del sistema. Niente vetro sotto i pulsanti: sono
+   `.btn` normali, che su questo fondo si leggono già. */
+.visore {
+  position: fixed; inset: 0; z-index: var(--z-overlay);
+  display: grid; grid-template-rows: 1fr auto;
+  gap: var(--space-3);
+  padding: max(var(--space-4), env(safe-area-inset-top)) var(--space-4) max(var(--space-4), env(safe-area-inset-bottom));
+  background: var(--surface-inverse);
+  animation: visore-in var(--dur-base) var(--ease-out);
+}
+@keyframes visore-in { from { opacity: 0; } to { opacity: 1; } }
+.visore__scena { position: relative; min-height: 0; display: grid; place-items: center; }
+.visore__foto { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: var(--radius-md); }
+.visore__chiudi { position: absolute; top: 0; right: 0; }
+.visore__prec, .visore__succ { position: absolute; top: 50%; transform: translateY(-50%); }
+.visore__prec { left: 0; }
+.visore__succ { right: 0; }
+.visore__barra { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); }
+.visore__conta { color: var(--text-on-inverse); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
+.visore__fine { margin-left: auto; display: flex; gap: var(--space-2); }
+/* Sul nero il punteggio perde il contrasto dei suoi grigi: le tacche spente
+   diventano il tratto chiaro della superficie inversa. */
+.visore .score { color: var(--text-on-inverse); }
+.visore .score__bar i { background: color-mix(in oklab, var(--text-on-inverse) 25%, transparent); }
+.visore .score__bar i.on { background: var(--text-on-inverse); }
+
+/* --- I miei dati ------------------------------------------------------------
+   Sezioni divise da una linea, non da un riquadro dentro la pagina: così non
+   nasce la scatola nella scatola. */
+.sezione-dati { padding-block: var(--space-6); border-top: 1px solid var(--line-subtle); }
+.sezione-dati:first-of-type { border-top: 0; padding-top: var(--space-4); }
+.sezione-dati h2 { font-size: var(--text-lg); font-weight: var(--weight-semibold); margin-bottom: var(--space-2); }
+.sezione-dati p { color: var(--text-secondary); line-height: var(--leading-body); }
+.sezione-dati > * + * { margin-top: var(--space-3); }
+
+/* --- La conferma irreversibile ----------------------------------------------
+   Il sistema non ha un dialogo, e inventarne uno è la cosa che l'identità
+   vieta per prima: questo è il `<dialog>` del browser vestito con il
+   riquadro del sistema. L'ombra «float» porta già il suo filo di 1 px,
+   quindi NON si aggiunge un bordo: ombra e bordo insieme sono vietati. */
+.conferma {
+  width: min(400px, calc(100vw - 2 * var(--space-4)));
+  padding: var(--space-5);
+  border: 0; border-radius: var(--radius-lg);
+  background: var(--surface-raised); color: var(--text-primary);
+  box-shadow: var(--shadow-float);
+}
+.conferma::backdrop { background: color-mix(in oklab, var(--surface-inverse) 45%, transparent); }
+.conferma h2 { font-size: var(--text-lg); font-weight: var(--weight-semibold); }
+.conferma > * + * { margin-top: var(--space-3); }
+/* Primario a sinistra, Annulla subito dopo. Annulla non è rosso. */
+.conferma__piede { display: flex; gap: var(--space-2); margin-top: var(--space-5); }
+
+/* --- Elenco di cosa viene cancellato ---------------------------------------
+   Numeri tabellari, formato italiano, e un dato assente è un trattino. */
+.elenco-dati { list-style: none; padding: 0; display: grid; gap: var(--space-1); font-size: var(--text-sm); }
+.elenco-dati li { display: flex; justify-content: space-between; gap: var(--space-4); }
+.elenco-dati dt, .elenco-dati .v { font-variant-numeric: tabular-nums; }
+.elenco-dati .k { color: var(--text-secondary); }
+
+/* --- I toast ----------------------------------------------------------------
+   Il componente è già in fondo al centro. Qui si aggiunge solo il rispetto
+   della tacca del telefono: il fondo resta inchiostro e cambia solo il glifo. */
+.toasts { bottom: max(var(--space-6), env(safe-area-inset-bottom)); }
 
 /* ============================================================================
    Accesso — regole di pagina, non del design system

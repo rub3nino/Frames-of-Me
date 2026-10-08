@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { AppBar, TabBar } from "../ui";
+import { AppBar } from "../ui";
 import { api } from "../lib/api";
 
 /* GDPR self-service for the participant.
@@ -25,7 +25,7 @@ export default function IMieiDati() {
   return (
     <>
       <AppBar />
-      <main className="screen screen--tabbar">
+      <main className="screen screen--wide">
         <h1 style={{ marginBottom: "var(--s-6)" }}>I miei dati</h1>
 
         {/* --- Consent status -------------------------------------------- */}
@@ -108,7 +108,6 @@ export default function IMieiDati() {
       </div>
 
       {toast && <div className="toast">{toast}</div>}
-      <TabBar />
     </>
   );
 }
