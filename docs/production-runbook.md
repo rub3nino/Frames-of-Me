@@ -93,7 +93,14 @@ so without it those orphans would accumulate with nothing to clear them.
 
 Before opening an event to participants:
 
-1. Run `pnpm test` and require zero failures; `pnpm -r typecheck` clean.
+1. Run `pnpm test` and require zero failures; `pnpm -r typecheck` clean. **A clean summary is not
+   enough on its own**: `packages/db/src/pagination.test.ts` guards its suite with
+   `describe(..., { skip })`, so without a *migrated* `DATABASE_URL` the whole thing collapses
+   into one **passing** `# SKIP` line and its 13 tests are counted in neither `# tests` nor
+   `# skipped` — the run reads clean at 422 tests instead of 435. Export `DATABASE_URL` and
+   `TEST_DATABASE_URL`, apply the schema with `node --import tsx packages/db/src/migrate.ts`
+   (not `pnpm db:migrate`, which hardcodes `--env-file=.env`), and check the total is 435 before
+   calling the gate passed.
 2. Apply all migrations through `packages/db/src/migrate.ts` (`pnpm db:migrate`). The whole run is
    one transaction and is tracked by filename, so a partial apply is not a state you can reach.
 3. Confirm object store lifecycle, backup restore and CDN signed URL behaviour in a staging event.
