@@ -1129,6 +1129,43 @@ test("the upload route refuses every video content type (decision 4, frozen)", a
   }
 });
 
+test("complete refuses bytes stored under a content type the PUT was not signed for", async () => {
+  // Ported from main's fda8d64 — and this is the riskier of the two upload paths, because
+  // it is the one any signed-in participant can reach. `albumUploadInitBodySchema` keeps the
+  // DECLARED type to image/jpeg or image/png (the test above), but S3 stores whatever
+  // `Content-Type` the client actually sent, so the declared type alone proves nothing.
+  const h = await harness();
+  const anna = await participant(h, "anna@example.com");
+  const bytes = Buffer.from("MZ\u0090\u0000not an image at all");
+  const init = await h.app.request(
+    json(
+      "POST",
+      `/v1/albums/${h.crowd.id}/uploads/init`,
+      {
+        filename: "polaroid.jpg",
+        contentType: "image/jpeg",
+        sha256: sha256(bytes),
+        bytes: bytes.byteLength,
+      },
+      anna.cookie,
+    ),
+  );
+  assert.equal(init.status, 201);
+  const created = (await init.json()) as { id: string; objectKey: string };
+  // Right key, right byte count, wrong stored content type.
+  await h.objects.put(created.objectKey, bytes, "application/x-msdownload");
+  const done = await h.app.request(
+    json("POST", `/v1/albums/${h.crowd.id}/uploads/${created.id}/complete`, { parts: [] }, anna.cookie),
+  );
+  assert.equal(done.status, 400);
+  assert.deepEqual(await done.json(), { error: MESSAGES.validation });
+  assert.equal((await h.db.findUploadSession(created.id))?.status, "aborted");
+  // The bytes go back out, and no photo row was ever created.
+  assert.ok(h.objects.deleted.includes(created.objectKey));
+  assert.equal(h.objects.objects.has(created.objectKey), false);
+  assert.equal(await h.db.findPhotoByAlbumSha(h.crowd.id, sha256(bytes)), null);
+});
+
 // ---- Section G, hard rule: the personal match galleries are untouched ---------------------
 
 test("a personal match gallery still works, and a withheld photo leaves it", async () => {

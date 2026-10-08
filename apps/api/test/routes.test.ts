@@ -471,6 +471,46 @@ test("upload init needs membership, rejects oversize files, and binds the byte c
   assert.equal(session?.bytes, 1234);
 });
 
+test("upload complete rejects bytes stored under a content type the PUT was not signed for", async () => {
+  // Ported from main's fda8d64. The presigned PUT is issued FOR `image/jpeg`; S3 keeps
+  // whatever `Content-Type` the client sent. Without the check the signed URL is a way to
+  // park arbitrary bytes in the bucket.
+  const h = await harness();
+  const photographer = await h.db.findUserByEmailRole(
+    "photographer@rephoto.local",
+    "photographer",
+  );
+  assert.ok(photographer);
+  const cookie = await sessionCookie(h.db, photographer.id);
+  const bytes = Buffer.from("MZ\u0090\u0000not an image at all");
+  const init = await h.app.request(
+    json(
+      "POST",
+      "/v1/uploads/init",
+      {
+        eventId: h.event.id,
+        filename: "a.jpg",
+        contentType: "image/jpeg",
+        sha256: sha256(bytes),
+        bytes: bytes.byteLength,
+      },
+      { cookie },
+    ),
+  );
+  assert.equal(init.status, 201);
+  const session = (await init.json()) as { id: string; objectKey: string };
+  // Same key, same byte count, a different stored content type.
+  await h.objects.put(session.objectKey, bytes, "application/x-msdownload");
+  const complete = await h.app.request(
+    json("POST", `/v1/uploads/${session.id}/complete`, { parts: [] }, { cookie }),
+  );
+  assert.equal(complete.status, 400);
+  assert.deepEqual(await complete.json(), { error: MESSAGES.validation });
+  assert.equal((await h.db.findUploadSession(session.id))?.status, "aborted");
+  // And the bytes are gone, not just unreferenced.
+  assert.equal(h.objects.objects.has(session.objectKey), false);
+});
+
 test("upload complete rejects a byte mismatch and aborts the session", async () => {
   const h = await harness();
   const photographer = await h.db.findUserByEmailRole(

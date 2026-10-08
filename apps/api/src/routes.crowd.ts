@@ -160,6 +160,15 @@ export function registerCrowdRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       await discard(deps, session);
       throw new ApiError(400, MESSAGES.sizeMismatch);
     }
+    // Ported from main's fda8d64, and this is the higher-risk of the two paths because it is
+    // the one open to participants. `albumUploadInitBodySchema` restricts the declared type
+    // to image/jpeg or image/png and the PUT is signed for it, but S3 stores whatever
+    // `Content-Type` the client actually sent: without this check the signed URL is a way for
+    // any signed-in participant to park arbitrary bytes in the bucket.
+    if (stored.contentType !== session.contentType) {
+      await discard(deps, session);
+      throw new ApiError(400, MESSAGES.validation);
+    }
     // The cap again, on the row count this time: two inits in flight must not both land.
     try {
       await assertBelowCap(deps, album, user.id);

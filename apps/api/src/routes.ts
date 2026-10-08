@@ -563,6 +563,13 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       await deps.objects.delete(session.objectKey);
       throw new ApiError(status, message);
     };
+    // Ported from main's fda8d64. The presigned PUT is issued FOR a content type, but S3
+    // stores whatever `Content-Type` the client actually sent, so without this the signed
+    // URL is a way to park arbitrary bytes in the bucket under a type of the uploader's
+    // choosing. The object goes back out with the session, exactly as a size mismatch does.
+    if (stored.contentType !== session.contentType) {
+      await discard(400, MESSAGES.validation);
+    }
     if (session.stage === "original" && session.photoId) {
       // Original of a web-first photo: no re-derive or re-index, only a deferred sha256 check.
       // The row is read right before the flip so a repeated complete (same session retried,
