@@ -211,6 +211,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const user = requireUser(c);
     requireRole(user, ["participant"]);
     const event = await loadEvent(deps, c.req.param("slug"));
+    await requireParticipantAccess(deps, user, event);
     const body = consentBodySchema.safeParse(await readJson(c));
     if (!body.success) throw new ApiError(400, MESSAGES.validation);
     const consent = await deps.db.insertConsent({
@@ -230,12 +231,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const user = requireUser(c);
     requireRole(user, ["participant"]);
     const event = await loadEvent(deps, c.req.param("slug"));
-    if (
-      event.access === "list" &&
-      !(await deps.db.isEventParticipant(event.id, user.email.toLowerCase()))
-    ) {
-      throw new ApiError(403, MESSAGES.notOnList);
-    }
+    await requireParticipantAccess(deps, user, event);
     if (!(await deps.db.hasActiveConsent(user.id, event.id))) {
       throw new ApiError(403, MESSAGES.consentRequired);
     }
@@ -276,6 +272,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const cursor = query.data.cursor ? decodeGalleryCursor(query.data.cursor) : undefined;
     if (cursor === null) throw new ApiError(400, MESSAGES.validation);
     const limit = query.data.limit;
+    await requireParticipantAccess(deps, user, event);
     const [latest, gallery, page] = await Promise.all([
       deps.db.latestMatchJob(user.id, event.id),
       deps.db.findGalleryByUser(user.id, event.id),
@@ -326,6 +323,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const user = requireUser(c);
     requireRole(user, ["participant"]);
     const event = await loadEvent(deps, c.req.param("slug"));
+    await requireParticipantAccess(deps, user, event);
     const body = galleryDownloadBodySchema.safeParse(await readJson(c));
     if (!body.success) throw new ApiError(400, MESSAGES.validation);
     const photos = await ownedPhotos(deps, user, event, body.data.photoIds);
@@ -344,6 +342,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     requireRole(user, ["participant"]);
     if (!isTrustedFormOrigin(c, deps)) throw new ApiError(403, MESSAGES.forbidden);
     const event = await loadEvent(deps, c.req.param("slug"));
+    await requireParticipantAccess(deps, user, event);
     const request = await readZipRequest(c);
     const photos = await ownedPhotos(deps, user, event, request.photoIds);
     const entries = photos.map((photo, index) => ({
@@ -1247,6 +1246,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const user = requireUser(c);
     requireRole(user, ["participant"]);
     const event = await loadEvent(deps, c.req.param("slug"));
+    await requireParticipantAccess(deps, user, event);
     const body = galleryFeedbackBodySchema.safeParse(await readJson(c));
     if (!body.success) throw new ApiError(400, MESSAGES.validation);
     // Only photos of the caller's own gallery can be judged.
@@ -1553,6 +1553,57 @@ async function loadEvent(deps: AppDeps, slug: string) {
   const event = await deps.db.findEventBySlug(slug);
   if (!event) throw new ApiError(404, MESSAGES.notFound);
   return event;
+}
+
+/**
+ * Enforces the event allowlist consistently for every participant-facing v5-era route
+ * (ported from `main`, where the same check had drifted into one route and was missing from
+ * nine others; on v6 it was inline in `POST /v1/events/:slug/selfie` and nowhere else).
+ *
+ * What it asserts, and deliberately no more: on an `access = 'list'` event the caller's email
+ * is on the imported participant list. On an `access = 'open'` event it is a no-op, because
+ * "open" IS the policy decision that any signed-in participant may take part.
+ *
+ * Why this is NOT `assertEventMember` (routes.crowd.ts), which additionally requires an
+ * `event_members` row. Membership is written by self-registration with an event code, by
+ * accepting an invite, by the 013 backfill and by a crowd upload. It is NOT written by the
+ * magic-link flow, which is the event-day fallback (RUN.md) and is not event-scoped at all:
+ * a magic link signs you in, it does not join you to anything. Gating the personal match
+ * gallery, its consent row or its download on membership would therefore lock out every
+ * magic-link participant — and the personal galleries must behave exactly as before (section
+ * G, hard rule). The stricter gate stays where v6 put it: on the crowd surfaces, which are
+ * about reading and reporting OTHER people's photos.
+ *
+ * Not applied to `routes.privacy.ts` on purpose either: a participant must be able to read
+ * their consent state and withdraw it even after an admin has taken them off the list.
+ *
+ * Where main's ten call sites live on v6 — all ten are covered, six here and four by the
+ * album-model gates, which are the same check or stricter:
+ *
+ * | main route                                      | v6 |
+ * |-------------------------------------------------|----|
+ * | `POST /v1/events/:slug/consent`                 | this helper |
+ * | `POST /v1/events/:slug/selfie`                  | this helper (was the one inline check) |
+ * | `GET  /v1/events/:slug/gallery`                 | this helper |
+ * | `POST /v1/events/:slug/gallery/download`        | this helper |
+ * | `POST /v1/events/:slug/gallery/zip`             | this helper |
+ * | `POST /v1/events/:slug/gallery/feedback`        | this helper |
+ * | `GET  /v1/events/:slug/public-gallery`          | `GET /v1/albums/:albumId/photos` → `assertEventMember` |
+ * | `POST .../public-gallery/download`              | `POST /v1/albums/:albumId/photos/download` → `assertEventMember` |
+ * | `POST .../public-gallery/:photoId/report`       | `POST /v1/photos/:id/report` → `assertEventMember` |
+ * | `POST /v1/uploads/init` (the public branch)     | `POST /v1/albums/:albumId/uploads/init` → `assertOnEventList` |
+ */
+async function requireParticipantAccess(
+  deps: AppDeps,
+  user: UserRow,
+  event: EventRow,
+): Promise<void> {
+  if (
+    event.access === "list" &&
+    !(await deps.db.isEventParticipant(event.id, user.email.toLowerCase()))
+  ) {
+    throw new ApiError(403, MESSAGES.notOnList);
+  }
 }
 
 async function ownUpload(deps: AppDeps, id: string, photographerId: string) {

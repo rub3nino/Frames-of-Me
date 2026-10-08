@@ -868,6 +868,129 @@ test("selfie is refused when the event is list-based and the email is not on it"
   assert.equal(allowed.status, 202);
 });
 
+test("every participant route of a list-based event refuses an email that is not on the list", async () => {
+  // Ported from main's `requireParticipantAccess` (commit 8d80c59). On v6 the allowlist was
+  // checked in `POST /v1/events/:slug/selfie` and nowhere else, so consent, the gallery, its
+  // download, its zip and its feedback were all reachable by a signed-in participant who did
+  // not belong to the event. This locks all six down at once.
+  const h = await harness();
+  const admin = await h.db.findUserByEmailRole("admin@rephoto.local", "admin");
+  assert.ok(admin);
+  const adminCookie = await sessionCookie(h.db, admin.id);
+  assert.equal(
+    (
+      await h.app.request(
+        json("PATCH", `/v1/admin/events/${h.event.id}`, { access: "list" }, { cookie: adminCookie }),
+      )
+    ).status,
+    200,
+  );
+
+  const outsider = await h.db.createUser({ email: "outsider@example.com", role: "participant" });
+  const cookie = await sessionCookie(h.db, outsider.id);
+  // Seeded BEFORE the gate is exercised, so the 403s are the allowlist talking and not an
+  // empty gallery: without the gate these would be 200/201.
+  const seeded = await seedGallery(h, outsider.id, 1);
+  const photoId = seeded[0]!.photoId;
+
+  const attempts: Array<[string, Request]> = [
+    [
+      "consent",
+      json(
+        "POST",
+        `/v1/events/${h.event.slug}/consent`,
+        { textVersion: CONSENT_TEXT_VERSION, accepted: true },
+        { cookie },
+      ),
+    ],
+    [
+      "gallery",
+      new Request(`http://api.local/v1/events/${h.event.slug}/gallery`, { headers: { cookie } }),
+    ],
+    [
+      "gallery/download",
+      json("POST", `/v1/events/${h.event.slug}/gallery/download`, { photoIds: [photoId] }, { cookie }),
+    ],
+    [
+      "gallery/zip",
+      json("POST", `/v1/events/${h.event.slug}/gallery/zip`, { photoIds: [photoId] }, { cookie }),
+    ],
+    [
+      "gallery/feedback",
+      json(
+        "POST",
+        `/v1/events/${h.event.slug}/gallery/feedback`,
+        { photoId, verdict: "me" },
+        { cookie },
+      ),
+    ],
+  ];
+  for (const [name, request] of attempts) {
+    const response = await h.app.request(request);
+    assert.equal(response.status, 403, `${name} should be 403 before the import`);
+    assert.deepEqual(await response.json(), { error: MESSAGES.notOnList }, name);
+  }
+
+  // The same six calls succeed once the email is imported — the gate is the allowlist and
+  // nothing else (notably NOT an `event_members` row, which a magic-link participant never has).
+  assert.equal(
+    (
+      await h.app.request(
+        json(
+          "POST",
+          "/v1/admin/participants/import",
+          { eventId: h.event.id, emails: ["Outsider@Example.com"] },
+          { cookie: adminCookie },
+        ),
+      )
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      await h.app.request(
+        json(
+          "POST",
+          `/v1/events/${h.event.slug}/consent`,
+          { textVersion: CONSENT_TEXT_VERSION, accepted: true },
+          { cookie },
+        ),
+      )
+    ).status,
+    201,
+  );
+  const gallery = await h.app.request(
+    new Request(`http://api.local/v1/events/${h.event.slug}/gallery`, { headers: { cookie } }),
+  );
+  assert.equal(gallery.status, 200);
+  assert.equal(
+    (
+      await h.app.request(
+        json(
+          "POST",
+          `/v1/events/${h.event.slug}/gallery/download`,
+          { photoIds: [photoId] },
+          { cookie },
+        ),
+      )
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      await h.app.request(
+        json(
+          "POST",
+          `/v1/events/${h.event.slug}/gallery/feedback`,
+          { photoId, verdict: "me" },
+          { cookie },
+        ),
+      )
+    ).status,
+    201,
+  );
+});
+
 test("health reports 503 when the database does not answer", async () => {
   const h = await harness();
   const ok = await h.app.request("http://api.local/health");
