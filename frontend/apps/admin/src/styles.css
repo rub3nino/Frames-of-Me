@@ -112,14 +112,12 @@ body { background: var(--surface-page); }
 .topbar__cassetto { display: none; }
 
 /* --- Pagina ----------------------------------------------------------------
-   Massimo 1440 px: non c'è un ruolo per la larghezza di pagina (l'unico nome
-   stava negli alias di transizione, che vengono cancellati), quindi il numero
-   è qui con il motivo. Oltre 1440 una riga di tabella diventa illeggibile da
-   un capo all'altro.
+   `--page-w` è la pagina intera: oltre quella misura una riga di tabella non
+   si segue più da un capo all'altro.
    Margini laterali: 16 sotto 768, 24 sotto 1280, 32 da 1280, 64 oltre 1600,
    dove 1400 px di dati senz'aria si leggono male (REGOLE §8). */
 .pagina {
-  width: 100%; max-width: 1440px; margin-inline: auto;
+  width: 100%; max-width: var(--page-w); margin-inline: auto;
   padding: var(--space-6) var(--space-6) var(--space-16);
 }
 @media (min-width: 1280px) { .topbar { padding-inline: var(--space-8); } .pagina { padding-inline: var(--space-8); } }
@@ -175,16 +173,13 @@ body { background: var(--surface-page); }
 .motivo { font-size: var(--text-xs); color: var(--text-tertiary); max-width: 52ch; }
 
 /* --- Fuoco -----------------------------------------------------------------
-   Il fuoco visibile non si toglie (REGOLE §6), e in una console che si guida
-   da tastiera per ore non è un dettaglio: nella coda di moderazione «approva»
-   è un tasto solo. Questa regola è il pavimento della console — se `base.css`
-   dichiara l'anello, qui esce identico; se la sua dichiarazione è invalida
-   (`box-shadow: <colore>` non dipinge nulla), l'anello c'è comunque.
+   L'anello lo dipinge `base.css` per tutto il prodotto, e qui non si tocca:
+   in una console che si guida da tastiera per ore, con un tasto che distrugge
+   un file, non vedere il fuoco è il modo in cui si rifiuta la foto sbagliata.
+   Qui ci sono solo le due eccezioni che l'identità chiede.
+
    Nei campi l'anello esterno lascia il posto a bordo accento e alone, come
-   dice components.css: le due cose non si sommano. */
-.guscio :focus-visible, .accesso-pagina :focus-visible, .finestra :focus-visible, .panel-lat :focus-visible {
-  outline: 2px solid var(--focus-ring); outline-offset: 1px;
-}
+   dice components.css: le due cose non si sommano (REGOLE §5). */
 .input:focus-visible, .select:focus-visible, .textarea:focus-visible { outline: none; }
 /* Il corpo del pannello riceve il fuoco all'apertura, e la pagina lo riceve
    quando il pannello si chiude e chi l'aveva aperto non c'è più. Sono
