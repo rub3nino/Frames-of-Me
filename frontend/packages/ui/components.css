@@ -299,6 +299,43 @@
 }
 @media (max-width: 1024px) { .panel-lat { width: 100vw; } .panel__resize { display: none; } }
 
+/* --- Dialogo ----------------------------------------------------------------
+   REGOLE §4 lo richiede e dice anche cosa NON è: una conferma irreversibile è
+   un dialogo, **non** un pannello laterale, perché il pannello non è modale e
+   la pagina dietro resta viva. Qui invece la pagina deve essere inerte: si usa
+   l'elemento `<dialog>` nativo con `showModal()`, che rende inerte il resto
+   senza che nessuno debba costruire una trappola per il fuoco.
+
+   Il velo ha il suo ruolo (`--veil`) perché un agente che non lo trova se lo
+   inventa, e un colore inventato è un difetto. Raggio 12: i token lo chiamano
+   il raggio delle «finestre», ed è l'unico altro posto oltre l'accesso.
+
+   Nel piede, come nel pannello: primario a SINISTRA, Annulla subito dopo, e
+   Annulla non è rosso. Il pulsante distruttivo è `btn--primary.btn--danger` e
+   non è raggiungibile col solo Invio: chi lo costruisce lo tiene `disabled`
+   finché la presa d'atto non è spuntata. */
+.finestra {
+  max-width: min(520px, calc(100vw - 2 * var(--space-6)));
+  padding: 0; border: 1px solid var(--line-strong); border-radius: var(--radius-lg);
+  background: var(--surface-raised); color: var(--text-primary);
+  box-shadow: var(--shadow-float);
+}
+.finestra::backdrop { background: var(--veil); }
+.finestra__head { padding: var(--space-4) var(--space-5) 0; }
+.finestra__titolo { font-size: var(--text-md); font-weight: var(--weight-semibold); }
+.finestra__body { padding: var(--space-3) var(--space-5) var(--space-4); color: var(--text-secondary); }
+.finestra__body strong { color: var(--text-primary); font-weight: var(--weight-medium); }
+.finestra__foot {
+  display: flex; align-items: center; gap: var(--space-2);
+  padding: var(--space-3) var(--space-5);
+  border-top: 1px solid var(--line-subtle); background: var(--surface-sunken);
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .finestra[open] { animation: finestra-in var(--dur-base) var(--ease-out); }
+}
+@keyframes finestra-in { from { opacity: 0; transform: scale(0.97); } }
+
 /* --- Menu -------------------------------------------------------------------
    Un elenco breve. Non intrappola il fuoco: se servono gruppi e ricerca,
    è la palette. */

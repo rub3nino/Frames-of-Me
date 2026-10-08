@@ -137,6 +137,13 @@
   --page-w-doc:   1040px;  /* un documento da leggere */
   --page-w-prose: 880px;   /* una colonna di prosa */
 
+  /* --- Origine e velo ----------------------------------------------------
+     `--origin` la imposta il runtime quando apre un menu. Il velo serve solo
+     a un dialogo — REGOLE §4: una conferma irreversibile è un dialogo, non
+     un pannello — e il pannello laterale non ne ha uno, perché non è modale. */
+  --origin: top right;
+  --veil:   oklch(0.2 0.01 85 / 0.18);
+
   /* --- Livelli ----------------------------------------------------------- */
   --z-panel:   40;
   --z-overlay: 50;  /* menu, palette */
@@ -156,11 +163,15 @@
 /* ============================================================================
    Alias di transizione — puntano ai ruoli, non sono ruoli
 
-   Esistono solo perché `base.css`, `landing.css` e alcune pagine citano
-   ancora i nomi del sistema precedente. Nel codice NUOVO si usano i ruoli
-   (--surface-page, --accent, --text-primary). Questo blocco si accorcia
-   man mano che i file vengono migrati, e il giorno in cui è vuoto si
-   cancella: non si aggiunge un alias nuovo per comodità.
+   **Le quattro app non ne usano nemmeno uno**: landing, partecipanti,
+   fotografi e admin citano solo ruoli, verificato a macchina. Questo blocco
+   resta in vita per tre cose che non sono il prodotto:
+     - `frontend/_reference/vetrina/**`, la copia di riferimento del sito
+       dell'evento reale: non è nostra UI e non deve seguire questa identità;
+     - `packages/ui/styleguide.html` e `logo-explorations.html`, due pagine di
+       sviluppo che descrivono il sistema precedente.
+   Il giorno in cui quelle tre spariscono, questo blocco si cancella. Nel
+   codice nuovo si usano i ruoli: non si aggiunge un alias per comodità.
 
    Dove il vecchio sistema diceva una cosa che l'identità vieta — il vetro,
    il serif scaricato, i pastelli da marketing — l'alias NON la riproduce:
