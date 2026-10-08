@@ -8,7 +8,7 @@
  * there is no client-side filtering to keep in sync: when a photo reaches the report
  * threshold it leaves this list on the next load.
  */
-import { use, useCallback, useEffect, useState } from "react";
+import { use, useCallback, useEffect, useRef, useState } from "react";
 import { Camera } from "@/components/camera";
 import { RequireRole } from "@/components/require-role";
 import { Shell } from "@/components/shell";
@@ -46,6 +46,9 @@ const REPORT_LABELS: Record<ReportReason, string> = {
  */
 const CROWD_REPORT_REASONS: ReportReason[] = ["inappropriate", "copyright", "other"];
 
+/** One screenful plus some: the server caps `limit` itself, this is only the ask. */
+const PAGE_LIMIT = 60;
+
 export default function AlbumPage({ params }: { params: Promise<{ albumId: string }> }) {
   const { albumId } = use(params);
   return (
@@ -59,27 +62,78 @@ export default function AlbumPage({ params }: { params: Promise<{ albumId: strin
 
 function CrowdAlbum({ albumId }: { albumId: string }) {
   const [photos, setPhotos] = useState<AlbumPhoto[]>([]);
+  /**
+   * The server's own cursor, kept and sent back EXACTLY as it arrived. It is an opaque
+   * string: its encoding lives in the api (`encodeCrowdCursor`) and nothing here may parse,
+   * build or alter one. `null` means there is no further page.
+   */
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
   const [quota, setQuota] = useState<{ used: number; max: number | null }>({ used: 0, max: null });
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const [message, setMessage] = useState<string | null>(null);
   const [cameraOpen, setCameraOpen] = useState(false);
   const [reporting, setReporting] = useState<string | null>(null);
+  const sentinel = useRef<HTMLDivElement | null>(null);
 
-  const load = useCallback(async () => {
-    try {
-      const page = await listAlbumPhotos(albumId, { limit: 60 });
-      setPhotos(page.photos);
-      setQuota(page.quota);
-      setState("ready");
-    } catch (cause) {
-      setState("error");
-      setMessage(cause instanceof ApiError ? cause.message : "Album non disponibile.");
-    }
-  }, [albumId]);
+  /**
+   * One page. `next === null` is a reload from the top and REPLACES the feed — that is what
+   * a report or a fresh upload needs, since either can change what the server publishes.
+   * Any other value appends, de-duplicated by photo id: pages are keyset-based, so a photo
+   * added while the moderator was scrolling can shift into a page already seen.
+   */
+  const load = useCallback(
+    async (next: string | null) => {
+      setLoading(true);
+      try {
+        const page = await listAlbumPhotos(albumId, {
+          limit: PAGE_LIMIT,
+          ...(next ? { cursor: next } : {}),
+        });
+        setPhotos((current) => {
+          if (!next) return page.photos;
+          const seen = new Set(current.map((photo) => photo.id));
+          return [...current, ...page.photos.filter((photo) => !seen.has(photo.id))];
+        });
+        setCursor(page.nextCursor ?? null);
+        setQuota(page.quota);
+        setState("ready");
+        setMessage(null);
+      } catch (cause) {
+        const text = cause instanceof ApiError ? cause.message : "Album non disponibile.";
+        setMessage(text);
+        // A page that fails after the first one must not blank the photos already on screen.
+        setState((current) => (current === "ready" ? "ready" : "error"));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [albumId],
+  );
 
   useEffect(() => {
-    void load();
+    void load(null);
   }, [load]);
+
+  /**
+   * Infinite scroll: an empty sentinel under the grid, observed 600 px before it is in view
+   * so the next page is usually there by the time the thumbs would have run out. The
+   * observer is only an enhancement — the button next to it does the same thing for anyone
+   * whose browser or settings leave it unused.
+   */
+  useEffect(() => {
+    const node = sentinel.current;
+    if (!node || !cursor || loading) return;
+    if (typeof IntersectionObserver !== "function") return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) void load(cursor);
+      },
+      { rootMargin: "600px" },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [cursor, loading, load]);
 
   const report = useCallback(
     async (photoId: string, reason: ReportReason) => {
@@ -95,7 +149,7 @@ function CrowdAlbum({ albumId }: { albumId: string }) {
             : "Segnalazione inviata: un moderatore la controllerà. Grazie.",
         );
         // The threshold may have withheld it: a reload is the single source of truth.
-        if (answer.state !== "approved") await load();
+        if (answer.state !== "approved") await load(null);
       } catch (cause) {
         setMessage(cause instanceof ApiError ? cause.message : "Segnalazione non inviata.");
       }
@@ -138,12 +192,12 @@ function CrowdAlbum({ albumId }: { albumId: string }) {
           onClose={() => setCameraOpen(false)}
           onUploaded={() => {
             setCameraOpen(false);
-            void load();
+            void load(null);
           }}
         />
       ) : null}
 
-      {message ? <p role="status">{message}</p> : null}
+      {message && state === "ready" ? <p role="status">{message}</p> : null}
       {state === "loading" ? <p className="status">Caricamento</p> : null}
       {state === "error" ? <p role="alert">{message}</p> : null}
 
@@ -171,6 +225,22 @@ function CrowdAlbum({ albumId }: { albumId: string }) {
           </li>
         ))}
       </ul>
+
+      <div ref={sentinel} aria-hidden="true" />
+      {cursor ? (
+        <div className="actions">
+          <button
+            type="button"
+            className="button quiet"
+            disabled={loading}
+            onClick={() => void load(cursor)}
+          >
+            {loading ? "Carico…" : "Mostra altre foto"}
+          </button>
+        </div>
+      ) : null}
+      {loading && photos.length > 0 ? <p className="status">Carico altre foto…</p> : null}
+
       {state === "ready" && photos.length === 0 ? (
         <p className="status">Nessuna foto per ora. Sii il primo.</p>
       ) : null}
