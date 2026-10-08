@@ -432,8 +432,9 @@ export function ModerationSection({ event }: { event: AdminEvent | null }) {
             cui recuperare la foto.
           </p>
           <p className="fine">
-            Se vuoi solo toglierla dalla galleria in attesa di decidere, chiudi questa finestra e
-            lasciala «in attesa»: resta fuori dall&apos;album senza essere cancellata.
+            Annulla non cambia nulla: la foto resta nello stato in cui è adesso. Una foto «in
+            attesa» è già fuori dall&apos;album mentre aspetta un verdetto — rifiutare non serve
+            a nasconderla, serve a cancellarla.
           </p>
           <ul className="list">
             {pendingReject.ids.map((id) => (
