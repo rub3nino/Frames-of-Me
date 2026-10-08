@@ -146,3 +146,134 @@
     --control-h: 40px;
   }
 }
+
+/* ============================================================================
+   Alias di transizione — puntano ai ruoli, non sono ruoli
+
+   Esistono solo perché `base.css`, `landing.css` e alcune pagine citano
+   ancora i nomi del sistema precedente. Nel codice NUOVO si usano i ruoli
+   (--surface-page, --accent, --text-primary). Questo blocco si accorcia
+   man mano che i file vengono migrati, e il giorno in cui è vuoto si
+   cancella: non si aggiunge un alias nuovo per comodità.
+
+   Dove il vecchio sistema diceva una cosa che l'identità vieta — il vetro,
+   il serif scaricato, i pastelli da marketing — l'alias NON la riproduce:
+   punta alla cosa giusta. Un alias che resuscita una regola abolita sarebbe
+   peggio di un alias mancante.
+   ============================================================================ */
+
+:root {
+  /* --- Colore ------------------------------------------------------------ */
+  --c-canvas:       var(--surface-page);
+  --c-surface:      var(--surface-raised);
+  --c-surface-2:    var(--surface-sunken);
+  --c-sunken:       var(--surface-sunken);
+  --c-ink:          var(--text-primary);
+  --c-ink-2:        var(--text-secondary);
+  --c-ink-3:        var(--text-tertiary);
+  --c-ink-4:        var(--neutral-mark);
+  --c-line:         var(--line-subtle);
+  --c-line-2:       var(--line-strong);
+  --c-accent:       var(--accent);
+  --c-accent-hover: var(--accent-hover);
+  --c-accent-press: var(--accent-hover);
+  --c-accent-ink:   var(--accent-text);
+  --c-accent-soft:  var(--accent-soft);
+  --c-accent-on:    var(--text-on-inverse);
+  --c-success:      var(--success);
+  --c-success-ink:  var(--success-text);
+  --c-success-soft: var(--success-soft);
+  --c-danger:       var(--danger);
+  --c-danger-ink:   var(--danger-text);
+  --c-danger-soft:  var(--danger-soft);
+  --c-warning:      var(--attention);
+  --c-warning-ink:  var(--attention-text);
+  --c-warning-soft: var(--attention-soft);
+  --c-info:         var(--accent);
+
+  /* --- Tipografia --------------------------------------------------------
+     --font-serif puntava a Instrument Serif, scaricato da Google Fonts.
+     L'identità dice «nessun font da scaricare»: l'alias punta alla pila di
+     sistema, così un file non migrato non riporta il serif in pagina. */
+  --font-serif: var(--font-sans);
+  --fs-2xs:       11px;              /* glifo di tasto: l'unica misura sotto 12 */
+  --fs-xs:        var(--text-xs);
+  --fs-sm:        var(--text-sm);
+  --fs-body:      var(--text-base);
+  --fs-lead:      var(--text-md);
+  --fs-h3:        var(--text-lg);
+  --fs-h2:        var(--text-xl);
+  --fs-h1:        var(--text-2xl);
+  --fs-display-1: var(--text-2xl);   /* la scala si fermava a 30: non si sale */
+  --fs-display-2: var(--text-xl);
+  --fw-regular:   var(--weight-regular);
+  --fw-medium:    var(--weight-medium);
+  --fw-semibold:  var(--weight-semibold);
+  --lh-display:   var(--leading-tight);
+  --lh-tight:     var(--leading-tight);
+  --lh-snug:      var(--leading-snug);
+  --lh-body:      var(--leading-body);
+  --tr-display:  -0.015em;
+  --tr-tight:    -0.01em;
+  --tr-normal:    0;
+  --tr-data:      0;
+
+  /* --- Spazio, raggi ----------------------------------------------------- */
+  --s-1: var(--space-1);  --s-2: var(--space-2);  --s-3: var(--space-3);
+  --s-4: var(--space-4);  --s-5: var(--space-5);  --s-6: var(--space-6);
+  --s-7: var(--space-8);  --s-8: var(--space-8);  --s-9: var(--space-10);
+  --s-10: var(--space-12); --s-11: var(--space-16);
+  --r-sm:   var(--radius-sm);
+  --r-md:   var(--radius-md);
+  --r-lg:   var(--radius-lg);
+  --r-xl:   var(--radius-lg);        /* oltre 12 px dice «poster» */
+  --r-pill: var(--radius-full);
+
+  /* --- Profondità, fuoco, movimento -------------------------------------- */
+  --shadow-xs:  var(--shadow-raised);
+  --shadow-sm:  var(--shadow-raised);
+  --shadow-md:  var(--shadow-float);
+  --shadow-lg:  var(--shadow-float);
+  --ring-focus: var(--focus-ring);
+  --press:      0.97;                /* la scala della pressione */
+  --origin:     top right;           /* origine del menu, sovrascritta a runtime */
+  --dur-1: var(--dur-press);  --dur-2: var(--dur-fast);
+  --dur-3: var(--dur-base);   --dur-4: var(--dur-panel);
+  --ease-std: var(--ease-out);
+
+  /* --- Guscio e larghezze ------------------------------------------------ */
+  --header-h:   var(--topbar-h);
+  --tabbar-h:   56px;
+  --maxw-page:  1440px;
+  --maxw-wide:  1040px;
+  --maxw-prose: 68ch;
+  --z-header:   var(--z-panel);
+
+  /* --- Materiali: il vetro è abolito ------------------------------------
+     --mat-blur era un backdrop-filter. L'identità vieta il vetro, quindi
+     l'alias è `none`: un file non migrato perde l'effetto invece di
+     reintrodurlo di nascosto. */
+  --mat-bar:  var(--surface-page);
+  --mat-blur: none;
+
+  /* --- Sotto-tavolozza marketing ----------------------------------------
+     I pastelli della landing e il suo accento proprio. Puntano ai ruoli:
+     il prodotto ha UN accento, e non è un pulsante colorato. Le quattro
+     tinte diventano quelle degli avatar, che sono già a croma bassa. */
+  --mk-bg:        var(--surface-page);
+  --mk-surface-2: var(--surface-sunken);
+  --mk-ink:       var(--text-primary);
+  --mk-ink-2:     var(--text-secondary);
+  --mk-ink-3:     var(--text-tertiary);
+  --mk-line:      var(--line-subtle);
+  --mk-hair:      var(--line-subtle);
+  --mk-dot:       transparent;       /* lo sfondo a puntini non c'è più */
+  --mk-cta:       var(--surface-inverse);   /* la chiamata all'azione è inchiostro */
+  --mk-cta-hover: oklch(0.32 0.008 85);
+  --mk-cta-on:    var(--text-on-inverse);
+  --mk-ease:      var(--ease-out);
+  --t-sky:        oklch(0.90 0.03 257);  --t-sky-ink:    oklch(0.38 0.10 257);
+  --t-mint:       oklch(0.91 0.04 150);  --t-mint-ink:   oklch(0.36 0.08 150);
+  --t-butter:     oklch(0.92 0.045 70);  --t-butter-ink: oklch(0.40 0.09 55);
+  --t-lilac:      oklch(0.91 0.03 320);  --t-lilac-ink:  oklch(0.38 0.08 320);
+}
