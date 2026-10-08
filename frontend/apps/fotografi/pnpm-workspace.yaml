@@ -1,0 +1,5 @@
+# Il repo usa pnpm, e pnpm blocca ogni script di installazione finché non è
+# nominato qui. esbuild è il motore di vite: senza questa riga `pnpm install`
+# dentro questa app finisce con ERR_PNPM_IGNORED_BUILDS.
+allowBuilds:
+  esbuild: true

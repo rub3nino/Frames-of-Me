@@ -1,154 +1,317 @@
-body { background: var(--c-canvas); }
+/* ============================================================================
+   Frames of Me — fotografi (strumento)
+   Load order: tokens.css → base.css → components.css → questo file.
 
-/* portal nav */
-.appbar .brand { text-decoration: none; }
-.fz-nav { display: flex; gap: var(--s-2); margin-left: var(--s-5); }
-.fz-navitem { font-size: var(--fs-sm); font-weight: var(--fw-medium); color: var(--c-ink-2); text-decoration: none; padding: 7px 12px; border-radius: var(--r-sm); }
-.fz-navitem:hover { background: var(--c-sunken); color: var(--c-ink); }
-.fz-navitem.on { color: var(--c-ink); background: var(--c-surface); box-shadow: var(--shadow-xs); }
-.fz-chip { font-size: var(--fs-sm); color: var(--c-ink-2); background: var(--c-surface); border: 1px solid var(--c-line); border-radius: var(--r-pill); padding: 6px 14px; }
+   Questo file cita SOLO i ruoli della prima metà di tokens.css. Gli alias di
+   transizione (--c-*, --s-*, --fs-*, --r-*, --mat-*, --shadow-xs…) sono spariti
+   da qui: quel blocco verrà cancellato e chi lo cita resterà senza colore.
 
-/* auth */
-.fz-auth { min-height: calc(100dvh - var(--header-h)); display: grid; place-items: center; padding: var(--s-6); }
-.fz-auth .card { width: 100%; max-width: 420px; }
+   Niente tinte proprie: se qui comparisse un esadecimale sarebbe un difetto.
+   Quello che segue è solo il GUSCIO dello strumento (barra laterale, topbar,
+   area di lavoro) e le poche griglie che i componenti condivisi non coprono.
+   Tutto il resto delle pagine è .btn, .field, .box, .summary, .tbl, .esito,
+   .score, .progress, .callout, .panel-lat — componenti che esistono già.
+   ============================================================================ */
 
-/* workspace */
-.fz-page { max-width: var(--maxw-page); margin-inline: auto; padding: var(--s-6) var(--s-5) var(--s-11); }
-.fz-head { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--s-4); margin-bottom: var(--s-6); }
-.fz-head .agg { font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--c-ink-2); }
-.fz-drop { border: 1.5px dashed var(--c-line-2); border-radius: var(--r-lg); background: var(--c-surface); padding: var(--s-10) var(--s-6); text-align: center; transition: border-color .18s ease, background .18s ease; }
-.fz-drop.drag { border-color: var(--c-accent); background: var(--c-accent-soft); }
-.fz-drop .ico { width: 40px; height: 40px; color: var(--c-ink-3); margin: 0 auto var(--s-4); }
-.fz-drop .note { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--c-ink-3); margin-top: var(--s-4); }
-.fz-stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: var(--s-3); margin: var(--s-6) 0; }
-@media (max-width: 760px) { .fz-stats { grid-template-columns: repeat(2, 1fr); } .fz-nav { display: none; } }
-.fz-list { background: var(--c-surface); border: 1px solid var(--c-line); border-radius: var(--r-lg); overflow: hidden; }
-.fz-list h3 { padding: var(--s-4); border-bottom: 1px solid var(--c-line); font-size: var(--fs-sm); color: var(--c-ink-2); }
-.fz-row { display: grid; grid-template-columns: 24px 1fr 80px 150px 70px; gap: var(--s-4); align-items: center; padding: 10px var(--s-4); border-bottom: 1px solid var(--c-line); }
-.fz-row:last-child { border-bottom: 0; }
-.fz-row .tn { width: 24px; height: 24px; border-radius: 5px; background: var(--c-sunken); color: var(--c-ink-3); display: grid; place-items: center; }
-.fz-name { font-family: var(--font-mono); font-size: var(--fs-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.fz-size { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--c-ink-3); }
+body { background: var(--surface-page); color: var(--text-primary); }
 
-/* stat-grid variants (shared by Upload / Statistiche / Copertura) */
-.fz-stats.st-3 { grid-template-columns: repeat(3, 1fr); }
-.fz-stats.st-4 { grid-template-columns: repeat(4, 1fr); }
-.fz-stats.st-5 { grid-template-columns: repeat(5, 1fr); }
-.fz-stats.st-6 { grid-template-columns: repeat(6, 1fr); }
-@media (max-width: 1000px) { .fz-stats.st-5, .fz-stats.st-6 { grid-template-columns: repeat(3, 1fr); } }
-@media (max-width: 760px) { .fz-stats.st-3, .fz-stats.st-4, .fz-stats.st-5, .fz-stats.st-6 { grid-template-columns: repeat(2, 1fr); } }
+/* --- L'anello di fuoco non si toglie (REGOLE §6) ----------------------------
+   Il vecchio `base.css` passava un COLORE a `box-shadow`: la dichiarazione è
+   invalida al momento del calcolo, e insieme a `outline: none` l'anello
+   spariva da tutto il prodotto. Il guasto è stato corretto nel layer di base;
+   queste righe restano perché l'anello di questa app non deve dipendere da un
+   file che non è suo. Sono allineate alla correzione, non in conflitto: sui
+   campi vince `components.css`, che sostituisce l'anello con bordo e alone. */
+a:focus-visible,
+button:focus-visible,
+summary:focus-visible,
+[tabindex]:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.input:focus-visible, .select:focus-visible, .textarea:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+/* Dentro un menu il fondo È il fuoco: niente anello. */
+.menu__item:focus-visible { outline: none; }
 
-/* ---- Two-stage toggle -------------------------------------------------- */
-.fz-toggle { background: var(--c-surface); border: 1px solid var(--c-line); border-radius: var(--r-lg); padding: var(--s-4) var(--s-5); margin-bottom: var(--s-4); }
-.fz-switch { display: grid; grid-template-columns: 44px 1fr; gap: var(--s-4); align-items: center; cursor: pointer; }
-.fz-switch input { position: absolute; opacity: 0; width: 0; height: 0; }
-.fz-switch .track { width: 44px; height: 26px; border-radius: var(--r-pill); background: var(--c-line-2); position: relative; transition: background var(--dur-2) var(--ease-std); }
-.fz-switch .knob { position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: #fff; box-shadow: var(--shadow-xs); transition: transform var(--dur-2) var(--ease-out); }
-.fz-switch input:checked ~ .track { background: var(--c-accent); }
-.fz-switch input:checked ~ .track .knob { transform: translateX(18px); }
-.fz-switch input:disabled ~ .track { opacity: .5; }
-.fz-switch input:focus-visible ~ .track { box-shadow: var(--ring-focus); }
-.fz-switch-text { display: flex; flex-direction: column; gap: 2px; font-size: var(--fs-sm); }
-.fz-switch-text .muted { font-size: var(--fs-xs); }
-@media (prefers-reduced-motion: reduce) { .fz-switch .track, .fz-switch .knob { transition: none; } }
+/* ============================================================================
+   Guscio: barra laterale + topbar + area di lavoro
+   La barra laterale è più scura della pagina di un grado solo (--surface-sunken).
+   Nessun accento di marca sul fondo, nessuna ombra: il bordo è il disegno.
+   ========================================================================== */
 
-/* ---- Watched folder ---------------------------------------------------- */
-.fz-watch { background: var(--c-surface); border: 1px solid var(--c-line); border-radius: var(--r-lg); padding: var(--s-5); margin-bottom: var(--s-5); }
-.fz-watch-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s-4); }
-.fz-watch-head h3 { font-size: var(--fs-sm); color: var(--c-ink); }
-.fz-watch-head .muted { font-size: var(--fs-xs); margin-top: 2px; }
-.fz-watch-active { display: flex; align-items: center; gap: var(--s-3); margin-top: var(--s-4); padding-top: var(--s-4); border-top: 1px solid var(--c-line); }
-
-/* ---- Statistiche: distribution bar ------------------------------------- */
-.st-panel { background: var(--c-surface); border: 1px solid var(--c-line); border-radius: var(--r-lg); box-shadow: var(--shadow-sm); padding: var(--s-6); }
-.st-panel-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-4); margin-bottom: var(--s-5); }
-.st-panel-head h3 { font-size: var(--fs-h3); }
-.st-bar { display: flex; height: 18px; border-radius: var(--r-pill); overflow: hidden; background: var(--c-sunken); }
-.st-bar > span { display: block; height: 100%; transition: width var(--dur-4) var(--ease-out); }
-.st-legend { display: flex; flex-wrap: wrap; gap: var(--s-4); margin-top: var(--s-4); }
-.st-leg-item { display: inline-flex; align-items: center; gap: var(--s-2); font-size: var(--fs-xs); color: var(--c-ink-2); font-family: var(--font-mono); letter-spacing: var(--tr-data); }
-.st-leg-item i { width: 10px; height: 10px; border-radius: 3px; }
-@media (prefers-reduced-motion: reduce) { .st-bar > span { transition: none; } }
-
-/* ---- Filters (chips row) ----------------------------------------------- */
-.fz-filters { display: flex; align-items: center; gap: var(--s-2); flex-wrap: wrap; margin-bottom: var(--s-6); }
-
-/* ---- Album grid (GAP) -------------------------------------------------- */
-.album-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--s-5); }
-@media (max-width: 1100px) { .album-grid { grid-template-columns: repeat(3, 1fr); } }
-@media (max-width: 820px)  { .album-grid { grid-template-columns: repeat(2, 1fr); } }
-@media (max-width: 500px)  { .album-grid { grid-template-columns: 1fr; } }
-.album { padding: 0; overflow: hidden; display: flex; flex-direction: column; }
-.album .cover { position: relative; aspect-ratio: 4/3; background: var(--c-sunken); display: grid; place-items: center; }
-.album .cover.kind-stage { background: var(--c-accent-soft); }
-.album .cover.kind-session { background: var(--c-sunken); }
-.album .cover.kind-zone { background: var(--c-success-soft); }
-.album .cover-glyph { width: 46px; height: 46px; color: var(--c-ink-4); }
-.album .cover-badge { position: absolute; top: 10px; left: 10px; }
-.album .cover-badge .badge { background: var(--mat-bar); backdrop-filter: var(--mat-blur); -webkit-backdrop-filter: var(--mat-blur); box-shadow: var(--shadow-xs); }
-.album .body { padding: var(--s-4) var(--s-5) var(--s-5); display: flex; flex-direction: column; gap: 2px; flex: 1 1 auto; }
-.album .nm { font-size: var(--fs-sm); font-weight: var(--fw-semibold); color: var(--c-ink); letter-spacing: var(--tr-tight); }
-.album .meta { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--c-ink-3); letter-spacing: var(--tr-data); }
-.album .release-line { font-size: var(--fs-2xs); color: var(--c-warning-ink); font-weight: var(--fw-medium); margin-top: 2px; }
-.album .foot { display: flex; align-items: center; gap: var(--s-2); margin-top: var(--s-4); }
-.album .foot .btn { flex: 1; }
-
-/* ---- Copertura slots (GAP) --------------------------------------------- */
-.cv-dayfilter { display: inline-flex; }
-.cv-daysec { margin-bottom: var(--s-7); }
-.cv-daysec > h2 { font-size: var(--fs-h3); margin-bottom: var(--s-1); }
-.cv-daydate { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--c-ink-3); letter-spacing: var(--tr-data); margin-bottom: var(--s-4); }
-.cv-slots { background: var(--c-surface); border: 1px solid var(--c-line); border-radius: var(--r-lg); box-shadow: var(--shadow-sm); overflow: hidden; }
-.cv-slot { display: grid; grid-template-columns: 34px 128px minmax(0,1fr) 150px 44px; gap: var(--s-4); align-items: center; padding: var(--s-4) var(--s-5); border-bottom: 1px solid var(--c-line); }
-.cv-slot:last-child { border-bottom: 0; }
-.cv-slot .tick { width: 24px; height: 24px; border-radius: 50%; border: 1.5px solid var(--c-line-2); background: var(--c-surface); display: grid; place-items: center; cursor: pointer; color: transparent; }
-.cv-slot .tick svg { width: 14px; height: 14px; }
-.cv-slot.covered .tick { background: var(--c-success); border-color: var(--c-success); color: #fff; }
-.cv-slot .tick:focus-visible { outline: none; box-shadow: var(--ring-focus); }
-.cv-slot .tick:disabled { cursor: default; opacity: .6; }
-.cv-slot .when { font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--c-ink); letter-spacing: var(--tr-data); white-space: nowrap; }
-.cv-slot .what .ttl { font-size: var(--fs-sm); font-weight: var(--fw-medium); color: var(--c-ink); }
-.cv-slot .what .place { font-size: var(--fs-xs); color: var(--c-ink-3); margin-top: 2px; }
-.cv-slot .status { justify-self: start; }
-.cv-slot .go { justify-self: end; }
-.cv-slot.gap-slot { background: var(--c-warning-soft); }
-.cv-slot.gap-slot .tick { visibility: hidden; }
-.badge.cv-live::before { animation: cv-live 1.6s var(--ease-std) infinite; }
-@keyframes cv-live { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
-@media (prefers-reduced-motion: reduce) { .badge.cv-live::before { animation: none; } }
-@media (max-width: 760px) {
-  .cv-slot { grid-template-columns: 28px 1fr auto; row-gap: var(--s-2); }
-  .cv-slot .when { grid-column: 2; }
-  .cv-slot .what { grid-column: 2 / 4; }
-  .cv-slot .status { grid-column: 2; }
-  .cv-slot .go { grid-column: 3; grid-row: 1; }
+.guscio {
+  display: grid;
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+  min-height: 100dvh;
 }
 
-/* ---- Qualità: health band + error list --------------------------------- */
-.ql-health { display: grid; grid-template-columns: 1.4fr 1fr 1fr 1fr; gap: var(--s-4); }
-@media (max-width: 760px) { .ql-health { grid-template-columns: repeat(2, 1fr); } }
-.ql-health .hcard { background: var(--c-surface); border: 1px solid var(--c-line); border-radius: var(--r-md); padding: var(--s-5); display: flex; flex-direction: column; gap: 2px; }
-.ql-health .hcard .hv { font-family: var(--font-mono); font-size: var(--fs-h2); font-weight: var(--fw-semibold); letter-spacing: var(--tr-tight); font-feature-settings: "tnum" 1; }
-.ql-health .hcard .hk { font-size: var(--fs-xs); color: var(--c-ink-3); font-weight: var(--fw-medium); }
-.ql-health .hcard.ok .hv { color: var(--c-success-ink); }
-.ql-health .hcard.err .hv { color: var(--c-danger-ink); }
-.ql-health .hcard.warn .hv { color: var(--c-warning-ink); }
-.ql-health .hcard .mini-bar { height: 6px; border-radius: var(--r-pill); background: var(--c-sunken); overflow: hidden; margin-top: var(--s-3); }
-.ql-health .hcard .mini-bar span { display: block; height: 100%; background: var(--c-success); border-radius: inherit; }
-.err-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-4); margin-bottom: var(--s-4); }
-.err-head h2 { font-size: var(--fs-h3); }
-.ql-list { background: var(--c-surface); border: 1px solid var(--c-line); border-radius: var(--r-lg); overflow: hidden; }
-.ql-row { display: grid; grid-template-columns: 30px minmax(0,1fr) 120px 1fr; gap: var(--s-4); align-items: center; padding: var(--s-4) var(--s-5); border-bottom: 1px solid var(--c-line); }
-.ql-row:last-child { border-bottom: 0; }
-.ql-row .ei { width: 30px; height: 30px; border-radius: var(--r-sm); display: grid; place-items: center; background: var(--c-danger-soft); color: var(--c-danger-ink); }
-.ql-row .ei svg { width: 16px; height: 16px; }
-.ql-row .fname { font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--c-ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ql-row .reason { font-size: var(--fs-xs); color: var(--c-ink-2); margin-top: 3px; }
-.ql-row .when { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--c-ink-3); letter-spacing: var(--tr-data); }
-.ql-row .act { display: flex; align-items: center; justify-content: flex-end; }
-.ql-row .fatal-note { font-size: var(--fs-2xs); color: var(--c-ink-3); white-space: nowrap; text-align: right; }
-@media (max-width: 720px) {
-  .ql-row { grid-template-columns: 30px 1fr; }
-  .ql-row .when, .ql-row .act { grid-column: 2; justify-content: flex-start; }
-  .ql-row .fatal-note { text-align: left; }
+.lat {
+  display: flex; flex-direction: column;
+  position: sticky; top: 0; height: 100dvh; overflow-y: auto;
+  background: var(--surface-sunken);
+  border-right: 1px solid var(--line-subtle);
 }
+.lat__marchio {
+  display: flex; align-items: center; gap: var(--space-2);
+  height: var(--topbar-h); flex-shrink: 0; padding: 0 var(--space-4);
+  color: var(--text-primary); text-decoration: none;
+  font-size: var(--text-base); font-weight: var(--weight-semibold);
+  letter-spacing: -0.01em; white-space: nowrap;
+}
+.lat__marchio:hover { text-decoration: none; }
+.lat__marchio svg { width: 20px; height: 20px; }
+
+.lat__gruppo {
+  padding: var(--space-4) var(--space-3) var(--space-1);
+  font-size: var(--text-xs); font-weight: var(--weight-medium);
+  color: var(--text-tertiary);
+}
+.lat__nav { display: flex; flex-direction: column; gap: 2px; padding: var(--space-1) var(--space-2); }
+/* Una voce di menu non si anima: cambia fondo e basta. */
+.lat__voce {
+  display: flex; align-items: center; gap: var(--space-2);
+  height: 30px; padding: 0 var(--space-2);
+  border-radius: var(--radius-xs);
+  color: var(--text-secondary); text-decoration: none;
+  font-size: var(--text-sm); font-weight: var(--weight-medium);
+}
+.lat__voce:hover { background: var(--surface-hover); color: var(--text-primary); text-decoration: none; }
+.lat__voce[aria-current="page"] { background: var(--surface-pressed); color: var(--text-primary); }
+.lat__voce .icon { color: var(--text-tertiary); }
+.lat__voce[aria-current="page"] .icon { color: var(--text-primary); }
+/* Il conteggio a fine riga è un dato: tabulare, mai troncato. */
+.lat__n {
+  margin-left: auto; padding-left: var(--space-2);
+  font-size: var(--text-xs); font-variant-numeric: tabular-nums;
+  color: var(--text-tertiary);
+}
+.lat__voce[aria-current="page"] .lat__n { color: var(--text-secondary); }
+
+.lat__piede {
+  margin-top: auto; display: flex; flex-direction: column; gap: var(--space-2);
+  padding: var(--space-3);
+  border-top: 1px solid var(--line-subtle);
+}
+.lat__chi { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.lat__chi-testo { min-width: 0; font-size: var(--text-xs); line-height: var(--leading-snug); }
+.lat__chi-nome {
+  display: block; color: var(--text-primary); font-weight: var(--weight-medium);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.lat__chi-ruolo { display: block; color: var(--text-tertiary); }
+
+.corpo { display: flex; flex-direction: column; min-width: 0; }
+
+/* La topbar porta il titolo della pagina. 48 px di barra non reggono i 24 px
+   del «titolo di pagina»: qui il titolo è l'interfaccia (14/600) e i 24 px
+   restano alla schermata di accesso, che è prosa. */
+.topbar {
+  position: sticky; top: 0; z-index: 1;
+  display: flex; align-items: center; gap: var(--space-3);
+  min-height: var(--topbar-h); padding: 0 var(--space-8);
+  background: var(--surface-page);
+  border-bottom: 1px solid var(--line-subtle);
+}
+.topbar h1 { font-size: var(--text-base); font-weight: var(--weight-semibold); letter-spacing: -0.01em; }
+.topbar__dove { font-size: var(--text-sm); color: var(--text-tertiary); }
+.topbar__fine { margin-left: auto; display: flex; align-items: center; gap: var(--space-2); }
+/* Il nome dell'evento è un dato, non un'azione: non è un chip premibile. */
+.topbar__evento {
+  font-size: var(--text-sm); color: var(--text-secondary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 28ch;
+}
+
+.lavoro {
+  display: flex; flex-direction: column; gap: var(--space-5);
+  padding: var(--space-6) var(--space-8) var(--space-12);
+  min-width: 0;
+}
+/* Una riga di intestazione dentro l'area di lavoro: titolo di sezione a
+   sinistra, conteggio o azione a destra. Non è un riquadro. */
+.sez { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-4); }
+.sez h2 { font-size: var(--text-lg); font-weight: var(--weight-semibold); letter-spacing: -0.01em; }
+.sez__n { font-size: var(--text-sm); color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.sez__azioni { display: flex; align-items: center; gap: var(--space-2); }
+.nota { font-size: var(--text-sm); color: var(--text-secondary); line-height: var(--leading-body); }
+.nota-min { font-size: var(--text-xs); color: var(--text-tertiary); line-height: var(--leading-snug); }
+.dato { font-variant-numeric: tabular-nums; }
+.sp-sopra { margin-top: var(--space-3); }
+/* La cifra della proporzione tiene «100,0 %» senza far ballare i segni. */
+.score .score__n { min-width: 5ch; }
+.codice { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-tertiary); }
+/* Un nome di file può essere accorciato (c'è il title); un numero mai. */
+.nomefile {
+  font-family: var(--font-mono); font-size: var(--text-sm); color: var(--text-primary);
+  display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 44ch;
+}
+
+/* Il pulsante che apre il cassetto, e il bersaglio che lo richiude, esistono
+   solo sotto i 1024 px: sopra, la barra laterale è sempre in vista. */
+.topbar__cassetto { display: none; }
+.fuori-cassetto { display: none; }
+
+/* --- Soglie (REGOLE §8) -----------------------------------------------------
+   1280: il padding di pagina scende da 32 a 24. Il pannello laterale è
+         `position: fixed` in `components.css`: si sovrappone già e non ha mai
+         spinto la pagina, quindi non c'è niente da cambiare qui.
+   1024: la barra laterale diventa un cassetto.
+    768: padding 16, la griglia a due colonne diventa una, le tabelle dense
+         diventano schede.
+   Non esiste un terzo layout sotto i 480. */
+@media (max-width: 1280px) {
+  .topbar { padding: 0 var(--space-6); }
+  .lavoro { padding: var(--space-5) var(--space-6) var(--space-12); }
+}
+
+@media (max-width: 1024px) {
+  .guscio { grid-template-columns: minmax(0, 1fr); }
+  .topbar__cassetto { display: inline-flex; }
+  /* Cassetto: entra da sinistra, uno solo, e il clic fuori lo chiude. */
+  .lat {
+    position: fixed; inset: 0 auto 0 0; width: var(--sidebar-w); height: 100dvh;
+    z-index: var(--z-panel);
+    border-right: 1px solid var(--line-strong);
+    transform: translateX(-100%); visibility: hidden;
+    transition: transform var(--dur-panel) var(--ease-panel), visibility 0s linear var(--dur-panel);
+  }
+  .lat[data-open="true"] {
+    transform: none; visibility: visible;
+    transition: transform var(--dur-panel) var(--ease-panel), visibility 0s;
+  }
+  /* Nessun velo: il cassetto non è un dialogo, ma il clic fuori lo richiude. */
+  .fuori-cassetto {
+    display: block; position: fixed; inset: 0; z-index: 2;
+    background: transparent; border: 0; box-shadow: none; cursor: default;
+  }
+}
+
+@media (max-width: 768px) {
+  .topbar { padding: 0 var(--space-4); }
+  .lavoro { padding: var(--space-4) var(--space-4) var(--space-10); }
+  .coppia { grid-template-columns: minmax(0, 1fr); }
+  .avanz .progress { width: 72px; }
+
+  /* Le tabelle dense diventano schede: l'intestazione sparisce e ogni cella
+     porta la propria etichetta. Le righe restano separate da una linea dentro
+     l'unico pannello: nessun riquadro dentro un riquadro. */
+  .tbl--schede thead { display: none; }
+  .tbl--schede, .tbl--schede tbody, .tbl--schede tr, .tbl--schede td { display: block; width: 100%; }
+  .tbl--schede tr { padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--line-subtle); }
+  .tbl--schede tr:last-child { border-bottom: 0; }
+  .tbl--schede tbody tr:hover td { background: transparent; }
+  /* La cella resta un blocco e l'etichetta le sta sopra: una cella può
+     contenere un esito e la sua spiegazione, e su una riga sola finirebbero
+     uno accanto all'altra. */
+  .tbl--schede td { height: auto; padding: 0; border-bottom: 0; }
+  .tbl--schede td + td { margin-top: var(--space-2); }
+  .tbl--schede td[data-etichetta]::before {
+    content: attr(data-etichetta); display: block;
+    font-size: var(--text-xs); color: var(--text-secondary); line-height: var(--leading-snug);
+  }
+  .tbl--schede td.num, .tbl--schede td.tbl__fine { text-align: left; }
+  .tbl--schede td:empty { display: none; }
+  .nomefile { max-width: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Il cassetto dissolve invece di scorrere. */
+  @media (max-width: 1024px) {
+    .lat { transform: none; opacity: 0; transition: opacity var(--dur-press) var(--ease-out), visibility 0s linear var(--dur-press); }
+    .lat[data-open="true"] { opacity: 1; transition: opacity var(--dur-press) var(--ease-out), visibility 0s; }
+  }
+}
+
+/* ============================================================================
+   Accesso (Login, Verify)
+   Stessa costruzione della pagina dei partecipanti: una colonna stretta, un
+   solo primario in inchiostro, il blu solo su fuoco e link.
+   ========================================================================== */
+
+.accesso-area {
+  min-height: 100dvh; display: grid; place-items: center;
+  padding: var(--space-6);
+  background: var(--surface-page);
+}
+.accesso { width: 100%; max-width: 400px; display: flex; flex-direction: column; gap: var(--space-4); }
+.accesso__marchio {
+  display: flex; align-items: center; gap: var(--space-2);
+  font-size: var(--text-base); font-weight: var(--weight-semibold); letter-spacing: -0.01em;
+}
+.accesso__marchio svg { width: 22px; height: 22px; }
+.accesso__titolo { font-size: var(--text-2xl); font-weight: var(--weight-semibold); letter-spacing: -0.015em; line-height: var(--leading-tight); }
+.accesso__dek { font-size: var(--text-md); color: var(--text-secondary); line-height: var(--leading-body); }
+.accesso__modulo { display: flex; flex-direction: column; gap: var(--space-4); }
+.accesso__sep { height: 1px; background: var(--line-subtle); }
+.accesso__alt { font-size: var(--text-sm); color: var(--text-secondary); }
+.accesso__nota { font-size: var(--text-xs); color: var(--text-tertiary); line-height: var(--leading-snug); }
+
+/* ============================================================================
+   Caricamento
+   ========================================================================== */
+
+/* La cella del progresso: barra + numeri veri accanto, tabulari, in formato
+   italiano e mai troncati. La larghezza della barra è fissa così le cifre non
+   ballano da una riga all'altra. */
+.avanz { display: flex; align-items: center; gap: var(--space-2); }
+.avanz .progress { width: 96px; flex-shrink: 0; }
+.avanz__n { font-size: var(--text-xs); font-variant-numeric: tabular-nums; color: var(--text-secondary); white-space: nowrap; }
+
+/* La riga della cartella sorvegliata: vive dentro .box__body, separata dal
+   testo da una linea. Non è un riquadro dentro un riquadro. */
+.guarda { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.guarda + .guarda { margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--line-subtle); }
+.guarda__fine { margin-left: auto; display: flex; align-items: center; gap: var(--space-2); }
+
+/* La riga d'avanzamento totale sopra la coda: numeri a sinistra, barra sotto. */
+.totale { display: flex; flex-direction: column; gap: var(--space-2); }
+.totale__barra { display: flex; align-items: center; gap: var(--space-3); }
+.totale__barra .progress { flex: 1; min-width: 120px; }
+.totale__n { font-size: var(--text-sm); font-variant-numeric: tabular-nums; color: var(--text-secondary); white-space: nowrap; }
+
+/* Il titolo dentro la zona di trascinamento, e la nota in fondo a una tabella
+   troppo lunga: due righe di testo, non due componenti nuovi. */
+.dropzone__t { font-size: var(--text-md); font-weight: var(--weight-semibold); color: var(--text-primary); }
+.tbl__piu { padding: var(--space-3) var(--space-4); border-top: 1px solid var(--line-subtle); }
+/* La cella dell'azione sta a fine riga; a schede torna in colonna. */
+.tbl__fine { text-align: right; }
+
+/* Righe di scheletro per un elenco che sta arrivando. */
+.skel-righe { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4); }
+.skel-righe .skel:nth-child(2) { width: 86%; }
+.skel-righe .skel:nth-child(3) { width: 72%; }
+.skel-righe .skel:nth-child(4) { width: 90%; }
+.skel-righe .skel:nth-child(5) { width: 64%; }
+
+/* ============================================================================
+   Copertura, Album, Qualità, Statistiche
+   ========================================================================== */
+
+/* Sezione di un giorno: titolo, data, tabella. Lo spazio separa, non un bordo. */
+.giorno { display: flex; flex-direction: column; gap: var(--space-3); }
+.giorno__testa { display: flex; align-items: baseline; gap: var(--space-3); flex-wrap: wrap; }
+.giorno__testa h2 { font-size: var(--text-lg); font-weight: var(--weight-semibold); letter-spacing: -0.01em; }
+.giorno__data { font-size: var(--text-sm); color: var(--text-tertiary); }
+.giorno__quota { margin-left: auto; }
+
+/* Due colonne per gli elenchi affiancati; sotto i 768 px diventa una (REGOLE §8). */
+.coppia { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-5); align-items: start; }
+
+/* Elenco descrittivo dentro un pannello: etichetta a sinistra, dato a destra.
+   Sostituisce la griglia di numeri grandi quando i dati sono di un singolo
+   oggetto. */
+.dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--space-2) var(--space-4); font-size: var(--text-sm); }
+.dl dt { color: var(--text-secondary); }
+.dl dd { color: var(--text-primary); font-variant-numeric: tabular-nums; }
+.dl dd .codice { word-break: break-all; }
+
+/* Il titolo del pannello laterale porta anche una riga di contesto. */
+.panel__sotto { display: block; font-size: var(--text-xs); font-weight: var(--weight-regular); color: var(--text-tertiary); }
+.panel__sez { margin-top: var(--space-5); padding-top: var(--space-5); border-top: 1px solid var(--line-subtle); }
+.panel__sez:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+.panel__sez h3 { font-size: var(--text-base); font-weight: var(--weight-semibold); margin-bottom: var(--space-3); }

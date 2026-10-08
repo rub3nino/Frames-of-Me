@@ -1,121 +1,212 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 // @ts-ignore plain module
 import { createClient } from "@api";
-import { AppBar } from "../ui";
+import { Shell, Esito, Quota, Spin, nf, num, IconInfo, IconAvviso, type EsitoTipo } from "../ui";
 import { useActiveEvent } from "../lib/event";
 
-/** Shape of GET /v1/uploads/summary (CONTRACTS.md). */
+/** Forma di GET /v1/uploads/summary (CONTRACTS.md). */
 type Summary = {
   sessions: { open: number; completed: number; aborted: number };
   photos: { uploaded: number; processing: number; indexed: number; error: number; originalsPending: number };
 };
 
-const fmt = (n: number) => n.toLocaleString("it-IT");
-const pct = (n: number, total: number) => (total > 0 ? Math.round((n / total) * 100) : 0);
-
+/**
+ * Le mie statistiche.
+ *
+ * Le regole che le danno questa forma, e non la forma che avrebbe preso da sé:
+ *
+ * 1. NIENTE griglia di numeri grandi. I conteggi stanno su una riga di
+ *    riepilogo; la distribuzione è una tabella, con il numero a destra e la
+ *    proporzione come numero più dei segni. Una barra divisa in quattro colori
+ *    sarebbe stato colore e nient'altro: chi non distingue le tinte non
+ *    leggerebbe niente.
+ * 2. Un dato assente è «—», mai 0: finché il riepilogo non è arrivato — o
+ *    finché l'endpoint non esiste — non si scrive zero, che è un conteggio
+ *    vero e sarebbe una bugia.
+ * 3. L'attesa di un clic già fatto gira dentro il pulsante che l'ha iniziata.
+ *    Il ricaricamento automatico ogni 10 secondi non ha nessuna rotella: non
+ *    l'ha chiesto nessuno e non deve distrarre.
+ * 4. Il riepilogo che non arriva non è un lavoro bloccato: è ambra, e dice che
+ *    riprova da solo. Il rosso è per l'evento che non si collega, perché
+ *    allora la pagina non può dire niente di vero.
+ */
 export default function Statistiche() {
   const api = useMemo(() => createClient(), []);
-  const { event, loading: evLoading, error: evError } = useActiveEvent();
+  const { event, loading: evCaricamento, error: evErrore } = useActiveEvent();
   const [sum, setSum] = useState<Summary | null>(null);
-  const [err, setErr] = useState(false);
+  const [aAmano, setAMano] = useState(false);
+  const [errore, setErrore] = useState(false);
+  const [quando, setQuando] = useState<Date | null>(null);
   const timer = useRef<number | null>(null);
+  const vivo = useRef(true);
+
+  useEffect(() => () => { vivo.current = false; if (timer.current) window.clearInterval(timer.current); }, []);
+
+  const carica = useCallback(async () => {
+    if (!event) return;
+    try {
+      const s: Summary = await api.uploadsSummary(event.id);
+      if (!vivo.current) return;
+      setSum(s); setErrore(false); setQuando(new Date());
+    } catch {
+      if (vivo.current) setErrore(true);
+    }
+  }, [api, event]);
 
   useEffect(() => {
     if (!event) return;
-    let alive = true;
-    const load = () =>
-      api.uploadsSummary(event.id)
-        .then((s: Summary) => { if (alive) { setSum(s); setErr(false); } })
-        .catch(() => { if (alive) setErr(true); });
-    load();
-    // Polling every 10 s, matching the uploader (CONTRACTS.md §Summary).
-    timer.current = window.setInterval(load, 10_000);
-    return () => { alive = false; if (timer.current) window.clearInterval(timer.current); };
-  }, [api, event]);
+    void carica();
+    timer.current = window.setInterval(() => { void carica(); }, 10_000);
+    return () => { if (timer.current) window.clearInterval(timer.current); };
+  }, [carica, event]);
 
-  const photos = sum?.photos;
-  const totalPhotos = photos ? photos.uploaded + photos.processing + photos.indexed + photos.error : 0;
-  const barSegments = photos
-    ? [
-        { key: "indexed", label: "Indicizzate", n: photos.indexed, color: "var(--c-success)" },
-        { key: "uploaded", label: "Caricate", n: photos.uploaded, color: "var(--c-accent)" },
-        { key: "processing", label: "In elaborazione", n: photos.processing, color: "var(--c-ink-3)" },
-        { key: "error", label: "Errori", n: photos.error, color: "var(--c-danger)" },
-      ].filter((s) => s.n > 0)
-    : [];
+  async function aggiorna() {
+    if (aAmano) return;
+    setAMano(true);
+    try { await carica(); } finally { if (vivo.current) setAMano(false); }
+  }
+
+  const f = sum?.photos;
+  const totale = f ? f.uploaded + f.processing + f.indexed + f.error : null;
+
+  const stati: { key: string; parola: string; forma: EsitoTipo; n: number | null; spiega: string }[] = [
+    { key: "indexed", parola: "Indicizzate", forma: "fatto", n: f?.indexed ?? null, spiega: "Il volto è cercabile: chi compare dentro le trova." },
+    { key: "uploaded", parola: "Caricate", forma: "corso", n: f?.uploaded ?? null, spiega: "Arrivate sul server, in attesa del riconoscimento." },
+    { key: "processing", parola: "In elaborazione", forma: "corso", n: f?.processing ?? null, spiega: "Il riconoscimento dei volti è in corso adesso." },
+    { key: "error", parola: "In errore", forma: "attesa", n: f?.error ?? null, spiega: "Il server non è riuscito a elaborarle: le trovi in Qualità." },
+  ];
 
   return (
-    <>
-      <AppBar />
-      <main className="fz-page">
-        <div className="fz-head">
-          <div>
-            <h1>Le mie statistiche</h1>
-            <p className="muted">Il tuo lavoro in numeri. Solo le tue foto: nessun dato personale dei partecipanti, solo conteggi.</p>
+    <Shell
+      titolo="Le mie statistiche"
+      dove={quando ? `aggiornate alle ${quando.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" })}` : undefined}
+      evento={event ? event.name : null}
+      azioni={
+        <button
+          className="btn btn--sm" type="button" onClick={() => void aggiorna()}
+          disabled={!event || aAmano} data-loading={aAmano || undefined}
+          title={!event ? "L'evento non è ancora collegato" : undefined}
+        >
+          {aAmano && <Spin />}
+          Aggiorna i conteggi
+        </button>
+      }
+    >
+      <p className="nota">
+        Solo il tuo lavoro, e solo conteggi: di chi compare nelle foto qui non c'è niente.
+      </p>
+
+      {evErrore && (
+        <div className="callout callout--errore" role="alert">
+          <IconAvviso />
+          <span className="callout__text">
+            <strong>L'evento non si collega.</strong> Senza l'evento questa pagina non può dire
+            niente di vero, e per questo i conteggi restano «—». Riprova a ricaricare la pagina;
+            se continua, avvisa lo staff.
+          </span>
+        </div>
+      )}
+      {errore && !evErrore && (
+        <div className="callout callout--attention" role="status">
+          <IconAvviso />
+          <span className="callout__text">
+            <strong>Il riepilogo non è arrivato.</strong> I numeri qui sotto sono gli ultimi
+            buoni. Riprovo da solo ogni 10 secondi, oppure premi «Aggiorna i conteggi».
+          </span>
+        </div>
+      )}
+
+      {/* Una riga, non una griglia di numeri grandi. */}
+      <div className="summary">
+        <span><b className="dato">{num(totale)}</b> foto in totale</span>
+        <span><b className="dato">{num(f?.indexed ?? null)}</b> indicizzate</span>
+        <span><b className="dato">{num(f?.originalsPending ?? null)}</b> originali da inviare</span>
+        <span><b className="dato">{num(f?.error ?? null)}</b> in errore</span>
+        <Quota n={f?.indexed ?? null} su={totale} suffisso="delle tue foto è cercabile" />
+      </div>
+
+      <div className="sez">
+        <h2>Dove sono le mie foto</h2>
+        <span className="sez__n">{totale == null ? "in attesa del riepilogo" : `${nf(totale)} foto`}</span>
+      </div>
+
+      {sum == null && !evErrore ? (
+        // Una lista che sta arrivando: scheletro nelle righe, non uno spinner.
+        <div className="tbl-wrap">
+          <div className="skel-righe" aria-hidden="true">
+            <div className="skel" /><div className="skel" /><div className="skel" /><div className="skel" />
           </div>
-          <span className="agg">{event ? event.name : evLoading ? "collego l'evento…" : "—"}</span>
+          <span className="sr-only" role="status">Sto chiedendo il riepilogo.</span>
+        </div>
+      ) : (
+        <div className="tbl-wrap">
+          <table className="tbl tbl--schede">
+            <thead>
+              <tr>
+                <th scope="col">Stato</th>
+                <th scope="col" className="num">Foto</th>
+                <th scope="col">Quota</th>
+              </tr>
+            </thead>
+            <tbody>
+              {stati.map((s) => (
+                <tr key={s.key}>
+                  <td>
+                    <Esito tipo={s.n ? s.forma : "spento"}>{s.parola}</Esito>
+                    <span className="cell-sub">{s.spiega}</span>
+                  </td>
+                  <td className="num" data-etichetta="Foto">{num(s.n)}</td>
+                  <td data-etichetta="Quota">
+                    <Quota n={s.n} su={totale} attenzione={s.key === "error" && !!s.n} suffisso={`delle tue foto: ${s.parola.toLowerCase()}`} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div className="coppia">
+        <div className="box">
+          <div className="box__head">Le mie sessioni di caricamento</div>
+          <div className="box__body">
+            <dl className="dl">
+              <dt>Completate</dt><dd>{num(sum?.sessions.completed ?? null)}</dd>
+              <dt>Ancora aperte</dt><dd>{num(sum?.sessions.open ?? null)}</dd>
+              <dt>Interrotte</dt><dd>{num(sum?.sessions.aborted ?? null)}</dd>
+            </dl>
+            {!!sum?.sessions.aborted && (
+              <p className="nota-min sp-sopra">
+                Una sessione interrotta è un file che non è arrivato intero. L'elenco, con il
+                motivo, sta in Qualità.
+              </p>
+            )}
+          </div>
         </div>
 
-        {evError && (
-          <div className="banner banner-danger" style={{ marginBottom: "var(--s-5)" }}>
-            <span>Non riesco a collegare l'evento. Riprova più tardi.</span>
+        <div className="box">
+          <div className="box__head">Quello che l'API non dice ancora</div>
+          <div className="box__body">
+            {/* Non si scrive zero dove il dato non esiste: si scrive «—». */}
+            <dl className="dl">
+              <dt>Match generati</dt><dd>—</dd>
+              <dt>Volti indicizzati</dt><dd>—</dd>
+              <dt>Download delle mie foto</dt><dd>—</dd>
+              <dt>Duplicati saltati</dt><dd>—</dd>
+            </dl>
           </div>
-        )}
-        {err && !evError && (
-          <div className="banner banner-warning" style={{ marginBottom: "var(--s-5)" }}>
-            <span>Riepilogo non disponibile al momento. Riprovo da solo ogni 10 secondi.</span>
-          </div>
-        )}
-
-        {/* Primary cards — wired to GET /v1/uploads/summary (own counts). */}
-        <div className="fz-stats st-5">
-          <div className="stat"><div className="num">{fmt(photos?.uploaded ?? 0)}</div><div className="cap">Caricate</div></div>
-          <div className="stat"><div className="num" style={{ color: "var(--c-success-ink)" }}>{fmt(photos?.indexed ?? 0)}</div><div className="cap">Indicizzate</div></div>
-          <div className="stat"><div className="num">{fmt(photos?.processing ?? 0)}</div><div className="cap">In elaborazione</div></div>
-          <div className="stat"><div className="num" style={photos?.error ? { color: "var(--c-danger)" } : undefined}>{fmt(photos?.error ?? 0)}</div><div className="cap">Errori</div></div>
-          <div className="stat"><div className="num">{fmt(photos?.originalsPending ?? 0)}</div><div className="cap">Originali dovuti</div></div>
         </div>
+      </div>
 
-        {/* Distribution bar (CSS) over the photo states. */}
-        <section className="st-panel">
-          <div className="st-panel-head">
-            <h3>Distribuzione delle mie foto</h3>
-            <span className="agg">{fmt(totalPhotos)} foto totali</span>
-          </div>
-          {totalPhotos > 0 ? (
-            <>
-              <div className="st-bar" role="img" aria-label="Distribuzione degli stati delle foto">
-                {barSegments.map((s) => (
-                  <span key={s.key} style={{ width: pct(s.n, totalPhotos) + "%", background: s.color }} title={`${s.label}: ${fmt(s.n)}`} />
-                ))}
-              </div>
-              <div className="st-legend">
-                {barSegments.map((s) => (
-                  <span key={s.key} className="st-leg-item">
-                    <i style={{ background: s.color }} /> {s.label} · {fmt(s.n)} ({pct(s.n, totalPhotos)}%)
-                  </span>
-                ))}
-              </div>
-            </>
-          ) : (
-            <p className="muted" style={{ marginTop: "var(--s-3)" }}>Ancora nessuna foto caricata per questo evento.</p>
-          )}
-        </section>
-
-        {/* Sessions sub-row — own upload sessions from the same summary. */}
-        <div className="fz-stats st-3" style={{ marginTop: "var(--s-5)" }}>
-          <div className="stat"><div className="num">{fmt(sum?.sessions.completed ?? 0)}</div><div className="cap">Sessioni completate</div></div>
-          <div className="stat"><div className="num">{fmt(sum?.sessions.open ?? 0)}</div><div className="cap">Sessioni aperte</div></div>
-          <div className="stat"><div className="num" style={sum?.sessions.aborted ? { color: "var(--c-danger)" } : undefined}>{fmt(sum?.sessions.aborted ?? 0)}</div><div className="cap">Sessioni interrotte</div></div>
-        </div>
-
-        {/* GAP: per-photographer match/indexed and download counts are not in the summary. */}
-        {/* Needs GET /v1/photographer/stats → { facesIndexed, photosMatched, downloads, duplicatesSkipped } (spec 03 §3.7, G3). */}
-        <div className="banner banner-info" style={{ marginTop: "var(--s-6)" }}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9" /><path d="M12 11v5" /><path d="M12 7.5h.01" /></svg>
-          <span>Funzione in arrivo: endpoint da aggiungere. I conteggi <b>match generati</b> (foto in ≥ 1 galleria), <b>facce indicizzate</b>, <b>download delle mie foto</b> e <b>duplicati saltati</b> richiedono <code>GET /v1/photographer/stats?eventId=</code> (G3). Oggi il riepilogo espone solo i conteggi di stato.</span>
-        </div>
-      </main>
-    </>
+      <div className="callout callout--info" role="note">
+        <IconInfo />
+        <span className="callout__text">
+          <strong>Funzione in arrivo.</strong> I quattro conteggi lasciati a «—» richiedono{" "}
+          <code>GET /v1/photographer/stats?eventId=</code> (G3). Oggi{" "}
+          <code>GET /v1/uploads/summary</code> espone solo i conteggi di stato, ed è tutto quello
+          che questa pagina mostra.
+        </span>
+      </div>
+    </Shell>
   );
 }
