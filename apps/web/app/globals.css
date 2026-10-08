@@ -346,6 +346,38 @@ input[type="checkbox"] {
   overflow: hidden;
 }
 
+/*
+ * The crowd album feed is a real list — `<ul class="grid">` of `<li class="album-item">` —
+ * so the list's own box has to be reset; `.grid` was only ever used on a `<div>` before.
+ */
+ul.grid { margin: 0; padding: 0; list-style: none; }
+
+/*
+ * Each item is the square thumb plus the report control under it. The two rules that
+ * actually made the previous public gallery work were "the link fills the square" and "the
+ * image covers it"; here they already exist as `.cell-hit` and `.cell-hit img` below, so
+ * the feed reuses those instead of carrying a second copy under another name.
+ */
+.album-item {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  align-content: start;
+}
+
+.album-item .linkish {
+  margin: 0;
+  padding: 4px 2px;
+  min-height: 32px;
+  font-size: 0.85rem;
+  text-align: left;
+}
+
+/* The report sheet: one reason per line, inside a column that is a thumbnail wide. */
+.album-report { display: grid; }
+
+.album-more { margin-top: 16px; display: flex; justify-content: center; }
+
 .cell-hit {
   display: block;
   width: 100%;
@@ -740,6 +772,112 @@ textarea {
 
 .segmented button:disabled { opacity: 0.6; cursor: not-allowed; }
 
+/*
+ * The crowd camera (components/camera.tsx). It had no rules at all, so the panel below is
+ * new work rather than a port.
+ *
+ * NOTHING HERE FILTERS THE PREVIEW, and nothing added here ever should. The filter and the
+ * Polaroid frame are composited on a canvas AFTER the shot (decision C3, frozen): a live
+ * `filter` on a `<video>` repaints every frame and collapses to single-digit fps on iOS
+ * Safari and low-end Android, for pixels identical to the ones one post-shot pass produces.
+ * `.camera-review img` is already the finished composite — frame, caption and filter are in
+ * the pixels — so it is never filtered either.
+ */
+.camera {
+  display: grid;
+  gap: 16px;
+  margin-top: 16px;
+  padding: 16px;
+  border: 1px solid var(--line-strong);
+  background: var(--paper);
+}
+
+.camera-live { display: grid; gap: 12px; }
+
+.camera-preview {
+  display: block;
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  max-height: 60vh;
+  object-fit: cover;
+  background: var(--ink);
+}
+
+.camera-review { display: grid; gap: 16px; justify-items: center; }
+
+.camera-review img {
+  display: block;
+  width: 100%;
+  max-width: 22rem;
+  max-height: 60vh;
+  object-fit: contain;
+  background: var(--skeleton);
+}
+
+/* Full-width targets on a phone; side by side once there is room for them. */
+.camera-actions { display: grid; gap: 8px; width: 100%; }
+
+.camera-actions button,
+.camera-filters button {
+  min-height: 48px;
+  padding: 12px 18px;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 120ms var(--ease-out);
+}
+
+/* The first action of each panel is the one being asked for: "Scatta", then "Pubblica". */
+.camera-actions button:first-child {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--paper);
+}
+
+.camera-actions button:active:not(:disabled),
+.camera-filters button:active:not(:disabled) { transform: scale(0.97); }
+
+.camera-actions button:disabled,
+.camera-filters button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.camera-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
+  margin: 0;
+  padding: 8px 12px 12px;
+  border: 1px solid var(--line);
+}
+
+.camera-filters legend {
+  padding: 0 6px;
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.camera-filters button {
+  min-height: 44px;
+  padding: 8px 14px;
+  font-weight: 400;
+}
+
+.camera-filters button[aria-pressed="true"] {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--paper);
+  font-weight: 600;
+}
+
+.camera > p[role="alert"] { margin: 0; color: var(--accent); font-weight: 600; }
+
+.camera > p[role="status"] { margin: 0; color: var(--muted); }
+
 .sr {
   position: absolute;
   width: 1px;
@@ -764,6 +902,7 @@ textarea {
 @media (min-width: 720px) {
   .button { width: auto; min-width: 12rem; }
   .actions { display: flex; }
+  .camera-actions { grid-auto-flow: column; grid-auto-columns: 1fr; }
 }
 
 @media (min-width: 1024px) {
@@ -773,6 +912,8 @@ textarea {
 @media (prefers-reduced-motion: reduce) {
   .screen { animation: none; }
   .button { transition: none; }
+  .camera-actions button,
+  .camera-filters button { transition: none; }
   .chevron { transition: none; }
   .button:active:not(:disabled) { transform: none; }
   .thumb.is-in { animation: thumb-fade 180ms var(--ease-out) both; }

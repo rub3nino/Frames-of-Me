@@ -219,7 +219,7 @@ function CrowdAlbum({ albumId }: { albumId: string }) {
               </a>
             </div>
             {reporting === photo.id ? (
-              <div className="actions stacked">
+              <div className="album-report">
                 {CROWD_REPORT_REASONS.map((reason) => (
                   <button
                     key={reason}
@@ -245,7 +245,7 @@ function CrowdAlbum({ albumId }: { albumId: string }) {
 
       <div ref={sentinel} aria-hidden="true" />
       {cursor ? (
-        <div className="actions">
+        <div className="album-more">
           <button
             type="button"
             className="button quiet"
