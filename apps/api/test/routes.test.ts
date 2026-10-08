@@ -1551,6 +1551,50 @@ test("selfie records the liveness field in the audit log and defaults it to file
   );
 });
 
+test("a selfie whose match job cannot be enqueued leaves no object behind", async () => {
+  // The selfie object is written before the job that owns it, and a selfie key is only ever
+  // referenced by that job and, after a match, by `galleries.selfie_key`. The worker's
+  // housekeeping sweeps `upload_sessions` and nothing else, so an object stranded here could
+  // never be reached again — and it is a photograph of someone's face.
+  const h = await harness();
+  const participant = await h.db.createUser({ email: "orphan@example.com", role: "participant" });
+  const cookie = await sessionCookie(h.db, participant.id);
+  await h.db.insertConsent({
+    userId: participant.id,
+    eventId: h.event.id,
+    textVersion: CONSENT_TEXT_VERSION,
+    ip: "127.0.0.1",
+    userAgent: "test",
+  });
+  const queue = createQueue(h.db);
+  queue.enqueue = async () => {
+    throw new Error("queue unavailable");
+  };
+  const app = createApp({
+    env,
+    db: h.db,
+    objects: h.objects,
+    mailer: h.mailer,
+    queue,
+    faces: new FakeFaceEngine(new MemoryFaceIndexStore()),
+  });
+  const form = new FormData();
+  form.set("selfie", new File([Buffer.from("not really a jpeg")], "me.jpg", { type: "image/jpeg" }));
+  const response = await app.request(
+    new Request(`http://api.local/v1/events/${h.event.slug}/selfie`, {
+      method: "POST",
+      headers: { cookie },
+      body: form,
+    }),
+  );
+  assert.equal(response.status, 500);
+  const selfiePrefix = `selfies/${h.event.id}/`;
+  assert.deepEqual(
+    [...h.objects.objects.keys()].filter((key) => key.startsWith(selfiePrefix)),
+    [],
+  );
+});
+
 // ---- v5 (agent A): gallery reason, admin requeue --------------------------------------------
 
 test("gallery reports the last match reason and null after a successful match", async () => {

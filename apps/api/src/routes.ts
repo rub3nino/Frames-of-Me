@@ -246,11 +246,26 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const image = await readSelfie(c);
     const key = objectKeys.selfie(event.id, user.id, randomUUID());
     await deps.objects.put(key, image.bytes, image.contentType);
-    await deps.queue.enqueue("match", {
-      userId: user.id,
-      eventId: event.id,
-      selfieKey: key,
-    });
+    // The object is written before the job that owns it, so a failed enqueue would leave a
+    // PHOTOGRAPH OF A FACE that nothing in the system references: a selfie key lives on the
+    // match job and, after a match, on `galleries.selfie_key`, and the worker's housekeeping
+    // only ever sweeps `upload_sessions`. Nothing could reach it again. The `selfies/`
+    // bucket expiry rule is a backstop measured in days; the DPIA promises the file goes
+    // right after the search, so the code deletes it here rather than leaning on the rule.
+    try {
+      await deps.queue.enqueue("match", {
+        userId: user.id,
+        eventId: event.id,
+        selfieKey: key,
+      });
+    } catch (error) {
+      await deps.objects.delete(key).catch(() => {
+        // Best effort: the lifecycle rule is the only remaining backstop, and the enqueue
+        // failure is what the caller must be told about.
+        console.error(`orphaned selfie object ${key}`);
+      });
+      throw error;
+    }
     // The DPIA cites this: whether the selfie went through the browser liveness challenge.
     // The value is asserted by the client (a deterrent, not proof): the server cannot verify
     // the challenge ran. The server-side check, when enabled, is LIVENESS_CHECK in the worker.
