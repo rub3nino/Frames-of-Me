@@ -417,6 +417,51 @@ test("housekeeping prunes old done jobs and aborts stale uploads", async () => {
   assert.deepEqual(again, { prunedJobs: 0, abortedUploads: 0 });
 });
 
+// Guards the single-part branch of `runHousekeeping`: an interrupted single PUT has no
+// multipart upload to abort, so without an explicit `objects.delete` the bytes it already
+// stored stay in the bucket forever with nothing to remove them. v6's crowd upload path is
+// single-PUT-only, so every abandoned crowd upload leaks an object. If this test fails,
+// stale object cleanup has regressed — do not relax it.
+test("housekeeping deletes the orphaned object of a stale single-part upload", async () => {
+  const f = await fixture();
+  const stale = randomUUID();
+  const fresh = randomUUID();
+  const base = {
+    eventId: f.eventId,
+    photographerId: f.photographerId,
+    sha256: "d".repeat(64),
+    contentType: "image/jpeg" as const,
+    bytes: 10,
+    // No `s3UploadId`: a single presigned PUT, not a multipart upload.
+    s3UploadId: null,
+  };
+  const staleKey = `originals/${f.eventId}/${stale}.jpg`;
+  const freshKey = `originals/${f.eventId}/${fresh}.jpg`;
+  await f.db.insertUploadSession({ ...base, id: stale, objectKey: staleKey });
+  f.db.setUploadCreatedAt(stale, new Date(Date.now() - 25 * HOUR));
+  await f.db.insertUploadSession({ ...base, id: fresh, objectKey: freshKey });
+
+  // Both browsers stored their bytes; only the stale one never reached `/complete`.
+  await f.objects.put(staleKey, new Uint8Array([1, 2, 3]), "image/jpeg");
+  await f.objects.put(freshKey, new Uint8Array([4, 5, 6]), "image/jpeg");
+
+  const result = await runHousekeeping(f.deps);
+  assert.equal(result.abortedUploads, 1);
+  assert.equal((await f.db.findUploadSession(stale))?.status, "aborted");
+  assert.equal((await f.db.findUploadSession(fresh))?.status, "open");
+  // The orphan is gone from the bucket...
+  assert.equal(f.objects.objects.has(staleKey), false);
+  // ...and the upload still in progress is untouched.
+  assert.equal(f.objects.objects.has(freshKey), true);
+  // Nothing was aborted as a multipart upload: there was no multipart upload.
+  assert.deepEqual(f.objects.abortedUploads, []);
+
+  // Idempotent: a second run has nothing left to delete and does not throw on the
+  // already-removed key.
+  const again = await runHousekeeping(f.deps);
+  assert.equal(again.abortedUploads, 0);
+});
+
 async function waitFor(condition: () => boolean, timeoutMs = 2000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!condition()) {

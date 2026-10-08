@@ -95,7 +95,16 @@ export async function runHousekeeping(deps: WorkerDeps, now = new Date()): Promi
     olderThan: new Date(now.getTime() - STALE_UPLOAD_MS),
   });
   for (const upload of stale) {
-    if (!upload.s3UploadId) continue;
+    if (!upload.s3UploadId) {
+      // Single PUTs can also leave an orphaned object when the browser disappears
+      // after the upload but before `/complete`.
+      try {
+        await deps.objects.delete(upload.objectKey);
+      } catch {
+        // The object may already have expired or been removed.
+      }
+      continue;
+    }
     try {
       await deps.objects.abortMultipartUpload(upload.objectKey, upload.s3UploadId);
     } catch {

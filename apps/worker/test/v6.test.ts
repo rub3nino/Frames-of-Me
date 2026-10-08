@@ -153,7 +153,18 @@ test("index stores no vector for an album without recognition", async () => {
   assert.deepEqual(await f.db.listExternalIds(photoId), []);
   assert.deepEqual(await f.db.findFaceRowsByPhoto(photoId), []);
   // The photo still finished its pipeline, so it is served and counted like any other.
+  // `status` is the pipeline state machine; `moderation_state` is a separate one and
+  // neither says anything about the other.
   assert.equal((await f.db.findPhoto(photoId))?.status, "indexed");
+  // Ported from main's `d477c3a`: skipping recognition must not skip the derivatives.
+  // Without both of them the album feed drops the photo (it selects on thumb + web),
+  // so "no vector" silently becoming "no thumb" would make the upload disappear.
+  assert.deepEqual(
+    (await f.db.listDerivatives(photoId)).map((row) => row.kind).sort(),
+    ["thumb", "web"],
+  );
+  assert.ok(await f.objects.get(objectKeys.thumb(photoId)), "thumb bytes stored");
+  assert.ok(await f.objects.get(objectKeys.web(photoId)), "web bytes stored");
   // And nothing was attached to any gallery either.
   assert.deepEqual(f.faces.faceSearches, []);
 });
