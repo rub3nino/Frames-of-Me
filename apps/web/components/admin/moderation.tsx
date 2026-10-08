@@ -63,9 +63,45 @@ type PendingReject = {
   origin: "current" | "selection" | "retry";
 };
 
+/** What the Stato select offers. "reported" is this screen's word, not a `moderation_state`. */
+type QueueFilter = ModerationState | "reported";
+
+/**
+ * The query for one page.
+ *
+ * "reported" must NOT be sent as `state`: the api's enum is
+ * pending/approved/rejected/auto_rejected and anything else answers 400, which this screen
+ * reads as "the routes are not deployed" — so the Segnalate filter used to show the
+ * "area C is not in this environment" notice on a perfectly healthy deployment.
+ *
+ * With no `state` the queue is already "everything a moderator still has to look at",
+ * approved photos with open counting reports included, so Segnalate asks for exactly that
+ * plus `includeNotMe`, the `not_me` reports the api leaves out by default.
+ */
+function queryFor(state: QueueFilter, albumId: string, cursor?: string | null): string {
+  const params = new URLSearchParams({ limit: String(PAGE) });
+  if (state === "reported") params.set("includeNotMe", "true");
+  else params.set("state", state);
+  if (albumId) params.set("albumId", albumId);
+  if (cursor) params.set("cursor", cursor);
+  return params.toString();
+}
+
+/**
+ * The rows of a page, keyed however the api spells the id: the shipped route sends
+ * `photoId`, this screen was written against `id`, and the mismatch meant every row was
+ * dropped and the queue looked permanently empty. Normalised to `id` once, here, so the
+ * rest of the screen has one shape to read.
+ */
 function itemsOf(data: ModerationQueueResponse): ModerationQueueItem[] {
   const list = data.photos ?? data.items ?? [];
-  return list.filter((row): row is ModerationQueueItem => typeof row?.id === "string");
+  const rows: ModerationQueueItem[] = [];
+  for (const row of list) {
+    const id =
+      typeof row?.id === "string" ? row.id : typeof row?.photoId === "string" ? row.photoId : null;
+    if (id) rows.push({ ...row, id });
+  }
+  return rows;
 }
 
 function imageOf(item: ModerationQueueItem): string | null {
@@ -73,13 +109,13 @@ function imageOf(item: ModerationQueueItem): string | null {
 }
 
 function reportsOf(item: ModerationQueueItem): number {
-  return item.reportCount ?? item.reports?.length ?? 0;
+  return item.reportCount ?? item.openReports ?? item.reports?.length ?? 0;
 }
 
 export function ModerationSection({ event }: { event: AdminEvent | null }) {
   const [albums, setAlbums] = useState<Album[]>([]);
   const [albumId, setAlbumId] = useState<string>("");
-  const [state, setState] = useState<ModerationState | "reported">("pending");
+  const [state, setState] = useState<QueueFilter>("pending");
   const [queue, setQueue] = useState<ModerationQueueItem[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [index, setIndex] = useState(0);
@@ -114,10 +150,8 @@ export function ModerationSection({ event }: { event: AdminEvent | null }) {
       setLoading(true);
       setError(null);
       try {
-        const params = new URLSearchParams({ state, limit: String(PAGE) });
-        if (albumId) params.set("albumId", albumId);
-        if (!reset && cursor) params.set("cursor", cursor);
-        const data = await api<ModerationQueueResponse>(`/v1/admin/moderation?${params.toString()}`);
+        const query = queryFor(state, albumId, reset ? null : cursor);
+        const data = await api<ModerationQueueResponse>(`/v1/admin/moderation?${query}`);
         const rows = itemsOf(data);
         setUnavailable(false);
         setQueue((current) => (reset ? rows : [...current, ...rows]));
@@ -150,9 +184,9 @@ export function ModerationSection({ event }: { event: AdminEvent | null }) {
       setLoading(true);
       setError(null);
       try {
-        const params = new URLSearchParams({ state, limit: String(PAGE) });
-        if (albumId) params.set("albumId", albumId);
-        const data = await api<ModerationQueueResponse>(`/v1/admin/moderation?${params.toString()}`);
+        const data = await api<ModerationQueueResponse>(
+          `/v1/admin/moderation?${queryFor(state, albumId)}`,
+        );
         setUnavailable(false);
         setQueue(itemsOf(data));
         setCursor(data.nextCursor ?? null);
@@ -389,7 +423,7 @@ export function ModerationSection({ event }: { event: AdminEvent | null }) {
         </label>
         <label>
           Stato
-          <select value={state} onChange={(e) => setState(e.target.value as ModerationState | "reported")}>
+          <select value={state} onChange={(e) => setState(e.target.value as QueueFilter)}>
             <option value="pending">In attesa</option>
             <option value="reported">Segnalate</option>
             <option value="auto_rejected">Scartate dallo screening</option>
@@ -505,6 +539,20 @@ export function ModerationSection({ event }: { event: AdminEvent | null }) {
                   </li>
                 ))}
               </ul>
+            ) : current.reasons && current.reasons.length > 0 ? (
+              // The shipped route sends the distinct reasons, not the individual reports.
+              <ul className="list">
+                {current.reasons.map((reason) => (
+                  <li key={`${current.id}-${reason}`}>
+                    <span className="name">{reason}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            {current.notMeReports ? (
+              <p className="fine">
+                {current.notMeReports} segnalazioni «non sono io»: non contano verso la soglia.
+              </p>
             ) : null}
             <div className="actions inline">
               <button className="button primary" type="button" onClick={() => judge("approved")}>
