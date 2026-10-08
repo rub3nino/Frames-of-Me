@@ -1046,6 +1046,47 @@ test("web stage creates a pending photo with its web derivative and queues deriv
   assert.equal(metrics.photosByStatus.uploaded, 1);
 });
 
+test("public web-first upload completes with a null photographer and pending moderation (v4 report B1)", async () => {
+  // The public web-first path differs from the official one: photographer_id is null and
+  // the complete inserts a moderation row. v4 saw this 500 on the live box (migration drift);
+  // this locks the path's shape in so a regression is caught here.
+  const h = await harness();
+  const participant = await h.db.createUser({ email: "public@example.com", role: "participant" });
+  const cookie = await sessionCookie(h.db, participant.id);
+  const original = Buffer.from(`orig-${"o".repeat(400)}`);
+  const web = Buffer.from(`web-${"w".repeat(80)}`);
+  const init = await h.app.request(
+    json(
+      "POST",
+      "/v1/uploads/init",
+      {
+        eventId: h.event.id,
+        collection: "public",
+        filename: "p.jpg",
+        contentType: "image/jpeg",
+        sha256: sha256(original),
+        bytes: web.byteLength,
+        stage: "web",
+        originalContentType: "image/jpeg",
+        originalBytes: original.byteLength,
+      },
+      { cookie },
+    ),
+  );
+  assert.equal(init.status, 201);
+  const session = (await init.json()) as { id: string; objectKey: string };
+  await h.objects.put(session.objectKey, web, "image/jpeg");
+  const complete = await h.app.request(
+    json("POST", `/v1/uploads/${session.id}/complete`, { parts: [] }, { cookie }),
+  );
+  assert.equal(complete.status, 201);
+  const { photoId } = (await complete.json()) as { photoId: string };
+  const photo = await h.db.findPhoto(photoId);
+  assert.equal(photo?.collection, "public");
+  assert.equal(photo?.photographerId, null, "a public upload has no official photographer");
+  assert.equal(photo?.originalStatus, "pending");
+});
+
 test("web stage complete with a byte mismatch aborts the session and drops the object", async () => {
   const h = await harness();
   const { cookie } = await photographerCookie(h);
