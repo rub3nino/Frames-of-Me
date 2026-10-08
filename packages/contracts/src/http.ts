@@ -1162,6 +1162,22 @@ export const REPORT_NOTE_MAX = 500;
 /** Reports per participant are counted over this window (REPORT_PER_USER). */
 export const REPORT_RATE_LIMIT = { windowSeconds: 60 * 60 } as const;
 
+/**
+ * Crowd-album uploads per participant are counted over this window
+ * (`ALBUM_UPLOAD_MAX_PER_HOUR`, ported from main's `PUBLIC_UPLOAD_RATE_LIMIT`).
+ *
+ * Counted per `(album, uploader)`, which under this model means
+ * `(upload_sessions.album_id, upload_sessions.photographer_id)`: since migration 009
+ * `photographer_id` IS the uploader, and for a crowd album it is the participant (the
+ * schema says so in a `comment on column`). There is no `uploader_id` here.
+ *
+ * Why an album and not an event: an event can hold several crowd albums with different
+ * `uploads_open` and `max_photos_per_user` settings, and the gate belongs where those live.
+ * It is deliberately NOT a substitute for `albums.max_photos_per_user`: that is an absolute
+ * cap on the album (and defaults to `null`, unlimited), this bounds the burst.
+ */
+export const ALBUM_UPLOAD_RATE_LIMIT = { windowSeconds: 60 * 60 } as const;
+
 export const reportBodySchema = z
   .object({
     reason: reportReasonSchema,
@@ -1232,6 +1248,41 @@ export const albumPhotosResponseSchema = z
     quota: z
       .object({ used: z.number().int().nonnegative(), max: z.number().int().positive().nullable() })
       .strict(),
+  })
+  .strict();
+
+/**
+ * Which rendition a crowd-album photo may be downloaded as, and the answer is: a derivative,
+ * never the original.
+ *
+ * Main offered `original` here (its `galleryDownloadBodySchema` is shared with the personal
+ * match gallery, where `original` is the whole point — those are the photographer's own
+ * photos of you, and the download is the product). A crowd album is different in kind: the
+ * photos are other participants' camera originals, carrying full-resolution faces and
+ * whatever EXIF the phone wrote, uploaded by someone who was sharing a moment with the room
+ * and not publishing a master. Handing the original to every other participant is a decision
+ * nobody has taken, so the conservative answer is encoded here rather than assumed.
+ *
+ * It is a one-value enum and not an omitted field on purpose: `{"variant":"original"}` gets a
+ * 400 that says the request was understood and refused, instead of silently receiving the
+ * 1600 px web derivative and believing it is the original. Widening it is a one-line change
+ * IF someone decides the product wants it — and it is a product decision, not a code one.
+ */
+export const crowdDownloadVariantSchema = z.enum(["web"]);
+export type CrowdDownloadVariant = z.infer<typeof crowdDownloadVariantSchema>;
+
+export const albumDownloadBodySchema = z
+  .object({
+    photoIds: z.array(z.string().uuid()).min(1).max(DOWNLOAD_MAX_PHOTOS),
+    variant: crowdDownloadVariantSchema.default("web"),
+  })
+  .strict();
+
+export const albumDownloadResponseSchema = z
+  .object({
+    urls: z.array(
+      z.object({ photoId: z.string().uuid(), url: z.string().min(1) }).strict(),
+    ),
   })
   .strict();
 

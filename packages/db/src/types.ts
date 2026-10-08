@@ -592,6 +592,19 @@ export interface Database {
    */
   countAlbumPhotosByUploader(albumId: string, uploaderId: string): Promise<number>;
   /**
+   * The BURST gate of the crowd upload path (`ALBUM_UPLOAD_MAX_PER_HOUR`): upload sessions
+   * this uploader has STARTED in the album since `since`, whatever became of them.
+   *
+   * Sessions, not photos, and deliberately regardless of `status`: an aborted or abandoned
+   * session still cost a presigned PUT and possibly the bytes behind it, so a loop that
+   * inits and walks away has to count. `countAlbumPhotosByUploader` is the other, absolute
+   * cap and counts rows that landed.
+   *
+   * `photographer_id` is the uploader here (migration 009's `comment on column`); there is
+   * no `uploader_id` column in this model.
+   */
+  countAlbumUploadsSince(albumId: string, uploaderId: string, since: Date): Promise<number>;
+  /**
    * Writes `moderation_state` and, for a human ruling, `moderated_by` / `moderated_at`.
    * `moderatorId` null is the automatic path (the screening hook, the report threshold):
    * the state moves but the two audit columns stay empty, so a queue row still reads as
@@ -655,6 +668,17 @@ export interface Database {
     albumId: string,
     input: { limit: number; cursor?: UploadCursor },
   ): Promise<{ items: AlbumPhoto[]; nextCursor: UploadCursor | null }>;
+  /**
+   * The same rows as {@link listAlbumPhotosPage} but selected by id, for the download route.
+   *
+   * Every clause of that filter is repeated here on purpose rather than resolved from
+   * `photos` by id: the album, `moderation_state = 'approved'` and both derivatives present.
+   * It is what makes the caller's `photos.length !== new Set(ids).size` comparison a real
+   * IDOR guard — an id belonging to the official album, or to a photo the report threshold
+   * withheld, is simply absent from the result and the whole batch is refused. Duplicates in
+   * `ids` collapse, so the caller compares against the distinct count.
+   */
+  listAlbumPhotosByIds(albumId: string, ids: string[]): Promise<AlbumPhoto[]>;
   // ---- privacy and retention scheduling v6 (agent G) -------------------------------------
   /** What the participant sees on "I miei dati", and what an admin sees for them. */
   findConsentState(userId: string, eventId: string): Promise<ConsentState>;

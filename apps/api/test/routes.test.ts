@@ -25,6 +25,7 @@ import {
 import { createApp } from "../src/app.ts";
 import { hashPassword, sha256Hex } from "../src/crypto.ts";
 import type { AppDeps } from "../src/deps.ts";
+import { incrementSharedLimit } from "../src/distributed-rate-limit.ts";
 import { MESSAGES } from "../src/errors.ts";
 import type { Mailer, MailMessage } from "../src/mailer.ts";
 import type {
@@ -471,6 +472,46 @@ test("upload init needs membership, rejects oversize files, and binds the byte c
   assert.equal(session?.bytes, 1234);
 });
 
+test("upload complete rejects bytes stored under a content type the PUT was not signed for", async () => {
+  // Ported from main's fda8d64. The presigned PUT is issued FOR `image/jpeg`; S3 keeps
+  // whatever `Content-Type` the client sent. Without the check the signed URL is a way to
+  // park arbitrary bytes in the bucket.
+  const h = await harness();
+  const photographer = await h.db.findUserByEmailRole(
+    "photographer@rephoto.local",
+    "photographer",
+  );
+  assert.ok(photographer);
+  const cookie = await sessionCookie(h.db, photographer.id);
+  const bytes = Buffer.from("MZ\u0090\u0000not an image at all");
+  const init = await h.app.request(
+    json(
+      "POST",
+      "/v1/uploads/init",
+      {
+        eventId: h.event.id,
+        filename: "a.jpg",
+        contentType: "image/jpeg",
+        sha256: sha256(bytes),
+        bytes: bytes.byteLength,
+      },
+      { cookie },
+    ),
+  );
+  assert.equal(init.status, 201);
+  const session = (await init.json()) as { id: string; objectKey: string };
+  // Same key, same byte count, a different stored content type.
+  await h.objects.put(session.objectKey, bytes, "application/x-msdownload");
+  const complete = await h.app.request(
+    json("POST", `/v1/uploads/${session.id}/complete`, { parts: [] }, { cookie }),
+  );
+  assert.equal(complete.status, 400);
+  assert.deepEqual(await complete.json(), { error: MESSAGES.validation });
+  assert.equal((await h.db.findUploadSession(session.id))?.status, "aborted");
+  // And the bytes are gone, not just unreferenced.
+  assert.equal(h.objects.objects.has(session.objectKey), false);
+});
+
 test("upload complete rejects a byte mismatch and aborts the session", async () => {
   const h = await harness();
   const photographer = await h.db.findUserByEmailRole(
@@ -866,6 +907,129 @@ test("selfie is refused when the event is list-based and the email is not on it"
   assert.deepEqual(await imported.json(), { inserted: 2 });
   const allowed = await selfie();
   assert.equal(allowed.status, 202);
+});
+
+test("every participant route of a list-based event refuses an email that is not on the list", async () => {
+  // Ported from main's `requireParticipantAccess` (commit 8d80c59). On v6 the allowlist was
+  // checked in `POST /v1/events/:slug/selfie` and nowhere else, so consent, the gallery, its
+  // download, its zip and its feedback were all reachable by a signed-in participant who did
+  // not belong to the event. This locks all six down at once.
+  const h = await harness();
+  const admin = await h.db.findUserByEmailRole("admin@rephoto.local", "admin");
+  assert.ok(admin);
+  const adminCookie = await sessionCookie(h.db, admin.id);
+  assert.equal(
+    (
+      await h.app.request(
+        json("PATCH", `/v1/admin/events/${h.event.id}`, { access: "list" }, { cookie: adminCookie }),
+      )
+    ).status,
+    200,
+  );
+
+  const outsider = await h.db.createUser({ email: "outsider@example.com", role: "participant" });
+  const cookie = await sessionCookie(h.db, outsider.id);
+  // Seeded BEFORE the gate is exercised, so the 403s are the allowlist talking and not an
+  // empty gallery: without the gate these would be 200/201.
+  const seeded = await seedGallery(h, outsider.id, 1);
+  const photoId = seeded[0]!.photoId;
+
+  const attempts: Array<[string, Request]> = [
+    [
+      "consent",
+      json(
+        "POST",
+        `/v1/events/${h.event.slug}/consent`,
+        { textVersion: CONSENT_TEXT_VERSION, accepted: true },
+        { cookie },
+      ),
+    ],
+    [
+      "gallery",
+      new Request(`http://api.local/v1/events/${h.event.slug}/gallery`, { headers: { cookie } }),
+    ],
+    [
+      "gallery/download",
+      json("POST", `/v1/events/${h.event.slug}/gallery/download`, { photoIds: [photoId] }, { cookie }),
+    ],
+    [
+      "gallery/zip",
+      json("POST", `/v1/events/${h.event.slug}/gallery/zip`, { photoIds: [photoId] }, { cookie }),
+    ],
+    [
+      "gallery/feedback",
+      json(
+        "POST",
+        `/v1/events/${h.event.slug}/gallery/feedback`,
+        { photoId, verdict: "me" },
+        { cookie },
+      ),
+    ],
+  ];
+  for (const [name, request] of attempts) {
+    const response = await h.app.request(request);
+    assert.equal(response.status, 403, `${name} should be 403 before the import`);
+    assert.deepEqual(await response.json(), { error: MESSAGES.notOnList }, name);
+  }
+
+  // The same six calls succeed once the email is imported — the gate is the allowlist and
+  // nothing else (notably NOT an `event_members` row, which a magic-link participant never has).
+  assert.equal(
+    (
+      await h.app.request(
+        json(
+          "POST",
+          "/v1/admin/participants/import",
+          { eventId: h.event.id, emails: ["Outsider@Example.com"] },
+          { cookie: adminCookie },
+        ),
+      )
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      await h.app.request(
+        json(
+          "POST",
+          `/v1/events/${h.event.slug}/consent`,
+          { textVersion: CONSENT_TEXT_VERSION, accepted: true },
+          { cookie },
+        ),
+      )
+    ).status,
+    201,
+  );
+  const gallery = await h.app.request(
+    new Request(`http://api.local/v1/events/${h.event.slug}/gallery`, { headers: { cookie } }),
+  );
+  assert.equal(gallery.status, 200);
+  assert.equal(
+    (
+      await h.app.request(
+        json(
+          "POST",
+          `/v1/events/${h.event.slug}/gallery/download`,
+          { photoIds: [photoId] },
+          { cookie },
+        ),
+      )
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      await h.app.request(
+        json(
+          "POST",
+          `/v1/events/${h.event.slug}/gallery/feedback`,
+          { photoId, verdict: "me" },
+          { cookie },
+        ),
+      )
+    ).status,
+    201,
+  );
 });
 
 test("health reports 503 when the database does not answer", async () => {
@@ -1385,6 +1549,50 @@ test("selfie records the liveness field in the audit log and defaults it to file
       [participant.id, "selfie.submitted", target, { liveness: "challenge" }],
       [participant.id, "selfie.submitted", target, { liveness: "file" }],
     ],
+  );
+});
+
+test("a selfie whose match job cannot be enqueued leaves no object behind", async () => {
+  // The selfie object is written before the job that owns it, and a selfie key is only ever
+  // referenced by that job and, after a match, by `galleries.selfie_key`. The worker's
+  // housekeeping sweeps `upload_sessions` and nothing else, so an object stranded here could
+  // never be reached again — and it is a photograph of someone's face.
+  const h = await harness();
+  const participant = await h.db.createUser({ email: "orphan@example.com", role: "participant" });
+  const cookie = await sessionCookie(h.db, participant.id);
+  await h.db.insertConsent({
+    userId: participant.id,
+    eventId: h.event.id,
+    textVersion: CONSENT_TEXT_VERSION,
+    ip: "127.0.0.1",
+    userAgent: "test",
+  });
+  const queue = createQueue(h.db);
+  queue.enqueue = async () => {
+    throw new Error("queue unavailable");
+  };
+  const app = createApp({
+    env,
+    db: h.db,
+    objects: h.objects,
+    mailer: h.mailer,
+    queue,
+    faces: new FakeFaceEngine(new MemoryFaceIndexStore()),
+  });
+  const form = new FormData();
+  form.set("selfie", new File([Buffer.from("not really a jpeg")], "me.jpg", { type: "image/jpeg" }));
+  const response = await app.request(
+    new Request(`http://api.local/v1/events/${h.event.slug}/selfie`, {
+      method: "POST",
+      headers: { cookie },
+      body: form,
+    }),
+  );
+  assert.equal(response.status, 500);
+  const selfiePrefix = `selfies/${h.event.id}/`;
+  assert.deepEqual(
+    [...h.objects.objects.keys()].filter((key) => key.startsWith(selfiePrefix)),
+    [],
   );
 });
 
@@ -2188,6 +2396,102 @@ test("BOOTSTRAP_ADMINS upserts admins at boot", async () => {
   assert.equal(parsed.BOOTSTRAP_ADMINS, "x@example.com");
   assert.equal(parsed.RATE_LIMIT_EXEMPT_IPS, "10.0.0.0/8");
   assert.equal(parsed.MAGIC_LINK_PER_IP, 0);
+});
+
+test("the shared rate limiter is optional, needs both halves, and falls back when it breaks", async () => {
+  const base = {
+    DATABASE_URL: "postgres://x",
+    S3_BUCKET: "b",
+    S3_REGION: "eu-central-1",
+    SESSION_SECRET: "test-session-secret-value",
+    FACE_ENGINE: "fake",
+    SMTP_HOST: "localhost",
+    SMTP_PORT: "1025",
+    SMTP_FROM: "noreply@rephoto.local",
+    WEB_ORIGIN: "http://localhost:3000",
+    API_ORIGIN: "http://localhost:8787",
+  };
+  // Neither half: the limiter is simply absent and the database count is the whole story.
+  const none = envSchema.parse(base);
+  assert.equal(none.UPSTASH_REDIS_REST_URL, undefined);
+  assert.equal(none.UPSTASH_REDIS_REST_TOKEN, undefined);
+  assert.equal(none.ALBUM_UPLOAD_MAX_PER_HOUR, 20);
+  // Half of it configured is a limiter that would 401 forever, or a token pointing nowhere:
+  // both refuse to boot rather than silently degrade.
+  assert.throws(() => envSchema.parse({ ...base, UPSTASH_REDIS_REST_URL: "https://x.upstash.io" }));
+  assert.throws(() => envSchema.parse({ ...base, UPSTASH_REDIS_REST_TOKEN: "tok" }));
+  const both = envSchema.parse({
+    ...base,
+    UPSTASH_REDIS_REST_URL: "https://x.upstash.io/",
+    UPSTASH_REDIS_REST_TOKEN: "tok",
+    ALBUM_UPLOAD_MAX_PER_HOUR: "3",
+  });
+  assert.equal(both.UPSTASH_REDIS_REST_URL, "https://x.upstash.io/");
+  assert.equal(both.ALBUM_UPLOAD_MAX_PER_HOUR, 3);
+
+  // And the limiter itself: null when unconfigured, the INCR result when it answers, a throw
+  // when it does not — which is what lets the call site fall back instead of failing closed.
+  assert.equal(await incrementSharedLimit({ key: "k", windowSeconds: 60 }), null);
+  assert.equal(
+    await incrementSharedLimit({ token: "t", key: "k", windowSeconds: 60 }),
+    null,
+    "a token without a url is still unconfigured",
+  );
+  assert.equal(
+    await incrementSharedLimit({ url: "https://x.y", key: "k", windowSeconds: 60 }),
+    null,
+    "a url without a token is still unconfigured",
+  );
+
+  const realFetch = globalThis.fetch;
+  const calls: Array<{ url: string; body: unknown; auth: string | undefined }> = [];
+  try {
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      calls.push({
+        url: String(input),
+        body: JSON.parse(String(init?.body)),
+        auth: headers.get("authorization") ?? undefined,
+      });
+      return new Response(JSON.stringify([{ result: 7 }, { result: 1 }]), { status: 200 });
+    }) as typeof globalThis.fetch;
+    assert.equal(
+      await incrementSharedLimit({
+        url: "https://x.upstash.io/",
+        token: "tok",
+        key: "rephoto:album-upload:a:u",
+        windowSeconds: 3600,
+      }),
+      7,
+    );
+    assert.deepEqual(calls, [
+      {
+        // The trailing slash of the configured URL must not double up.
+        url: "https://x.upstash.io/pipeline",
+        body: [
+          ["INCR", "rephoto:album-upload:a:u"],
+          ["EXPIRE", "rephoto:album-upload:a:u", 3600],
+        ],
+        auth: "Bearer tok",
+      },
+    ]);
+
+    globalThis.fetch = (async () => new Response("nope", { status: 500 })) as typeof globalThis.fetch;
+    await assert.rejects(
+      incrementSharedLimit({ url: "https://x.y", token: "t", key: "k", windowSeconds: 60 }),
+      /shared rate limiter returned 500/,
+    );
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify([{ result: "not a number" }]), {
+        status: 200,
+      })) as typeof globalThis.fetch;
+    await assert.rejects(
+      incrementSharedLimit({ url: "https://x.y", token: "t", key: "k", windowSeconds: 60 }),
+      /invalid count/,
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });
 
 // ---- integration fix 2: rematch is defence in depth on consent -----------------------------

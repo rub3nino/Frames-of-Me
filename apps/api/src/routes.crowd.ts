@@ -23,6 +23,8 @@
 import { randomUUID } from "node:crypto";
 import type { Hono } from "hono";
 import {
+  ALBUM_UPLOAD_RATE_LIMIT,
+  albumDownloadBodySchema,
   albumPhotosQuerySchema,
   albumUploadInitBodySchema,
   moderateBodySchema,
@@ -45,9 +47,11 @@ import {
   type UploadSessionRow,
 } from "@rephoto/db";
 import type { AppDeps, AppEnv } from "./deps.js";
+import { incrementSharedLimit } from "./distributed-rate-limit.js";
 import { ApiError, MESSAGES } from "./errors.js";
 import { decodeCursor, encodeCursor, readJson, requireRole, requireUser, since } from "./http.js";
 import { purgePhoto } from "./purge.js";
+import { rateLimitExempt } from "./routes.js";
 import { noopScreening } from "./screening.js";
 
 export function registerCrowdRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
@@ -60,6 +64,12 @@ export function registerCrowdRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const body = albumUploadInitBodySchema.safeParse(await readJson(c));
     if (!body.success) throw new ApiError(400, MESSAGES.validation);
     const input = body.data;
+
+    // The burst gate, ported from main's `PUBLIC_UPLOAD_RATE_LIMIT`. This path had NO rate
+    // limit at all: `assertBelowCap` below bounds the total an uploader may hold in the
+    // album, which is a different property and does nothing whatever when
+    // `max_photos_per_user` is null — the column's default.
+    await assertUploadRate(deps, c.get("ip"), album, user.id);
 
     // Clause 4 of C2: approved + pending in this album, below the album's cap. Checked here
     // and again at complete, because an init is cheap to repeat and the cap must hold on the
@@ -159,6 +169,15 @@ export function registerCrowdRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     if (session.bytes !== null && stored.bytes !== session.bytes) {
       await discard(deps, session);
       throw new ApiError(400, MESSAGES.sizeMismatch);
+    }
+    // Ported from main's fda8d64, and this is the higher-risk of the two paths because it is
+    // the one open to participants. `albumUploadInitBodySchema` restricts the declared type
+    // to image/jpeg or image/png and the PUT is signed for it, but S3 stores whatever
+    // `Content-Type` the client actually sent: without this check the signed URL is a way for
+    // any signed-in participant to park arbitrary bytes in the bucket.
+    if (stored.contentType !== session.contentType) {
+      await discard(deps, session);
+      throw new ApiError(400, MESSAGES.validation);
     }
     // The cap again, on the row count this time: two inits in flight must not both land.
     try {
@@ -272,9 +291,10 @@ export function registerCrowdRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       limit,
       ...(cursor ? { cursor } : {}),
     });
-    const photos = [];
-    for (const row of page.items) {
-      photos.push({
+    // Order is the contract (the cursor is the last row of the page), so `Promise.all` over a
+    // `map` rather than anything that reorders.
+    const photos = await Promise.all(
+      page.items.map(async (row) => ({
         id: row.id,
         albumId: row.albumId,
         uploaderId: row.uploaderId,
@@ -282,14 +302,54 @@ export function registerCrowdRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
         thumbUrl: await deps.objects.presignGet(row.thumbKey),
         webUrl: await deps.objects.presignGet(row.webKey),
         mine: row.uploaderId === user.id,
-      });
-    }
+      })),
+    );
     const used = await deps.db.countAlbumPhotosByUploader(album.id, user.id);
     return c.json({
       photos,
       nextCursor: page.nextCursor ? encodeCrowdCursor(page.nextCursor) : null,
       quota: { used, max: album.maxPhotosPerUser },
     });
+  });
+
+  // --- the crowd download, with main's IDOR guard -----------------------------------------
+
+  app.post("/v1/albums/:albumId/photos/download", async (c) => {
+    const user = requireUser(c);
+    requireRole(user, ["participant", "photographer", "admin"]);
+    const album = await loadAlbum(deps, c.req.param("albumId"));
+    // Exactly the gate of `GET /v1/albums/:albumId/photos`: a download must never see more
+    // than the feed it is a download OF.
+    if (user.role === "participant") {
+      if (album.visibility === "staff") throw new ApiError(403, MESSAGES.forbidden);
+      await assertEventMember(deps, album, user.id, user.email);
+    }
+    const body = albumDownloadBodySchema.safeParse(await readJson(c));
+    if (!body.success) throw new ApiError(400, MESSAGES.validation);
+    const photos = await deps.db.listAlbumPhotosByIds(album.id, body.data.photoIds);
+    // Main's IDOR guard (`listPublicPhotosByIds` + this comparison), and the reason it is a
+    // comparison rather than a filter: anything the lookup did not return — an id in the
+    // official album, an id in another event's album, a photo the report threshold withheld,
+    // a photo whose derivatives have not landed — makes the WHOLE batch a 404. Returning the
+    // subset that happened to qualify would turn this route into an oracle for which uuids
+    // exist and which are approved, one id per request.
+    if (photos.length !== new Set(body.data.photoIds).size) {
+      throw new ApiError(404, MESSAGES.notFound);
+    }
+    // Derivatives only: see `crowdDownloadVariantSchema`. `original` is a 400 at the schema.
+    const urls = await Promise.all(
+      photos.map(async (photo) => ({
+        photoId: photo.id,
+        url: await deps.objects.presignGet(photo.webKey),
+      })),
+    );
+    await deps.db.insertAudit({
+      actorId: user.id,
+      action: "album.download",
+      target: `album:${album.id}`,
+      meta: { eventId: album.eventId, photos: urls.length, variant: body.data.variant },
+    });
+    return c.json({ urls });
   });
 
   // --- C2: the report button --------------------------------------------------------------
@@ -378,9 +438,8 @@ export function registerCrowdRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       limit: query.data.limit,
       ...(cursor ? { cursor } : {}),
     });
-    const items = [];
-    for (const row of page.items) {
-      items.push({
+    const items = await Promise.all(
+      page.items.map(async (row) => ({
         photoId: row.photoId,
         albumId: row.albumId,
         eventId: row.eventId,
@@ -392,8 +451,8 @@ export function registerCrowdRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
         notMeReports: row.notMeReports,
         thumbUrl: row.thumbKey ? await deps.objects.presignGet(row.thumbKey) : null,
         webUrl: row.webKey ? await deps.objects.presignGet(row.webKey) : null,
-      });
-    }
+      })),
+    );
     return c.json({
       items,
       nextCursor: page.nextCursor ? encodeCrowdCursor(page.nextCursor) : null,
@@ -542,6 +601,57 @@ async function crowdAlbumForUpload(
   await assertOnEventList(deps, event, email);
   await deps.db.addEventMember({ userId, eventId: event.id, source: "upload" });
   return album;
+}
+
+/**
+ * The burst gate on the crowd upload path, ported from main's `PUBLIC_UPLOAD_RATE_LIMIT`
+ * (this path had no rate limit of any kind). Counts the sessions this uploader has started
+ * in THIS album in the last hour, and 429s at `ALBUM_UPLOAD_MAX_PER_HOUR`.
+ *
+ * Why this flow gets the shared limiter rather than an in-process `Map` window like
+ * self-registration or tagging: the three kinds of limiter in this repo are spelled out in
+ * distributed-rate-limit.ts, and the decision for THIS flow is that the in-process kind is
+ * not good enough. A `Map` window multiplies by the replica count, and unlike registration
+ * (whose hard backstop is `event_codes.max_uses`, one statement in the database) a crowd
+ * upload has no backstop at all on the default album: `max_photos_per_user` is nullable and
+ * null means unlimited. The thing being bounded is bytes written to object storage by an
+ * authenticated stranger, so the limit has to be real with any number of replicas.
+ *
+ * So: Upstash when it is configured (no query on the hot path), and a `upload_sessions`
+ * count otherwise — which is exact and cross-replica on its own. The database is the
+ * correctness floor and Redis is the optimisation, never the reverse. A Redis error is
+ * logged and falls back rather than failing the upload, because the fallback is correct.
+ */
+async function assertUploadRate(
+  deps: AppDeps,
+  ip: string,
+  album: AlbumRow,
+  userId: string,
+): Promise<void> {
+  const max = deps.env.ALBUM_UPLOAD_MAX_PER_HOUR;
+  if (max <= 0 || rateLimitExempt(deps, ip)) return;
+  let started: number | null = null;
+  try {
+    started = await incrementSharedLimit({
+      ...(deps.env.UPSTASH_REDIS_REST_URL ? { url: deps.env.UPSTASH_REDIS_REST_URL } : {}),
+      ...(deps.env.UPSTASH_REDIS_REST_TOKEN ? { token: deps.env.UPSTASH_REDIS_REST_TOKEN } : {}),
+      // Album, not event: sibling crowd albums have their own `uploads_open` and caps.
+      key: `rephoto:album-upload:${album.id}:${userId}`,
+      windowSeconds: ALBUM_UPLOAD_RATE_LIMIT.windowSeconds,
+    });
+  } catch (error) {
+    console.error(`shared upload limiter unavailable: ${String(error)}`);
+  }
+  if (started === null) {
+    // `+ 1` counts the request being authorised now, which the INCR above already did.
+    started =
+      (await deps.db.countAlbumUploadsSince(
+        album.id,
+        userId,
+        since(ALBUM_UPLOAD_RATE_LIMIT.windowSeconds),
+      )) + 1;
+  }
+  if (started > max) throw new ApiError(429, MESSAGES.rateLimited);
 }
 
 /** Clause 4 of C2: approved + pending in this album, strictly below the album's cap. */

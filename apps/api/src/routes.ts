@@ -211,6 +211,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const user = requireUser(c);
     requireRole(user, ["participant"]);
     const event = await loadEvent(deps, c.req.param("slug"));
+    await requireParticipantAccess(deps, user, event);
     const body = consentBodySchema.safeParse(await readJson(c));
     if (!body.success) throw new ApiError(400, MESSAGES.validation);
     const consent = await deps.db.insertConsent({
@@ -230,12 +231,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const user = requireUser(c);
     requireRole(user, ["participant"]);
     const event = await loadEvent(deps, c.req.param("slug"));
-    if (
-      event.access === "list" &&
-      !(await deps.db.isEventParticipant(event.id, user.email.toLowerCase()))
-    ) {
-      throw new ApiError(403, MESSAGES.notOnList);
-    }
+    await requireParticipantAccess(deps, user, event);
     if (!(await deps.db.hasActiveConsent(user.id, event.id))) {
       throw new ApiError(403, MESSAGES.consentRequired);
     }
@@ -250,11 +246,26 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const image = await readSelfie(c);
     const key = objectKeys.selfie(event.id, user.id, randomUUID());
     await deps.objects.put(key, image.bytes, image.contentType);
-    await deps.queue.enqueue("match", {
-      userId: user.id,
-      eventId: event.id,
-      selfieKey: key,
-    });
+    // The object is written before the job that owns it, so a failed enqueue would leave a
+    // PHOTOGRAPH OF A FACE that nothing in the system references: a selfie key lives on the
+    // match job and, after a match, on `galleries.selfie_key`, and the worker's housekeeping
+    // only ever sweeps `upload_sessions`. Nothing could reach it again. The `selfies/`
+    // bucket expiry rule is a backstop measured in days; the DPIA promises the file goes
+    // right after the search, so the code deletes it here rather than leaning on the rule.
+    try {
+      await deps.queue.enqueue("match", {
+        userId: user.id,
+        eventId: event.id,
+        selfieKey: key,
+      });
+    } catch (error) {
+      await deps.objects.delete(key).catch(() => {
+        // Best effort: the lifecycle rule is the only remaining backstop, and the enqueue
+        // failure is what the caller must be told about.
+        console.error(`orphaned selfie object ${key}`);
+      });
+      throw error;
+    }
     // The DPIA cites this: whether the selfie went through the browser liveness challenge.
     // The value is asserted by the client (a deterrent, not proof): the server cannot verify
     // the challenge ran. The server-side check, when enabled, is LIVENESS_CHECK in the worker.
@@ -276,6 +287,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const cursor = query.data.cursor ? decodeGalleryCursor(query.data.cursor) : undefined;
     if (cursor === null) throw new ApiError(400, MESSAGES.validation);
     const limit = query.data.limit;
+    await requireParticipantAccess(deps, user, event);
     const [latest, gallery, page] = await Promise.all([
       deps.db.latestMatchJob(user.id, event.id),
       deps.db.findGalleryByUser(user.id, event.id),
@@ -293,9 +305,11 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const status = galleryStatus(latest?.status ?? null, gallery !== null, page.total);
     // v5 (D): `not_me` items stay in the page with the flag; the web hides them under "Nascoste".
     const feedbackByPhoto = new Map(feedbackRows.map((row) => [row.photoId, row.verdict]));
-    const items = [];
-    for (const row of page.items) {
-      items.push({
+    // Presigning is HMAC and a string build, no I/O, but it was 2 awaits per row serialised
+    // 60 rows deep. `Promise.all` is main's fix (`presignVariantUrls`, d477c3a) and keeps the
+    // response order, which the cursor depends on.
+    const items = await Promise.all(
+      page.items.map(async (row) => ({
         photoId: row.photoId,
         thumbUrl: await deps.objects.presignGet(row.thumbKey),
         webUrl: await deps.objects.presignGet(row.webKey),
@@ -304,8 +318,8 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
         createdAt: row.createdAt.toISOString(),
         originalReady: row.originalReady,
         feedback: feedbackByPhoto.get(row.photoId) ?? null,
-      });
-    }
+      })),
+    );
     const last = page.items[page.items.length - 1];
     const nextCursor =
       page.items.length === limit && last
@@ -326,17 +340,11 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const user = requireUser(c);
     requireRole(user, ["participant"]);
     const event = await loadEvent(deps, c.req.param("slug"));
+    await requireParticipantAccess(deps, user, event);
     const body = galleryDownloadBodySchema.safeParse(await readJson(c));
     if (!body.success) throw new ApiError(400, MESSAGES.validation);
     const photos = await ownedPhotos(deps, user, event, body.data.photoIds);
-    const urls = [];
-    for (const photo of photos) {
-      urls.push({
-        photoId: photo.id,
-        url: await deps.objects.presignGet(variantKey(photo, body.data.variant)),
-      });
-    }
-    return c.json({ urls });
+    return c.json({ urls: await presignVariantUrls(deps, photos, body.data.variant) });
   });
 
   app.post("/v1/events/:slug/gallery/zip", async (c) => {
@@ -344,6 +352,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     requireRole(user, ["participant"]);
     if (!isTrustedFormOrigin(c, deps)) throw new ApiError(403, MESSAGES.forbidden);
     const event = await loadEvent(deps, c.req.param("slug"));
+    await requireParticipantAccess(deps, user, event);
     const request = await readZipRequest(c);
     const photos = await ownedPhotos(deps, user, event, request.photoIds);
     const entries = photos.map((photo, index) => ({
@@ -564,6 +573,13 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       await deps.objects.delete(session.objectKey);
       throw new ApiError(status, message);
     };
+    // Ported from main's fda8d64. The presigned PUT is issued FOR a content type, but S3
+    // stores whatever `Content-Type` the client actually sent, so without this the signed
+    // URL is a way to park arbitrary bytes in the bucket under a type of the uploader's
+    // choosing. The object goes back out with the session, exactly as a size mismatch does.
+    if (stored.contentType !== session.contentType) {
+      await discard(400, MESSAGES.validation);
+    }
     if (session.stage === "original" && session.photoId) {
       // Original of a web-first photo: no re-derive or re-index, only a deferred sha256 check.
       // The row is read right before the flip so a repeated complete (same session retried,
@@ -1000,14 +1016,13 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const { cursor: rawCursor, limit, ...filters } = query.data;
     void rawCursor;
     const page = await deps.db.listPhotosAdmin(filters, { limit, ...(cursor ? { cursor } : {}) });
-    const photos = [];
-    for (const photo of page.items) {
-      photos.push({
+    const photos = await Promise.all(
+      page.items.map(async (photo) => ({
         ...adminPhoto(photo),
         thumbUrl:
           photo.status === "indexed" ? await deps.objects.presignGet(objectKeys.thumb(photo.id)) : null,
-      });
-    }
+      })),
+    );
     return c.json({
       photos,
       nextCursor: page.nextCursor
@@ -1247,6 +1262,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const user = requireUser(c);
     requireRole(user, ["participant"]);
     const event = await loadEvent(deps, c.req.param("slug"));
+    await requireParticipantAccess(deps, user, event);
     const body = galleryFeedbackBodySchema.safeParse(await readJson(c));
     if (!body.success) throw new ApiError(400, MESSAGES.validation);
     // Only photos of the caller's own gallery can be judged.
@@ -1555,6 +1571,57 @@ async function loadEvent(deps: AppDeps, slug: string) {
   return event;
 }
 
+/**
+ * Enforces the event allowlist consistently for every participant-facing v5-era route
+ * (ported from `main`, where the same check had drifted into one route and was missing from
+ * nine others; on v6 it was inline in `POST /v1/events/:slug/selfie` and nowhere else).
+ *
+ * What it asserts, and deliberately no more: on an `access = 'list'` event the caller's email
+ * is on the imported participant list. On an `access = 'open'` event it is a no-op, because
+ * "open" IS the policy decision that any signed-in participant may take part.
+ *
+ * Why this is NOT `assertEventMember` (routes.crowd.ts), which additionally requires an
+ * `event_members` row. Membership is written by self-registration with an event code, by
+ * accepting an invite, by the 013 backfill and by a crowd upload. It is NOT written by the
+ * magic-link flow, which is the event-day fallback (RUN.md) and is not event-scoped at all:
+ * a magic link signs you in, it does not join you to anything. Gating the personal match
+ * gallery, its consent row or its download on membership would therefore lock out every
+ * magic-link participant — and the personal galleries must behave exactly as before (section
+ * G, hard rule). The stricter gate stays where v6 put it: on the crowd surfaces, which are
+ * about reading and reporting OTHER people's photos.
+ *
+ * Not applied to `routes.privacy.ts` on purpose either: a participant must be able to read
+ * their consent state and withdraw it even after an admin has taken them off the list.
+ *
+ * Where main's ten call sites live on v6 — all ten are covered, six here and four by the
+ * album-model gates, which are the same check or stricter:
+ *
+ * | main route                                      | v6 |
+ * |-------------------------------------------------|----|
+ * | `POST /v1/events/:slug/consent`                 | this helper |
+ * | `POST /v1/events/:slug/selfie`                  | this helper (was the one inline check) |
+ * | `GET  /v1/events/:slug/gallery`                 | this helper |
+ * | `POST /v1/events/:slug/gallery/download`        | this helper |
+ * | `POST /v1/events/:slug/gallery/zip`             | this helper |
+ * | `POST /v1/events/:slug/gallery/feedback`        | this helper |
+ * | `GET  /v1/events/:slug/public-gallery`          | `GET /v1/albums/:albumId/photos` → `assertEventMember` |
+ * | `POST .../public-gallery/download`              | `POST /v1/albums/:albumId/photos/download` → `assertEventMember` |
+ * | `POST .../public-gallery/:photoId/report`       | `POST /v1/photos/:id/report` → `assertEventMember` |
+ * | `POST /v1/uploads/init` (the public branch)     | `POST /v1/albums/:albumId/uploads/init` → `assertOnEventList` |
+ */
+async function requireParticipantAccess(
+  deps: AppDeps,
+  user: UserRow,
+  event: EventRow,
+): Promise<void> {
+  if (
+    event.access === "list" &&
+    !(await deps.db.isEventParticipant(event.id, user.email.toLowerCase()))
+  ) {
+    throw new ApiError(403, MESSAGES.notOnList);
+  }
+}
+
 async function ownUpload(deps: AppDeps, id: string, photographerId: string) {
   const session = await deps.db.findUploadSession(parseUuid(id));
   if (!session || session.photographerId !== photographerId) {
@@ -1598,6 +1665,25 @@ async function ownedPhotos(
 function variantKey(photo: PhotoRow, variant: DownloadVariant): string {
   if (variant === "web" || photo.originalStatus === "pending") return objectKeys.web(photo.id);
   return photo.originalKey;
+}
+
+/**
+ * Presigned download URLs for the given photos, IN REQUEST ORDER (ported from main's
+ * d477c3a). The order is part of the contract: the client pairs the urls with the ids it
+ * sent, so `Promise.all` over a `map` is required here and `Promise.race`-shaped anything is
+ * not. Presigning does no I/O, so this is a latency fix only — 60 serial HMACs per page.
+ */
+function presignVariantUrls(
+  deps: AppDeps,
+  photos: PhotoRow[],
+  variant: DownloadVariant,
+): Promise<Array<{ photoId: string; url: string }>> {
+  return Promise.all(
+    photos.map(async (photo) => ({
+      photoId: photo.id,
+      url: await deps.objects.presignGet(variantKey(photo, variant)),
+    })),
+  );
 }
 
 /** The extension follows the object actually served (see `variantKey`). */

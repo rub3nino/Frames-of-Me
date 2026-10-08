@@ -13,6 +13,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { test } from "node:test";
 import {
+  albumDownloadResponseSchema,
   albumPhotosResponseSchema,
   albumUploadDedupeResponseSchema,
   envSchema,
@@ -284,6 +285,34 @@ test("a participant cannot upload into the official album (clause: kind = 'crowd
   );
   assert.equal(res.status, 403);
   assert.deepEqual(await res.json(), { error: MESSAGES.uploadNotCrowd });
+});
+
+test("a participant may upload into a crowd album but not through the photographer route", async () => {
+  // The other half of main's `uploads/init: a participant may start a public upload but not
+  // an official one`. On main both were one route distinguished by a `collection` field in
+  // the body, so the test had to prove the branch picked the right role. Here they are two
+  // routes and the role is the first thing each checks, which is the stronger shape — the
+  // official route cannot be reached by a participant at all, whatever is in the body.
+  const h = await harness();
+  const anna = await participant(h, "anna@example.com");
+  assert.equal((await upload(h, h.crowd.id, anna.cookie, "mine")).status, 201);
+
+  const refused = await h.app.request(
+    json(
+      "POST",
+      "/v1/uploads/init",
+      {
+        eventId: h.event.id,
+        filename: "a.jpg",
+        contentType: "image/jpeg",
+        sha256: sha256(Buffer.from("a")),
+        bytes: 10,
+      },
+      anna.cookie,
+    ),
+  );
+  assert.equal(refused.status, 403);
+  assert.deepEqual(await refused.json(), { error: MESSAGES.forbidden });
 });
 
 // ---- C2 clause 2: `uploads_open` is the kill switch ---------------------------------------
@@ -1127,6 +1156,352 @@ test("the upload route refuses every video content type (decision 4, frozen)", a
     assert.equal(res.status, 400, contentType);
     assert.deepEqual(await res.json(), { error: MESSAGES.validation });
   }
+});
+
+test("complete refuses bytes stored under a content type the PUT was not signed for", async () => {
+  // Ported from main's fda8d64 — and this is the riskier of the two upload paths, because
+  // it is the one any signed-in participant can reach. `albumUploadInitBodySchema` keeps the
+  // DECLARED type to image/jpeg or image/png (the test above), but S3 stores whatever
+  // `Content-Type` the client actually sent, so the declared type alone proves nothing.
+  const h = await harness();
+  const anna = await participant(h, "anna@example.com");
+  const bytes = Buffer.from("MZ\u0090\u0000not an image at all");
+  const init = await h.app.request(
+    json(
+      "POST",
+      `/v1/albums/${h.crowd.id}/uploads/init`,
+      {
+        filename: "polaroid.jpg",
+        contentType: "image/jpeg",
+        sha256: sha256(bytes),
+        bytes: bytes.byteLength,
+      },
+      anna.cookie,
+    ),
+  );
+  assert.equal(init.status, 201);
+  const created = (await init.json()) as { id: string; objectKey: string };
+  // Right key, right byte count, wrong stored content type.
+  await h.objects.put(created.objectKey, bytes, "application/x-msdownload");
+  const done = await h.app.request(
+    json("POST", `/v1/albums/${h.crowd.id}/uploads/${created.id}/complete`, { parts: [] }, anna.cookie),
+  );
+  assert.equal(done.status, 400);
+  assert.deepEqual(await done.json(), { error: MESSAGES.validation });
+  assert.equal((await h.db.findUploadSession(created.id))?.status, "aborted");
+  // The bytes go back out, and no photo row was ever created.
+  assert.ok(h.objects.deleted.includes(created.objectKey));
+  assert.equal(h.objects.objects.has(created.objectKey), false);
+  assert.equal(await h.db.findPhotoByAlbumSha(h.crowd.id, sha256(bytes)), null);
+});
+
+// ---- the album feed: what it shows, and cursor paging without gaps ------------------------
+
+test("the album feed lists only this album's approved, derived photos and pages without gaps", async () => {
+  // Main's `public-gallery lists only indexed public photos and paginates by cursor without
+  // gaps`. The inventory says this one already has an album-shaped analogue here; it does
+  // not — nothing in this file ever read `nextCursor`, and pagination.test.ts walks
+  // `listPhotosAdmin` and `listUploadSessionsPage` but not `listAlbumPhotosPage`. So the
+  // album feed's keyset paging was untested at every level, on both branches.
+  const h = await harness();
+  const anna = await participant(h, "anna@example.com");
+  const shown: string[] = [];
+  for (const content of ["one", "two", "three"]) {
+    const res = await upload(h, h.crowd.id, anna.cookie, content);
+    assert.equal(res.status, 201);
+    const photoId = res.body.photoId as string;
+    await derive(h, photoId);
+    shown.push(photoId);
+  }
+
+  // Three photos that must never appear: one in the official album, one in this album with
+  // no derivatives yet, and one in this album that the threshold flipped to `pending`.
+  const photographer = await h.db.findUserByEmailRole(
+    "photographer@rephoto.local",
+    "photographer",
+  );
+  assert.ok(photographer);
+  const officialId = randomUUID();
+  await h.db.insertPhoto({
+    id: officialId,
+    eventId: h.event.id,
+    photographerId: photographer.id,
+    sha256: sha256(Buffer.from("official")),
+    originalKey: objectKeys.original(h.event.id, officialId),
+    contentType: "image/jpeg",
+    bytes: 10,
+    albumId: h.official.id,
+  });
+  await derive(h, officialId);
+  const undived = await upload(h, h.crowd.id, anna.cookie, "no-derivatives");
+  assert.equal(undived.status, 201);
+  const withheld = await upload(h, h.crowd.id, anna.cookie, "withheld");
+  assert.equal(withheld.status, 201);
+  const withheldId = withheld.body.photoId as string;
+  await derive(h, withheldId);
+  await h.db.setPhotoModeration({ photoId: withheldId, state: "pending" });
+
+  const page = async (query: string) => {
+    const res = await h.app.request(get(`/v1/albums/${h.crowd.id}/photos${query}`, anna.cookie));
+    assert.equal(res.status, 200);
+    return albumPhotosResponseSchema.parse(await res.json());
+  };
+  const full = await page("?limit=50");
+  assert.deepEqual(
+    [...full.photos.map((row) => row.id)].sort(),
+    [...shown].sort(),
+    "only this album's approved, derived photos",
+  );
+  assert.equal(full.nextCursor, null);
+
+  // Cursor paging reproduces the canonical order in chunks: no overlap, nothing dropped.
+  const first = await page("?limit=2");
+  assert.equal(first.photos.length, 2);
+  assert.ok(first.nextCursor);
+  const second = await page(`?limit=2&cursor=${encodeURIComponent(first.nextCursor!)}`);
+  assert.equal(second.photos.length, 1);
+  assert.equal(second.nextCursor, null);
+  assert.deepEqual(
+    [...first.photos, ...second.photos].map((row) => row.id),
+    full.photos.map((row) => row.id),
+  );
+
+  // Limit 1, which puts every page boundary between two rows that share a millisecond in
+  // this fixture — the case `014`'s 3-argument `date_trunc` ordering exists for.
+  const walked: string[] = [];
+  let cursor: string | null = null;
+  for (let n = 0; n < shown.length + 2; n += 1) {
+    const step = await page(`?limit=1${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+    walked.push(...step.photos.map((row) => row.id));
+    if (!step.nextCursor) break;
+    cursor = step.nextCursor;
+  }
+  assert.equal(new Set(walked).size, walked.length, "a photo came back on two pages");
+  assert.deepEqual(walked, full.photos.map((row) => row.id));
+
+  // A corrupt cursor is a 400, not a silent first page.
+  const bad = await h.app.request(
+    get(`/v1/albums/${h.crowd.id}/photos?cursor=not-a-cursor`, anna.cookie),
+  );
+  assert.equal(bad.status, 400);
+  assert.deepEqual(await bad.json(), { error: MESSAGES.validation });
+});
+
+// ---- the download route and its IDOR guard (ported from main) -----------------------------
+
+test("album download presigns crowd photos but 404s on any id outside the album (no IDOR)", async () => {
+  // Main's `public-gallery/download presigns public photos but 404s on any non-public id`,
+  // re-pointed at the album model. The guard is a COUNT comparison, not a filter: one bad id
+  // refuses the whole batch, so the route cannot be used as an oracle for which uuids exist.
+  const h = await harness();
+  const anna = await participant(h, "anna@example.com");
+  const bruno = await participant(h, "bruno@example.com");
+  const mine = await upload(h, h.crowd.id, anna.cookie, "anna-1");
+  assert.equal(mine.status, 201);
+  const annaPhoto = mine.body.photoId as string;
+  await derive(h, annaPhoto);
+  const theirs = await upload(h, h.crowd.id, bruno.cookie, "bruno-1");
+  assert.equal(theirs.status, 201);
+  const brunoPhoto = theirs.body.photoId as string;
+  await derive(h, brunoPhoto);
+
+  const download = (photoIds: string[], cookie: string, variant?: string) =>
+    h.app.request(
+      json(
+        "POST",
+        `/v1/albums/${h.crowd.id}/photos/download`,
+        { photoIds, ...(variant ? { variant } : {}) },
+        cookie,
+      ),
+    );
+
+  // Both photos of the album, including one the caller did not upload: a crowd album is a
+  // shared album and the feed already shows it to them.
+  const ok = await download([annaPhoto, brunoPhoto], anna.cookie);
+  assert.equal(ok.status, 200);
+  const parsed = albumDownloadResponseSchema.parse(await ok.json());
+  assert.deepEqual(
+    parsed.urls.map((row) => row.photoId).sort(),
+    [annaPhoto, brunoPhoto].sort(),
+  );
+  for (const row of parsed.urls) {
+    assert.ok(row.url.includes(objectKeys.web(row.photoId)), "the web derivative, not the original");
+  }
+
+  // A photo of the OFFICIAL album of the same event: the real IDOR, and it 404s.
+  const photographer = await h.db.findUserByEmailRole(
+    "photographer@rephoto.local",
+    "photographer",
+  );
+  assert.ok(photographer);
+  const officialId = randomUUID();
+  await h.db.insertPhoto({
+    id: officialId,
+    eventId: h.event.id,
+    photographerId: photographer.id,
+    sha256: sha256(Buffer.from("official")),
+    originalKey: objectKeys.original(h.event.id, officialId),
+    contentType: "image/jpeg",
+    bytes: 10,
+    albumId: h.official.id,
+  });
+  await derive(h, officialId);
+  assert.equal((await download([officialId], anna.cookie)).status, 404);
+  // And mixing it into an otherwise valid batch refuses the batch, rather than silently
+  // returning the two that qualified.
+  const mixed = await download([annaPhoto, brunoPhoto, officialId], anna.cookie);
+  assert.equal(mixed.status, 404);
+  assert.deepEqual(await mixed.json(), { error: MESSAGES.notFound });
+  // A uuid that is no photo at all: same answer, so the two cases are indistinguishable.
+  assert.equal((await download([randomUUID()], anna.cookie)).status, 404);
+
+  // A photo the report threshold withheld leaves the download too, not just the feed.
+  await h.db.setPhotoModeration({ photoId: brunoPhoto, state: "pending" });
+  assert.equal((await download([brunoPhoto], anna.cookie)).status, 404);
+  assert.equal((await download([annaPhoto], anna.cookie)).status, 200);
+
+  // The original is refused at the schema, so nobody can mistake a web derivative for it.
+  const original = await download([annaPhoto], anna.cookie, "original");
+  assert.equal(original.status, 400);
+  assert.deepEqual(await original.json(), { error: MESSAGES.validation });
+});
+
+test("album download is gated exactly like the feed it is a download of", async () => {
+  const h = await harness();
+  const anna = await participant(h, "anna@example.com");
+  const uploaded = await upload(h, h.crowd.id, anna.cookie, "anna-1");
+  assert.equal(uploaded.status, 201);
+  const photoId = uploaded.body.photoId as string;
+  await derive(h, photoId);
+  const path = `/v1/albums/${h.crowd.id}/photos/download`;
+
+  // Signed out.
+  assert.equal(
+    (await h.app.request(json("POST", path, { photoIds: [photoId] }))).status,
+    401,
+  );
+  // A participant of another event: no `event_members` row here.
+  const stranger = await strangerParticipant(h, "stranger@example.com");
+  const refused = await h.app.request(json("POST", path, { photoIds: [photoId] }, stranger.cookie));
+  assert.equal(refused.status, 403);
+  assert.deepEqual(await refused.json(), { error: MESSAGES.notEventMember });
+  // A staff-only album is not downloadable by a participant either.
+  await h.db.updateAlbum(h.crowd.id, { visibility: "staff" });
+  const staffOnly = await h.app.request(json("POST", path, { photoIds: [photoId] }, anna.cookie));
+  assert.equal(staffOnly.status, 403);
+  assert.deepEqual(await staffOnly.json(), { error: MESSAGES.forbidden });
+  // The admin still can.
+  const adminCookie = await cookieFor(h.db, h.admin.id);
+  assert.equal(
+    (await h.app.request(json("POST", path, { photoIds: [photoId] }, adminCookie))).status,
+    200,
+  );
+});
+
+// ---- the burst gate (ported from main's PUBLIC_UPLOAD_RATE_LIMIT) -------------------------
+
+test("crowd uploads are rate limited per participant per album, and the limit is per album", async () => {
+  // Main had `PUBLIC_UPLOAD_RATE_LIMIT` on its participant upload path; this branch had no
+  // rate limit of any kind here. `max_photos_per_user` is NOT a substitute: it is null by
+  // default, and this album leaves it null on purpose so the 429 can only be the burst gate.
+  const h = await harness({}, {}, { ALBUM_UPLOAD_MAX_PER_HOUR: "3" });
+  assert.equal(h.crowd.maxPhotosPerUser, null, "the absolute cap must be off for this test");
+  const anna = await participant(h, "anna@example.com");
+
+  for (let n = 0; n < 3; n += 1) {
+    const res = await upload(h, h.crowd.id, anna.cookie, `shot-${n}`);
+    assert.equal(res.status, 201, `upload ${n} should be allowed`);
+  }
+  const limited = await upload(h, h.crowd.id, anna.cookie, "shot-4");
+  assert.equal(limited.status, 429);
+  assert.deepEqual(limited.body, { error: MESSAGES.rateLimited });
+
+  // Another participant is unaffected: the window is per (album, uploader).
+  const bruno = await participant(h, "bruno@example.com");
+  assert.equal((await upload(h, h.crowd.id, bruno.cookie, "bruno-1")).status, 201);
+
+  // And so is a sibling crowd album, which has its own uploads_open and its own cap.
+  const other = await h.db.createAlbum({
+    eventId: h.event.id,
+    slug: "secondo",
+    name: "Secondo album",
+    kind: "crowd",
+  });
+  assert.equal((await upload(h, other.id, anna.cookie, "altro-1")).status, 201);
+});
+
+test("the burst gate counts sessions that were started, not photos that landed", async () => {
+  // An init that never completes still cost a presigned PUT, so a loop that inits and walks
+  // away has to count. This is why the fallback counts `upload_sessions` rather than photos.
+  const h = await harness({}, {}, { ALBUM_UPLOAD_MAX_PER_HOUR: "2" });
+  const anna = await participant(h, "anna@example.com");
+  const init = (n: number) => {
+    const bytes = Buffer.from(`abandoned-${n}`);
+    return h.app.request(
+      json(
+        "POST",
+        `/v1/albums/${h.crowd.id}/uploads/init`,
+        {
+          filename: "polaroid.jpg",
+          contentType: "image/jpeg",
+          sha256: sha256(bytes),
+          bytes: bytes.byteLength,
+        },
+        anna.cookie,
+      ),
+    );
+  };
+  assert.equal((await init(0)).status, 201);
+  assert.equal((await init(1)).status, 201);
+  assert.equal((await h.db.countAlbumPhotosByUploader(h.crowd.id, anna.user.id)), 0);
+  const third = await init(2);
+  assert.equal(third.status, 429);
+  assert.deepEqual(await third.json(), { error: MESSAGES.rateLimited });
+});
+
+test("ALBUM_UPLOAD_MAX_PER_HOUR = 0 disables the burst gate, and exempt IPs skip it", async () => {
+  const off = await harness({}, {}, { ALBUM_UPLOAD_MAX_PER_HOUR: "0" });
+  const anna = await participant(off, "anna@example.com");
+  for (let n = 0; n < 4; n += 1) {
+    assert.equal((await upload(off, off.crowd.id, anna.cookie, `off-${n}`)).status, 201);
+  }
+
+  // The test room's NAT: one IP, many participants, all behind the exempt CIDR.
+  const exempt = await harness(
+    {},
+    {},
+    { ALBUM_UPLOAD_MAX_PER_HOUR: "1", RATE_LIMIT_EXEMPT_IPS: "10.20.0.0/16" },
+  );
+  const bruno = await participant(exempt, "bruno@example.com");
+  const initFrom = (ip: string, n: number) => {
+    const bytes = Buffer.from(`nat-${ip}-${n}`);
+    return exempt.app.request(
+      new Request(`http://api.local/v1/albums/${exempt.crowd.id}/uploads/init`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          cookie: bruno.cookie,
+          "x-forwarded-for": ip,
+        },
+        body: JSON.stringify({
+          filename: "polaroid.jpg",
+          contentType: "image/jpeg",
+          sha256: sha256(bytes),
+          bytes: bytes.byteLength,
+        }),
+      }),
+    );
+  };
+  for (let n = 0; n < 3; n += 1) {
+    assert.equal((await initFrom("10.20.33.44", n)).status, 201, `exempt attempt ${n}`);
+  }
+  // The same account from an IP outside the CIDR is gated again — and it is gated at once,
+  // because the exemption skips the CHECK and not the RECORDING: the database fallback
+  // counts `upload_sessions` rows, and the three exempt inits wrote three of them. This is
+  // main's behaviour too, and it is the honest one for a count of what actually happened.
+  // (The Redis path differs: an exempt call never reaches the INCR. Documented, not a bug —
+  // the two paths agree on the common case, where nothing is exempt.)
+  assert.equal((await initFrom("198.51.100.7", 0)).status, 429);
 });
 
 // ---- Section G, hard rule: the personal match galleries are untouched ---------------------

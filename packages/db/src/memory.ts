@@ -2334,6 +2334,19 @@ export class MemoryDatabase implements Database {
     return count;
   }
 
+  async countAlbumUploadsSince(
+    albumId: string,
+    uploaderId: string,
+    since: Date,
+  ): Promise<number> {
+    let count = 0;
+    for (const upload of this.uploads.values()) {
+      if (upload.albumId !== albumId || upload.photographerId !== uploaderId) continue;
+      if (upload.createdAt >= since) count += 1;
+    }
+    return count;
+  }
+
   // ---- privacy and retention scheduling v6 (agent G) ---------------------------------------
 
   async findConsentState(userId: string, eventId: string): Promise<ConsentState> {
@@ -2772,6 +2785,29 @@ export class MemoryDatabase implements Database {
     const nextCursor =
       rows.length > input.limit && last ? { createdAt: last.createdAt, id: last.id } : null;
     return { items, nextCursor };
+  }
+
+  async listAlbumPhotosByIds(albumId: string, ids: string[]): Promise<AlbumPhoto[]> {
+    const wanted = new Set(ids);
+    const rows: AlbumPhoto[] = [];
+    for (const photo of this.photos.values()) {
+      // Same three conditions as `listAlbumPhotosPage`, so the caller's count comparison is
+      // a real IDOR guard: this album, `approved`, both derivatives.
+      if (!wanted.has(photo.id)) continue;
+      if (photo.albumId !== albumId || photo.moderationState !== "approved") continue;
+      const thumbKey = this.derivativeKey(photo.id, "thumb");
+      const webKey = this.derivativeKey(photo.id, "web");
+      if (!thumbKey || !webKey) continue;
+      rows.push({
+        id: photo.id,
+        albumId: photo.albumId,
+        uploaderId: photo.photographerId,
+        createdAt: photo.createdAt,
+        thumbKey,
+        webKey,
+      });
+    }
+    return rows;
   }
 
   /** v6 (agent C): the stored key of one derivative, or null when it is not there yet. */
