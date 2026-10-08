@@ -54,7 +54,17 @@ body { background: var(--surface-page); }
   font-size: var(--text-xl); font-weight: var(--weight-semibold);
   letter-spacing: -0.01em; line-height: var(--leading-tight);
 }
+/* 20 px: il titolo di sezione. Il salto 24 → 20 è la gerarchia. */
+.sottotitolo { font-size: var(--text-lg); font-weight: var(--weight-semibold); line-height: var(--leading-snug); }
 .dek { font-size: var(--text-md); line-height: var(--leading-prose); color: var(--text-secondary); }
+/* L'etichetta di un gruppo di campi. Non è un'etichetta maiuscoletta sopra un
+   titolo: è la `<legend>` di un `<fieldset>`, e sta dentro il riquadro. */
+.legenda {
+  padding: 0 0 var(--space-2);
+  font-size: var(--text-sm); font-weight: var(--weight-medium); color: var(--text-secondary);
+}
+/* Un filo, non un riquadro dentro un riquadro. */
+.filo { height: 1px; background: var(--line-subtle); }
 .prosa { font-size: var(--text-md); line-height: var(--leading-prose); color: var(--text-secondary); }
 .prosa b, .prosa strong { color: var(--text-primary); font-weight: var(--weight-medium); }
 .nota {
