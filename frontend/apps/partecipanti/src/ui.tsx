@@ -130,10 +130,15 @@ export const IconOk = () => (
 export function Callout({
   variante = "info",
   ruolo,
+  glifo,
   children,
 }: {
   variante?: "info" | "attention" | "errore" | "ok";
   ruolo?: "alert" | "status";
+  /** Un glifo proprio, quando l'avviso deve distinguersi da un altro avviso
+   *  della stessa variante: così due motivi diversi non sono la stessa tinta
+   *  con parole diverse. */
+  glifo?: ReactNode;
   children: ReactNode;
 }) {
   const Glifo =
@@ -146,7 +151,7 @@ export function Callout({
       className={`callout callout--${variante}`}
       role={ruolo ?? (variante === "errore" ? "alert" : "status")}
     >
-      <Glifo />
+      {glifo ?? <Glifo />}
       <span className="callout__text">{children}</span>
     </div>
   );
@@ -177,23 +182,32 @@ export const MOTIVI: Record<MotivoSelfie, { titolo: string; rimedio: string; gli
 export const motivoSelfie = (r: unknown) =>
   typeof r === "string" && r in MOTIVI ? MOTIVI[r as MotivoSelfie] : null;
 
-/** I glifi dei motivi. Tratto 1.8 su 28 px: è il formato di `.empty > .icon`. */
-export function GlifoMotivo({ nome }: { nome: "volto" | "vicino" | "sfocato" | "due" | "attesa" }) {
-  const p = { viewBox: "0 0 24 24", fill: "none" as const, stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true };
+/** I glifi dei motivi. 28 px dentro `.empty`, 16 px dentro un `.callout`:
+ *  sono le due misure che `components.css` prevede per `.icon`. */
+export function GlifoMotivo({
+  nome,
+  piccolo,
+}: { nome: "volto" | "vicino" | "sfocato" | "due" | "attesa"; piccolo?: boolean }) {
+  const cls = piccolo ? "icon" : "icon icon--lg";
+  const p = {
+    viewBox: "0 0 24 24", fill: "none" as const, stroke: "currentColor",
+    strokeWidth: 1.8, strokeLinecap: "round" as const, strokeLinejoin: "round" as const,
+    "aria-hidden": true,
+  };
   if (nome === "volto") return (
-    <svg className="icon icon--lg" {...p}><path d="M4 9V5h4M16 5h4v4M20 15v4h-4M8 19H4v-4" /><path d="M9 14c.9.9 4.2.9 5.1 0" /></svg>
+    <svg className={cls} {...p}><path d="M4 9V5h4M16 5h4v4M20 15v4h-4M8 19H4v-4" /><path d="M9 14c.9.9 4.2.9 5.1 0" /></svg>
   );
   if (nome === "vicino") return (
-    <svg className="icon icon--lg" {...p}><circle cx="12" cy="12" r="3.2" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3" /><path d="M12 7.2 10.5 5.4h3L12 7.2ZM12 16.8l1.5 1.8h-3l1.5-1.8Z" /></svg>
+    <svg className={cls} {...p}><circle cx="12" cy="12" r="3.2" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3" /><path d="M12 7.2 10.5 5.4h3L12 7.2ZM12 16.8l1.5 1.8h-3l1.5-1.8Z" /></svg>
   );
   if (nome === "sfocato") return (
-    <svg className="icon icon--lg" {...p}><circle cx="12" cy="12" r="3.4" /><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4" strokeDasharray="1 3" /></svg>
+    <svg className={cls} {...p}><circle cx="12" cy="12" r="3.4" /><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4" strokeDasharray="1 3" /></svg>
   );
   if (nome === "due") return (
-    <svg className="icon icon--lg" {...p}><circle cx="9" cy="9" r="3.2" /><circle cx="17" cy="11" r="2.4" /><path d="M3 19c0-2.8 2.7-5 6-5 1.4 0 2.7.4 3.7 1.1" /><path d="M14 19c0-1.9 1.6-3.4 3.5-3.4S21 17.1 21 19" /></svg>
+    <svg className={cls} {...p}><circle cx="9" cy="9" r="3.2" /><circle cx="17" cy="11" r="2.4" /><path d="M3 19c0-2.8 2.7-5 6-5 1.4 0 2.7.4 3.7 1.1" /><path d="M14 19c0-1.9 1.6-3.4 3.5-3.4S21 17.1 21 19" /></svg>
   );
   return (
-    <svg className="icon icon--lg" {...p}><circle cx="12" cy="12" r="9" /><path d="M12 7.5V12l3 2" /></svg>
+    <svg className={cls} {...p}><circle cx="12" cy="12" r="9" /><path d="M12 7.5V12l3 2" /></svg>
   );
 }
 
