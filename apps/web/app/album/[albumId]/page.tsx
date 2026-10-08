@@ -71,7 +71,10 @@ function CrowdAlbum({ albumId }: { albumId: string }) {
   const [loading, setLoading] = useState(false);
   const [quota, setQuota] = useState<{ used: number; max: number | null }>({ used: 0, max: null });
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
+  /** What the reader did: a report was sent, or already was. Never a transport failure. */
   const [message, setMessage] = useState<string | null>(null);
+  /** A page that did not load. Separate from `message`, which a reload must not wipe. */
+  const [error, setError] = useState<string | null>(null);
   const [cameraOpen, setCameraOpen] = useState(false);
   const [reporting, setReporting] = useState<string | null>(null);
   const sentinel = useRef<HTMLDivElement | null>(null);
@@ -98,10 +101,9 @@ function CrowdAlbum({ albumId }: { albumId: string }) {
         setCursor(page.nextCursor ?? null);
         setQuota(page.quota);
         setState("ready");
-        setMessage(null);
+        setError(null);
       } catch (cause) {
-        const text = cause instanceof ApiError ? cause.message : "Album non disponibile.";
-        setMessage(text);
+        setError(cause instanceof ApiError ? cause.message : "Album non disponibile.");
         // A page that fails after the first one must not blank the photos already on screen.
         setState((current) => (current === "ready" ? "ready" : "error"));
       } finally {
@@ -197,9 +199,9 @@ function CrowdAlbum({ albumId }: { albumId: string }) {
         />
       ) : null}
 
-      {message && state === "ready" ? <p role="status">{message}</p> : null}
+      {message ? <p role="status">{message}</p> : null}
       {state === "loading" ? <p className="status">Caricamento</p> : null}
-      {state === "error" ? <p role="alert">{message}</p> : null}
+      {error ? <p role="alert">{error}</p> : null}
 
       <ul className="grid">
         {photos.map((photo) => (
