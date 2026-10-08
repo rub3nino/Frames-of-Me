@@ -41,8 +41,14 @@ export default function Iscrizione() {
   const [erroreCampo, setErroreCampo] = useState<"email" | "password" | "codice" | "">("");
 
   const etaScelta = eta !== "";
-  const prontoCredenziali =
-    etaScelta && isEmail(email) && password.length >= 10 && codice.trim().length > 0 && consenso;
+  const minore = eta === "minore";
+  // Un minore non registra da qui: l'account nasce in ConsensoGenitore, dopo
+  // che chi tutela ha autorizzato — nessun account capace di biometria prima
+  // dell'autorizzazione. Quindi questa pagina non chiede nemmeno password e
+  // codice a un minore: chiederli e poi scartarli era il difetto di prima.
+  const prontoCredenziali = minore
+    ? isEmail(email)
+    : etaScelta && isEmail(email) && password.length >= 10 && codice.trim().length > 0 && consenso;
 
   function minorenne() {
     sessionStorage.setItem("fom.email", email.trim());
@@ -213,7 +219,7 @@ export default function Iscrizione() {
               )}
             </div>
 
-            <div className="field">
+            {!minore && <div className="field">
               <label className="field__label" htmlFor="password">Scegli una password</label>
               <input
                 id="password"
@@ -226,9 +232,9 @@ export default function Iscrizione() {
                 onChange={(e) => { setPassword(e.target.value); setErroreCampo(""); }}
               />
               <span className="field__hint" id="password-aiuto">Almeno 10 caratteri.</span>
-            </div>
+            </div>}
 
-            <div className="field">
+            {!minore && <div className="field">
               <label className="field__label" htmlFor="codice">Codice dell'evento</label>
               <input
                 id="codice"
@@ -244,8 +250,14 @@ export default function Iscrizione() {
               <span className="field__hint" id="codice-aiuto">
                 È sul tuo badge, sotto il QR.
               </span>
-            </div>
+            </div>}
 
+            {minore ? (
+              <p className="accesso__alt">
+                Password, codice dell'evento e consenso li chiediamo al passo
+                successivo, a chi ti tutela.
+              </p>
+            ) : (
             <label className="check accesso__consenso">
               <input
                 type="checkbox"
@@ -257,6 +269,7 @@ export default function Iscrizione() {
                 le mie foto. Posso revocarlo in qualsiasi momento da «I miei dati».
               </span>
             </label>
+            )}
 
             {/* L'unico primario della schermata, e dice verbo + oggetto. */}
             <button
@@ -266,6 +279,7 @@ export default function Iscrizione() {
               data-loading={inCorso || undefined}
               title={
                 !etaScelta ? "Dicci prima la tua età"
+                : minore ? undefined
                 : !consenso ? "Serve il consenso per cercare il tuo volto"
                 : undefined
               }

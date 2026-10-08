@@ -26,9 +26,12 @@ import { Link } from "react-router-dom";
  *   tutte. Al suo posto: un collegamento solo, «I miei dati», nella barra.
  */
 
-/** Il marchio: la cornice di messa a fuoco. Un solo colore, l'inchiostro
- *  corrente. Il punto centrale era blu, e il blu non decora: è link,
- *  selezione, fuoco, interruttore acceso. */
+/** Il marchio: la cornice di messa a fuoco, e al centro il punto in accento.
+ *  «Il blu non decora» governa il vestito dell'interfaccia — pulsanti, stati,
+ *  fondi — non il marchio: il manuale definisce il proprio segno con una barra
+ *  blu dentro, quindi il marchio è il posto dove l'accento appartiene. Qui è
+ *  anche l'unico elemento colorato, e un marchio diverso tra la vetrina e
+ *  l'app sarebbero due prodotti. L'asset canonico è packages/ui/mark.svg. */
 export function Mark() {
   return (
     <svg className="marchio" viewBox="0 0 100 100" fill="none" aria-hidden="true">
@@ -38,7 +41,7 @@ export function Mark() {
         <path d="M78 64 V72 a6 6 0 0 1-6 6 H64" />
         <path d="M36 78 H28 a6 6 0 0 1-6-6 V64" />
       </g>
-      <circle cx="50" cy="50" r="7.5" fill="currentColor" />
+      <circle cx="50" cy="50" r="7.5" fill="var(--accent)" />
     </svg>
   );
 }
