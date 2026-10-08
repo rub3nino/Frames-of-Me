@@ -369,23 +369,27 @@ export default function Galleria() {
       )}
 
       {/* --- La barra della selezione ---------------------------------------
-          È una `.summary`: una riga di riepilogo con le azioni. La scelta
-          della versione è un `.segmented` — due voci nominate che si
-          escludono — e non un foglio che sale dal basso, che nel sistema non
-          esiste. Mentre il visore è aperto il primario della pagina scende a
-          secondario: non ci sono due neri in vista. */}
+          È una `.summary`: una riga di riepilogo con le azioni, non un
+          secondo nero che galleggia, e non il foglio che saliva dal basso —
+          quello nel sistema non esiste. Mentre il visore è aperto il primario
+          della pagina scende a secondario: non ci sono due neri in vista. */}
       {sel.size > 0 && (
         <div className="summary barra-sel">
           <span className="barra-sel__n">{nf.format(sel.size)}</span>
           <span>selezionate</span>
-          <div className="segmented" role="group" aria-label="Versione da scaricare">
-            <button type="button" aria-pressed={variante === "original"} onClick={() => setVariante("original")}>
-              Originali
-            </button>
-            <button type="button" aria-pressed={variante === "web"} onClick={() => setVariante("web")}>
-              Più leggere
-            </button>
-          </div>
+          {/* Una casella, non un segmentato: un segmentato ha bordo e fondo
+              propri e dentro la `.summary` sarebbe un riquadro dentro un
+              riquadro. Ed è la forma giusta comunque — una scelta binaria
+              che resta nella frase, come «includi i chiusi» in REGOLE.md §2.
+              L'originale è il valore di partenza; questa è la deroga. */}
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={variante === "web"}
+              onChange={(e) => setVariante(e.target.checked ? "web" : "original")}
+            />
+            <span>Versioni più leggere</span>
+          </label>
           <div className="barra-sel__fine">
             <button
               className="btn btn--danger"
