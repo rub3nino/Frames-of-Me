@@ -15,29 +15,13 @@
 
 body { background: var(--surface-page); color: var(--text-primary); }
 
-/* --- L'anello di fuoco non si toglie (REGOLE §6) ----------------------------
-   Il vecchio `base.css` passava un COLORE a `box-shadow`: la dichiarazione è
-   invalida al momento del calcolo, e insieme a `outline: none` l'anello
-   spariva da tutto il prodotto. Il guasto è stato corretto nel layer di base;
-   queste righe restano perché l'anello di questa app non deve dipendere da un
-   file che non è suo. Sono allineate alla correzione, non in conflitto: sui
-   campi vince `components.css`, che sostituisce l'anello con bordo e alone. */
-a:focus-visible,
-button:focus-visible,
-summary:focus-visible,
-[tabindex]:focus-visible,
-input:focus-visible,
-select:focus-visible,
-textarea:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
-}
-.input:focus-visible, .select:focus-visible, .textarea:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 1px;
-}
-/* Dentro un menu il fondo È il fuoco: niente anello. */
-.menu__item:focus-visible { outline: none; }
+/* Il fuoco lo possiede il layer di base: `base.css` ha
+   `:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px }`
+   e `components.css` lo sostituisce con bordo e alone sui campi e con il
+   fondo sulle voci di menu. Questa app NON lo ridichiara: le righe che
+   c'erano qui erano identiche a quelle di base, tranne una su `.input` che,
+   caricando dopo `components.css`, vinceva e sommava anello + bordo + alone
+   sullo stesso campo — la cosa che l'identità vieta esplicitamente. */
 
 /* ============================================================================
    Guscio: barra laterale + topbar + area di lavoro
