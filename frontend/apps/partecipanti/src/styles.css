@@ -73,7 +73,6 @@ body { background: var(--surface-page); }
 }
 .riga { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-3); }
 .riga--fine { justify-content: flex-end; }
-.mascherata { font-family: var(--font-mono); }
 .num { font-variant-numeric: tabular-nums; }
 .tenue { color: var(--text-tertiary); }
 /* Lo scheletro di una riga breve: un'etichetta, non un paragrafo. */

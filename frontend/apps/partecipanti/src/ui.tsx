@@ -212,8 +212,3 @@ export function GlifoMotivo({
 }
 
 export const isEmail = (s: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s.trim());
-export const maskEmail = (e: string) => {
-  const [u, d] = e.split("@");
-  if (!d) return e;
-  return (u.length <= 2 ? u[0] + "•" : u.slice(0, 2) + "•••") + "@" + d;
-};
