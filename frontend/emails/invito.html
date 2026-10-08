@@ -1,10 +1,59 @@
 <!DOCTYPE html>
 <!-- ============================================================================
-     Frames of Me — Email transazionale
+     Frames of Me — e-mail transazionale
      Trigger: POST /v1/admin/photographers/invite
-     Oggetto (subject): Sei stato invitato come fotografo
-     Tabelle + stili inline soltanto. Font web-safe sans. Bulletproof button.
-     Design v2: Apple-grade, light-only. Ground #F5F5F7, card #FFFFFF.
+     Oggetto: «Invito a caricare foto: {{NOME_EVENTO}}»
+     Il link punta a /invito?token=… ; l'invito scade dopo
+     INVITE_TTL_SECONDS = 7 * 24 * 60 * 60 (apps/api/src/routes.ts).
+
+     PORTATA: l'unico invito che il prodotto spedisce è quello del FOTOGRAFO.
+     Un amministratore non si invita per e-mail: le credenziali staff si
+     impostano da POST /v1/admin/staff, oppure si manda un link di accesso
+     (magic-link.html). Questo template quindi parla al fotografo e non
+     promette un invito da amministratore che non esiste.
+
+     COSTRUZIONE
+     Solo tabelle e stili inline. Nessun blocco <style>, nessun foglio
+     esterno, nessuna media query: l'impaginazione regge sugli attributi
+     (width, align, bgcolor, cellpadding) e sulla struttura delle tabelle,
+     perciò sopravvive a un client che butta via <style>. Nessuna immagine:
+     il messaggio si legge identico con le immagini spente.
+
+     COLORI — i letterali qui sotto sono COPIE INLINE DI RUOLI CON UN NOME.
+     La fonte è frontend/packages/ui/tokens.css. I client di posta non
+     supportano le custom property, quindi `var(--surface-inverse)` non si
+     può scrivere e qui l'esadecimale è corretto, non un difetto. Quando un
+     ruolo cambia in tokens.css questi valori si RICOPIANO da là: non si
+     scelgono a occhio e non si ritoccano.
+       #fdfdfb  --surface-page      fondo del messaggio
+       #ffffff  --surface-raised    pannello
+       #e3e2de  --line-subtle       bordo del pannello, divisori
+       #1c1a16  --surface-inverse   la chiamata all'azione è INCHIOSTRO, non blu
+       #fbfaf9  --text-on-inverse   testo sull'inchiostro (vedi nota)
+       #25231f  --text-primary      titoli e testo forte
+       #575550  --text-secondary    corpo
+       #6f6d68  --text-tertiary     piè di pagina, metadati
+       #0159ba  --accent-text       link: il blu è link, non azione
+     NOTA: --text-on-inverse non ha un esadecimale nel commento di tokens.css
+     («quasi bianco caldo»). #fbfaf9 è la conversione di oklch(0.985 0.002 85).
+     Va aggiunto quel commento in tokens.css, così anche questo si ricopia.
+
+     TIPOGRAFIA: pila di sistema (--font-sans), nessun font scaricato.
+     RAGGI: 12 px pannello (--radius-lg), 6 px pulsante (--radius-sm).
+     STRUTTURA: un solo riquadro. I dati dell'evento stanno fra due linee
+     (--line-subtle), non in un secondo riquadro (docs/brand/REGOLE.md §1.6).
+
+     SEGNAPOSTO (sostituzione lato invio; un valore assente si scrive «—»,
+     mai stringa vuota, mai troncato)
+       {{LINK_INVITO}}       https://framesofme.com/invito?token=…
+       {{NOME_EVENTO}}       Conferenza 2026
+       {{DATA_INIZIO}}       12/03/2026        (gg/mm/aaaa)
+       {{DATA_FINE}}         14/03/2026        (gg/mm/aaaa; se manca: —)
+       {{LUOGO_EVENTO}}      Milano, Palazzo delle Stelline  (se manca: —)
+       {{NOME_INVITANTE}}    Giulia Rossi      (se manca: —)
+       {{GIORNI_VALIDITA}}   7
+       {{DATA_SCADENZA}}     19/03/2026        (gg/mm/aaaa)
+       {{LINK_PRIVACY}}      https://framesofme.com/privacy
      ============================================================================ -->
 <html lang="it" xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
 <head>
@@ -13,89 +62,117 @@
   <meta http-equiv="X-UA-Compatible" content="IE=edge">
   <meta name="color-scheme" content="light">
   <meta name="supported-color-schemes" content="light">
-  <title>Sei stato invitato come fotografo</title>
+  <title>Invito a caricare foto</title>
   <!--[if mso]>
   <noscript><xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml></noscript>
   <![endif]-->
 </head>
-<body style="margin:0; padding:0; background-color:#F5F5F7; -webkit-text-size-adjust:100%; -ms-text-size-adjust:100%;">
+<body style="margin:0; padding:0; background-color:#fdfdfb; -webkit-text-size-adjust:100%; -ms-text-size-adjust:100%;">
 
-  <!-- Preheader (nascosto) -->
-  <div style="display:none; max-height:0; overflow:hidden; mso-hide:all; font-size:1px; line-height:1px; color:#F5F5F7; opacity:0;">
-    Entra nel team foto della Conferenza 2026. L'invito vale 7 giorni.
+  <!-- Preheader: l'anteprima in casella. Nascosto nel corpo. -->
+  <div style="display:none; max-height:0; overflow:hidden; mso-hide:all; font-size:1px; line-height:1px; color:#fdfdfb; opacity:0;">
+    Carichi le foto di {{NOME_EVENTO}}. L'invito scade il {{DATA_SCADENZA}}.
   </div>
 
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#F5F5F7;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#fdfdfb" style="background-color:#fdfdfb;">
     <tr>
       <td align="center" style="padding:40px 16px;">
 
-        <!-- Card -->
-        <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="width:100%; max-width:600px; background-color:#FFFFFF; border:1px solid #D2D2D7; border-radius:18px;">
+        <!-- Pannello: o il bordo o l'ombra, non entrambi. Qui il bordo. -->
+        <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" bgcolor="#ffffff" align="center" style="width:100%; max-width:600px; background-color:#ffffff; border:1px solid #e3e2de; border-radius:12px;">
           <tr>
             <td style="padding:40px;">
 
-              <!-- Wordmark -->
-              <p style="margin:0; font-family:-apple-system,'Helvetica Neue',Arial,sans-serif; font-size:20px; font-weight:600; letter-spacing:-0.02em; line-height:1; color:#1D1D1F;">Frames of Me</p>
+              <!-- Marchio -->
+              <p style="margin:0 0 32px 0; font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI Variable Text','Segoe UI',system-ui,'Helvetica Neue',Arial,sans-serif; font-size:20px; font-weight:600; letter-spacing:-0.01em; line-height:1.2; color:#25231f;">Frames of Me</p>
 
-              <!-- Spacer -->
-              <div style="line-height:32px; font-size:32px;">&nbsp;</div>
+              <!-- Titolo -->
+              <h1 style="margin:0 0 16px 0; font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI Variable Text','Segoe UI',system-ui,'Helvetica Neue',Arial,sans-serif; font-size:24px; font-weight:600; letter-spacing:-0.01em; line-height:1.2; color:#25231f;">Carichi le foto di {{NOME_EVENTO}}</h1>
 
-              <!-- Heading -->
-              <h1 style="margin:0 0 16px 0; font-family:-apple-system,'Helvetica Neue',Arial,sans-serif; font-size:26px; font-weight:600; letter-spacing:-0.02em; line-height:1.2; color:#1D1D1F;">Benvenuto nel team foto</h1>
-
-              <!-- Body -->
-              <p style="margin:0 0 20px 0; font-family:-apple-system,'Helvetica Neue',Arial,sans-serif; font-size:16px; line-height:1.5; color:#6E6E73;">
-                Sei stato invitato come fotografo per <span style="color:#1D1D1F; font-weight:600;">Conferenza 2026 · 12–14 marzo 2026</span>. Accetta l'invito per caricare gli scatti e seguire l'evento.
+              <!-- Corpo -->
+              <p style="margin:0 0 24px 0; font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI Variable Text','Segoe UI',system-ui,'Helvetica Neue',Arial,sans-serif; font-size:16px; font-weight:400; line-height:1.5; color:#575550;">
+                {{NOME_INVITANTE}} ti ha invitato come fotografo. Accettando, l'indirizzo a cui è arrivato questo messaggio diventa il tuo accesso: carichi gli scatti e vedi quanti sono stati elaborati.
               </p>
 
-              <!-- Validity note -->
-              <p style="margin:0 0 28px 0; font-family:-apple-system,'Helvetica Neue',Arial,sans-serif; font-size:16px; line-height:1.5; color:#6E6E73;">
-                L'invito vale 7 giorni.
-              </p>
+              <!-- I dati dell'evento: ogni riga ha un valore, oppure «—».
+                   Separati da due linee e dallo spazio, non da un secondo
+                   riquadro: dentro un pannello non si mette un pannello. -->
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;">
+                <tr><td height="1" style="border-top:1px solid #e3e2de; line-height:1px; font-size:1px;">&nbsp;</td></tr>
+              </table>
 
-              <!-- Bulletproof button -->
-              <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 28px 0;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;">
                 <tr>
-                  <td align="center" bgcolor="#0071E3" style="background-color:#0071E3; border-radius:12px;">
+                  <td style="padding:20px 0;">
+                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;">
+                      <tr>
+                        <td width="90" valign="top" style="padding:0 12px 8px 0; font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI Variable Text','Segoe UI',system-ui,'Helvetica Neue',Arial,sans-serif; font-size:14px; font-weight:400; line-height:1.5; color:#6f6d68;">Evento</td>
+                        <td valign="top" style="padding:0 0 8px 0; font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI Variable Text','Segoe UI',system-ui,'Helvetica Neue',Arial,sans-serif; font-size:16px; font-weight:600; line-height:1.5; color:#25231f;">{{NOME_EVENTO}}</td>
+                      </tr>
+                      <tr>
+                        <td width="90" valign="top" style="padding:0 12px 8px 0; font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI Variable Text','Segoe UI',system-ui,'Helvetica Neue',Arial,sans-serif; font-size:14px; font-weight:400; line-height:1.5; color:#6f6d68;">Date</td>
+                        <td valign="top" style="padding:0 0 8px 0; font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI Variable Text','Segoe UI',system-ui,'Helvetica Neue',Arial,sans-serif; font-size:16px; font-weight:400; line-height:1.5; color:#25231f; font-variant-numeric:tabular-nums; font-feature-settings:'tnum';">{{DATA_INIZIO}} – {{DATA_FINE}}</td>
+                      </tr>
+                      <tr>
+                        <td width="90" valign="top" style="padding:0 12px 0 0; font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI Variable Text','Segoe UI',system-ui,'Helvetica Neue',Arial,sans-serif; font-size:14px; font-weight:400; line-height:1.5; color:#6f6d68;">Luogo</td>
+                        <td valign="top" style="padding:0; font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI Variable Text','Segoe UI',system-ui,'Helvetica Neue',Arial,sans-serif; font-size:16px; font-weight:400; line-height:1.5; color:#25231f;">{{LUOGO_EVENTO}}</td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;">
+                <tr><td height="1" style="border-top:1px solid #e3e2de; line-height:1px; font-size:1px;">&nbsp;</td></tr>
+              </table>
+
+              <!-- Scadenza dell'invito -->
+              <p style="margin:20px 0 24px 0; font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI Variable Text','Segoe UI',system-ui,'Helvetica Neue',Arial,sans-serif; font-size:16px; font-weight:400; line-height:1.5; color:#575550;">
+                L'invito vale <span style="font-variant-numeric:tabular-nums; font-feature-settings:'tnum';">{{GIORNI_VALIDITA}}</span> giorni e scade il <span style="color:#25231f; font-weight:600; font-variant-numeric:tabular-nums; font-feature-settings:'tnum';">{{DATA_SCADENZA}}</span>. Dopo quella data serve che l'organizzatore te ne mandi un altro.
+              </p>
+
+              <!-- Una sola azione per messaggio, in inchiostro -->
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 24px 0;">
+                <tr>
+                  <td align="center" bgcolor="#1c1a16" style="background-color:#1c1a16; border-radius:6px;">
                     <!--[if mso]>
-                    <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word" href="#" style="height:48px;v-text-anchor:middle;width:220px;" arcsize="25%" strokecolor="#0071E3" fillcolor="#0071E3">
+                    <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word" href="{{LINK_INVITO}}" style="height:44px;v-text-anchor:middle;width:180px;" arcsize="14%" strokecolor="#1c1a16" fillcolor="#1c1a16">
                     <w:anchorlock/>
-                    <center style="color:#FFFFFF;font-family:Arial,sans-serif;font-size:16px;font-weight:bold;">Accetta l'invito</center>
+                    <center style="color:#fbfaf9;font-family:Arial,sans-serif;font-size:16px;font-weight:bold;">Accetta l'invito</center>
                     </v:roundrect>
                     <![endif]-->
                     <!--[if !mso]><!-- -->
-                    <a href="#" target="_blank" style="display:inline-block; padding:14px 28px; font-family:-apple-system,'Helvetica Neue',Arial,sans-serif; font-size:16px; font-weight:600; color:#FFFFFF; text-decoration:none; border-radius:12px;">Accetta l'invito</a>
+                    <a href="{{LINK_INVITO}}" target="_blank" style="display:inline-block; padding:12px 20px; font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI Variable Text','Segoe UI',system-ui,'Helvetica Neue',Arial,sans-serif; font-size:16px; font-weight:600; line-height:20px; color:#fbfaf9; text-decoration:none; border-radius:6px;">Accetta l'invito</a>
                     <!--<![endif]-->
                   </td>
                 </tr>
               </table>
 
-              <!-- Fallback link (plain text) -->
-              <p style="margin:0 0 28px 0; font-family:-apple-system,'Helvetica Neue',Arial,sans-serif; font-size:14px; line-height:1.5; color:#86868B;">
-                Se il pulsante non funziona, copia e incolla questo indirizzo nel browser:<br>
-                <a href="#" style="color:#0066CC; text-decoration:underline; word-break:break-all;">#</a>
+              <!-- Lo stesso indirizzo in chiaro: il messaggio funziona anche come solo testo -->
+              <p style="margin:0 0 24px 0; font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI Variable Text','Segoe UI',system-ui,'Helvetica Neue',Arial,sans-serif; font-size:14px; font-weight:400; line-height:1.5; color:#6f6d68;">
+                Se il pulsante non si apre, copia questo indirizzo nel browser:<br>
+                <a href="{{LINK_INVITO}}" style="color:#0159ba; text-decoration:underline; word-break:break-all;">{{LINK_INVITO}}</a>
               </p>
 
-              <!-- Divider -->
-              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
-                <tr><td style="border-top:1px solid #D2D2D7; line-height:1px; font-size:1px;">&nbsp;</td></tr>
+              <!-- Divisore -->
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;">
+                <tr><td height="1" style="border-top:1px solid #e3e2de; line-height:1px; font-size:1px;">&nbsp;</td></tr>
               </table>
 
-              <!-- Note -->
-              <p style="margin:24px 0 0 0; font-family:-apple-system,'Helvetica Neue',Arial,sans-serif; font-size:14px; line-height:1.5; color:#86868B;">
-                Hai ricevuto questa email perché lo staff di Frames of Me ti ha invitato.
+              <p style="margin:24px 0 0 0; font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI Variable Text','Segoe UI',system-ui,'Helvetica Neue',Arial,sans-serif; font-size:14px; font-weight:400; line-height:1.5; color:#6f6d68;">
+                Hai ricevuto questo messaggio perché l'organizzatore di {{NOME_EVENTO}} ha inserito il tuo indirizzo. Se non c'entri nulla, ignoralo: senza accettazione l'invito scade da sé.
               </p>
 
             </td>
           </tr>
         </table>
 
-        <!-- Footer -->
-        <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="width:100%; max-width:600px;">
+        <!-- Piè di pagina -->
+        <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" align="center" style="width:100%; max-width:600px;">
           <tr>
-            <td style="padding:24px 40px; text-align:center; font-family:-apple-system,'Helvetica Neue',Arial,sans-serif; font-size:13px; line-height:1.6; color:#86868B;">
-              Frames of Me · Conferenza 2026<br>
-              <a href="#" style="color:#86868B; text-decoration:underline;">Informativa sulla privacy</a>
+            <td align="center" style="padding:24px 40px; text-align:center; font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI Variable Text','Segoe UI',system-ui,'Helvetica Neue',Arial,sans-serif; font-size:13px; font-weight:400; line-height:1.6; color:#6f6d68;">
+              Frames of Me · {{NOME_EVENTO}}<br>
+              <a href="{{LINK_PRIVACY}}" style="color:#0159ba; text-decoration:underline;">Informativa sulla privacy</a>
             </td>
           </tr>
         </table>

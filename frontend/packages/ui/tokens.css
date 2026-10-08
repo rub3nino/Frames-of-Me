@@ -39,7 +39,7 @@
   --text-primary:    oklch(0.255 0.008 85);  /* #25231f 15.8:1 */
   --text-secondary:  oklch(0.45 0.009 85);   /* #575550  7.4:1 */
   --text-tertiary:   oklch(0.535 0.008 85);  /* #6f6d68  5.2:1 (4.8:1 sulla barra) */
-  --text-on-inverse: oklch(0.985 0.002 85);  /* quasi bianco caldo */
+  --text-on-inverse: oklch(0.985 0.002 85);  /* #fbfaf9 quasi bianco caldo */
 
   /* --- Blu: un solo accento ----------------------------------------------
      Non colora un pulsante di azione. Quel pulsante è inchiostro. */
@@ -130,6 +130,12 @@
   --topbar-h:  48px;
   --sidebar-w: 240px;
   --panel-w:   480px;
+  /* Larghezze di pagina. Erano l'unico gruppo di misure del manuale che non
+     era arrivato nei token: due pezzi le hanno cercate e hanno dovuto
+     inlinearle. */
+  --page-w:       1440px;  /* la pagina intera */
+  --page-w-doc:   1040px;  /* un documento da leggere */
+  --page-w-prose: 880px;   /* una colonna di prosa */
 
   /* --- Livelli ----------------------------------------------------------- */
   --z-panel:   40;

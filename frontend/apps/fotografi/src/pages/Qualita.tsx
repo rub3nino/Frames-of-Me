@@ -1,125 +1,219 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 // @ts-ignore plain module
 import { createClient } from "@api";
-import { AppBar } from "../ui";
+import { Shell, Esito, Quota, Spin, nf, num, quando as fQuando, IconInfo, IconAvviso, IconOk } from "../ui";
 import { useActiveEvent } from "../lib/event";
 
-/** Row shape of GET /v1/uploads (CONTRACTS.md): session status is open|completed|aborted. */
+/** Riga di GET /v1/uploads (CONTRACTS.md): lo stato di sessione è open|completed|aborted. */
 type UploadRow = { id: string; objectKey: string; sha256: string; contentType: string; status: "open" | "completed" | "aborted"; createdAt: string };
 type UploadsResponse = { uploads: UploadRow[]; nextCursor: string | null };
-type Summary = { sessions: { open: number; completed: number; aborted: number }; photos: { uploaded: number; processing: number; indexed: number; error: number; originalsPending: number } };
-
-const fmt = (n: number) => n.toLocaleString("it-IT");
-const when = (iso: string) => {
-  const d = new Date(iso);
-  return isNaN(d.getTime()) ? "—" : d.toLocaleString("it-IT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+type Summary = {
+  sessions: { open: number; completed: number; aborted: number };
+  photos: { uploaded: number; processing: number; indexed: number; error: number; originalsPending: number };
 };
-const shortKey = (objectKey: string) => objectKey.split("/").pop() || objectKey;
 
+const nomeFile = (objectKey: string) => objectKey.split("/").pop() || objectKey;
+
+/**
+ * Qualità: la coda operativa. Che cosa non è andato a buon fine, e come si
+ * rimedia.
+ *
+ * Le regole che le danno questa forma:
+ *
+ * 1. Niente griglia di numeri grandi: una riga di riepilogo, e la salute del
+ *    caricamento è una proporzione — numero più segni, non una tinta.
+ * 2. Il rosso è raro. Una sessione interrotta è ambra: il file si rimanda, il
+ *    lavoro non è bloccato. Il rosso compare solo se l'evento non si collega,
+ *    perché allora da qui non si rimedia niente.
+ * 3. Ogni riga dice COSA è andato storto, PERCHÉ e COME si rimedia. Un elenco
+ *    di nomi di file con un triangolo rosso accanto non è un messaggio
+ *    d'errore.
+ * 4. L'elenco che sta arrivando è uno scheletro nelle righe; l'attesa di un
+ *    clic già fatto è la rotella dentro il pulsante «Aggiorna». Mai una
+ *    rotella a tutto schermo.
+ * 5. Nessun dato è una frase con un verbo, non una tabella di zeri.
+ */
 export default function Qualita() {
   const api = useMemo(() => createClient(), []);
-  const { event, loading: evLoading, error: evError } = useActiveEvent();
-  const [rows, setRows] = useState<UploadRow[]>([]);
-  const [summary, setSummary] = useState<Summary | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState(false);
+  const { event, loading: evCaricamento, error: evErrore } = useActiveEvent();
+  const [righe, setRighe] = useState<UploadRow[] | null>(null);
+  const [sum, setSum] = useState<Summary | null>(null);
+  const [errore, setErrore] = useState(false);
+  const [aggiornando, setAggiornando] = useState(false);
+  const vivo = useRef(true);
 
-  useEffect(() => {
+  useEffect(() => () => { vivo.current = false; }, []);
+
+  const carica = useCallback(async () => {
     if (!event) return;
-    let alive = true;
-    setLoading(true);
-    Promise.all([
-      // GET /v1/uploads exists; api.raw prefixes the client base (/v1), so the path is /uploads.
-      api.raw(`/uploads?eventId=${encodeURIComponent(event.id)}&limit=200`) as Promise<UploadsResponse>,
-      api.uploadsSummary(event.id) as Promise<Summary>,
-    ])
-      .then(([list, sum]) => {
-        if (!alive) return;
-        // Aborted sessions are the real "failed upload" signal exposed today
-        // (corrupt bytes, size/HEAD mismatch, housekeeping). Newest first.
-        setRows((list.uploads || []).filter((u) => u.status === "aborted"));
-        setSummary(sum);
-        setErr(false);
-      })
-      .catch(() => { if (alive) setErr(true); })
-      .finally(() => { if (alive) setLoading(false); });
-    return () => { alive = false; };
+    try {
+      const [lista, riepilogo] = await Promise.all([
+        // GET /v1/uploads esiste; api.raw mette il prefisso /v1.
+        api.raw(`/uploads?eventId=${encodeURIComponent(event.id)}&limit=200`) as Promise<UploadsResponse>,
+        api.uploadsSummary(event.id) as Promise<Summary>,
+      ]);
+      if (!vivo.current) return;
+      // Le sessioni interrotte sono il segnale di «caricamento non riuscito»
+      // che il contratto espone oggi: byte che non combaciano, HEAD diverso,
+      // pulizia di una sessione mai chiusa.
+      setRighe((lista.uploads || []).filter((u) => u.status === "aborted"));
+      setSum(riepilogo);
+      setErrore(false);
+    } catch {
+      if (vivo.current) { setErrore(true); setRighe([]); }
+    }
   }, [api, event]);
 
-  const errorPhotos = summary?.photos.error ?? 0;
-  const pending = summary?.photos.originalsPending ?? 0;
-  const totalUploaded = summary ? summary.photos.uploaded + summary.photos.processing + summary.photos.indexed : 0;
-  const healthy = totalUploaded + errorPhotos > 0 ? Math.round((totalUploaded / (totalUploaded + errorPhotos)) * 1000) / 10 : 100;
+  useEffect(() => { void carica(); }, [carica]);
+
+  async function aggiorna() {
+    if (aggiornando) return;
+    setAggiornando(true);
+    try { await carica(); } finally { if (vivo.current) setAggiornando(false); }
+  }
+
+  const f = sum?.photos;
+  const inErrore = f?.error ?? null;
+  const dovuti = f?.originalsPending ?? null;
+  const arrivate = f ? f.uploaded + f.processing + f.indexed : null;
+  const esaminate = arrivate != null && inErrore != null ? arrivate + inErrore : null;
+
+  const caricamento = righe == null && !errore;
 
   return (
-    <>
-      <AppBar />
-      <main className="fz-page">
-        <div className="fz-head">
-          <div>
-            <h1>Qualità</h1>
-            <p className="muted">La coda operativa: cosa non è andato a buon fine e come sistemarlo.</p>
-          </div>
-          <span className="agg">{event ? event.name : evLoading ? "collego l'evento…" : "—"}</span>
+    <Shell
+      titolo="Qualità"
+      dove={righe == null ? undefined : righe.length === 0 ? "nessun guasto aperto" : `${nf(righe.length)} da guardare`}
+      evento={event ? event.name : null}
+      conteggi={{ "/qualita": righe?.length ?? 0 }}
+      azioni={
+        <button
+          className="btn btn--sm" type="button" onClick={() => void aggiorna()}
+          disabled={!event || aggiornando} data-loading={aggiornando || undefined}
+          title={!event ? (evCaricamento ? "Sto collegando l'evento" : "L'evento non è collegato") : undefined}
+        >
+          {aggiornando && <Spin />}
+          Aggiorna l'elenco
+        </button>
+      }
+    >
+      {evErrore && (
+        <div className="callout callout--errore" role="alert">
+          <IconAvviso />
+          <span className="callout__text">
+            <strong>L'evento non si collega.</strong> Senza l'evento non possiamo sapere cosa non
+            è andato a buon fine: i conteggi restano «—». Ricarica la pagina; se continua, avvisa
+            lo staff.
+          </span>
         </div>
-
-        {evError && (
-          <div className="banner banner-danger" style={{ marginBottom: "var(--s-5)" }}><span>Non riesco a collegare l'evento. Riprova più tardi.</span></div>
-        )}
-        {err && !evError && (
-          <div className="banner banner-warning" style={{ marginBottom: "var(--s-5)" }}><span>Dati non disponibili al momento. Riprova più tardi.</span></div>
-        )}
-
-        {/* Health band — real counts from GET /v1/uploads/summary. */}
-        <div className="ql-health">
-          <div className="hcard ok">
-            <span className="hv">{healthy.toLocaleString("it-IT")}%</span>
-            <span className="hk">Caricamenti senza problemi</span>
-            <div className="mini-bar" aria-hidden="true"><span style={{ width: healthy + "%" }} /></div>
-          </div>
-          <div className="hcard err"><span className="hv">{fmt(errorPhotos)}</span><span className="hk">Foto in errore</span></div>
-          <div className="hcard warn"><span className="hv">{fmt(pending)}</span><span className="hk">Originali dovuti</span></div>
-          <div className="hcard"><span className="hv">{fmt(totalUploaded)}</span><span className="hk">Caricate in totale</span></div>
+      )}
+      {errore && !evErrore && (
+        <div className="callout callout--attention" role="status">
+          <IconAvviso />
+          <span className="callout__text">
+            <strong>L'elenco non è arrivato.</strong> Il server non ha risposto. Premi «Aggiorna
+            l'elenco»: nel frattempo nessun caricamento si è perso, la coda è sul tuo computer.
+          </span>
         </div>
+      )}
 
-        {/* GAP: per-photo error reason + Retry action are not in GET /v1/uploads. */}
-        {/* The list returns session status only; the photo-level reason (sha256 mismatch, */}
-        {/* unsupported image, byte mismatch) and a server-side retry need */}
-        {/* GET /v1/photographer/photos?status=error (spec 03 §3.8, G2). */}
-        <div className="banner banner-info" style={{ margin: "var(--s-5) 0" }}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9" /><path d="M12 11v5" /><path d="M12 7.5h.01" /></svg>
-          <span>Funzione in arrivo: endpoint da aggiungere. Il <b>motivo</b> per foto (sha256 mismatch, formato non supportato, byte non combaciano) e il pulsante <b>Riprova</b> lato server richiedono <code>GET /v1/photographer/photos?status=error</code> (G2). Qui sotto, dal contratto odierno, le <b>sessioni interrotte</b> (<code>GET /v1/uploads</code>, stato <code>aborted</code>).</span>
+      <div className="summary">
+        <span><b className="dato">{num(arrivate)}</b> foto arrivate</span>
+        <span><b className="dato">{num(inErrore)}</b> in errore sul server</span>
+        <span><b className="dato">{num(dovuti)}</b> originali da inviare</span>
+        <span><b className="dato">{num(sum?.sessions.aborted ?? null)}</b> sessioni interrotte</span>
+        <Quota n={arrivate} su={esaminate} attenzione={!!inErrore} suffisso="dei caricamenti è andato a buon fine" />
+      </div>
+
+      {!!dovuti && (
+        <div className="callout callout--attention" role="status">
+          <IconAvviso />
+          <span className="callout__text">
+            <strong>
+              {dovuti === 1
+                ? "Un originale non è ancora arrivato."
+                : `${nf(dovuti)} originali non sono ancora arrivati.`}
+            </strong>{" "}
+            La versione web è sul server e la foto è già cercabile: manca il file grande, che
+            serve per la stampa. Tieni aperta la pagina Caricamento fino alla fine della coda,
+            oppure rimetti quei file nella cartella sorvegliata.
+          </span>
         </div>
+      )}
 
-        <div className="err-head">
-          <h2>Sessioni interrotte</h2>
-          <span className="agg">{loading ? "caricamento…" : rows.length === 0 ? "nessuna" : fmt(rows.length) + (rows.length === 1 ? " sessione" : " sessioni")}</span>
+      <div className="callout callout--info" role="note">
+        <IconInfo />
+        <span className="callout__text">
+          <strong>Funzione in arrivo.</strong> Il <b>motivo</b> per singola foto (impronta che
+          non combacia, formato non supportato, byte che non tornano) e il pulsante{" "}
+          <b>Riprova</b> lato server richiedono{" "}
+          <code>GET /v1/photographer/photos?status=error</code> (G2). Oggi, dal contratto, si
+          vedono le <b>sessioni interrotte</b> di <code>GET /v1/uploads</code>: un file che non è
+          arrivato intero si rimanda dal Caricamento, dove la ripresa riparte dalla parte
+          interrotta.
+        </span>
+      </div>
+
+      <div className="sez">
+        <h2>Sessioni interrotte</h2>
+        <span className="sez__n">
+          {caricamento ? "sto chiedendo l'elenco" : righe && righe.length > 0 ? `${nf(righe.length)} ${righe.length === 1 ? "sessione" : "sessioni"}` : "nessuna"}
+        </span>
+      </div>
+
+      {caricamento ? (
+        <div className="tbl-wrap">
+          <div className="skel-righe" aria-hidden="true">
+            <div className="skel" /><div className="skel" /><div className="skel" /><div className="skel" /><div className="skel" />
+          </div>
+          <span className="sr-only" role="status">Sto chiedendo l'elenco delle sessioni interrotte.</span>
         </div>
-
-        {rows.length > 0 ? (
-          <div className="ql-list">
-            {rows.map((r) => (
-              <div className="ql-row" key={r.id}>
-                <span className="ei" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3 2.5 20h19L12 3Z" /><path d="M12 10v4" /><path d="M12 17.5h.01" /></svg>
-                </span>
-                <div className="mid">
-                  <div className="fname" title={r.objectKey}>{shortKey(r.objectKey)}</div>
-                  <div className="reason">Sessione interrotta · sha {r.sha256.slice(0, 12)}… · {r.contentType}</div>
-                </div>
-                <span className="when">{when(r.createdAt)}</span>
-                <div className="act"><span className="fatal-note">Reinvia un file valido dal Caricamento</span></div>
-              </div>
-            ))}
-          </div>
-        ) : !loading && (
-          <div className="empty">
-            <svg className="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9" /><path d="m8.5 12.5 2.2 2.2 4.8-5" /></svg>
-            <h3>Nessun problema qui</h3>
-            <p>Tutte le tue sessioni di caricamento sono andate a buon fine.</p>
-          </div>
-        )}
-      </main>
-    </>
+      ) : righe && righe.length > 0 ? (
+        <div className="tbl-wrap">
+          <table className="tbl tbl--schede">
+            <thead>
+              <tr>
+                <th scope="col">File</th>
+                <th scope="col">Che cosa è andato storto</th>
+                <th scope="col">Quando</th>
+                <th scope="col">Come si rimedia</th>
+              </tr>
+            </thead>
+            <tbody>
+              {righe.map((r) => (
+                <tr key={r.id}>
+                  <td>
+                    <span className="nomefile" title={r.objectKey}>{nomeFile(r.objectKey)}</span>
+                    <span className="cell-sub codice">{r.contentType} · sha {r.sha256.slice(0, 12)}…</span>
+                  </td>
+                  <td data-etichetta="Che cosa">
+                    {/* Ambra: il file si rimanda, il lavoro non è bloccato. */}
+                    <Esito tipo="attesa">Sessione interrotta</Esito>
+                    <span className="cell-sub">
+                      Il caricamento si è chiuso senza che il file arrivasse intero: rete caduta,
+                      pagina chiusa a metà, o byte che non combaciano con l'impronta.
+                    </span>
+                  </td>
+                  <td data-etichetta="Quando" className="dato">{fQuando(r.createdAt)}</td>
+                  <td data-etichetta="Come si rimedia">
+                    Rimetti il file nella cartella sorvegliata, o trascinalo nel Caricamento:
+                    riparte da zero una sola volta e i duplicati si saltano da soli.
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="empty">
+          <IconOk />
+          <h2>Non c'è niente da sistemare</h2>
+          <p>
+            Tutte le tue sessioni di caricamento si sono chiuse intere. Torna al Caricamento e
+            continua: se qualcosa non parte, comparirà qui.
+          </p>
+        </div>
+      )}
+    </Shell>
   );
 }

@@ -1,115 +1,261 @@
 import { useMemo, useState } from "react";
-import { AppBar } from "../ui";
+import {
+  Shell, Pannello, Esito, Quota, Toast, useAvviso, nf, num,
+  IconInfo, IconAlbum, type EsitoTipo,
+} from "../ui";
 import { useActiveEvent } from "../lib/event";
 
 /*
- * GAP page. Albums / organizzazione do not exist in the contract yet:
- *   tables: albums(id,event_id,name,slug,kind,starts_at,ends_at,...) + photo_albums(photo_id,album_id)
- *   endpoints: POST/GET/PATCH/DELETE /v1/photographer/albums[/:id] (G4),
- *              POST /v1/photographer/albums/:id/photos (G5),
- *              uploads/init albumId? (G6), POST /v1/photographer/albums/:id/release (G9 embargo).
- * Everything below is realistic placeholder data; see spec 03 §3.5 / §5.2.
+ * Pagina con un buco nel contratto. Album e organizzazione non esistono ancora:
+ *   tabelle: albums(id,event_id,name,slug,kind,starts_at,ends_at,…) + photo_albums
+ *   endpoint: POST/GET/PATCH/DELETE /v1/photographer/albums[/:id] (G4),
+ *             POST /v1/photographer/albums/:id/photos (G5),
+ *             uploads/init albumId? (G6), POST /v1/photographer/albums/:id/release (G9).
+ * I dati qui sotto sono di esempio, e la pagina lo dichiara in chiaro.
+ *
+ * Le regole che le danno questa forma:
+ *
+ * 1. Il dettaglio di una riga sta in un PANNELLO laterale, non in un dialogo e
+ *    non in una pagina nuova per quattro campi. La lista dietro resta usabile,
+ *    non c'è velo, Esc chiude e il fuoco torna al nome su cui si è premuto.
+ * 2. Mentre il pannello è aperto, il primario della pagina perde l'inchiostro:
+ *    non ci sono due neri in vista. Quando il pannello si chiude, torna.
+ * 3. «Crea l'album» non può funzionare finché l'endpoint non c'è: è
+ *    `aria-disabled`, non `disabled`, così resta raggiungibile da tastiera e
+ *    può dire perché.
+ * 4. Lo stato dell'album ha una forma e una parola. L'embargo non è un bordo
+ *    ambra: è una riga che dice da quando le foto si vedono.
+ * 5. «È fatto» dopo un gesto già compiuto è un toast a fondo inchiostro, non
+ *    un callout permanente e non un toast verde.
  */
 
-type Kind = "day" | "session" | "stage" | "zone";
-type State = "published" | "review" | "scheduled";
-type Album = { id: string; name: string; kind: Kind; count: number; date: string; state: State; release?: string };
+type Tipo = "giorno" | "sessione" | "palco" | "zona";
+type Stato = "pubblicato" | "in-revisione" | "programmato";
+type Album = {
+  id: string; nome: string; tipo: Tipo; foto: number; giorno: string;
+  stato: Stato; viaLibera?: string; aggiornato: string;
+};
 
 const SEED: Album[] = [
-  { id: "a1", name: "Giorno 1 · Palco Centrale", kind: "stage", count: 2480, date: "12 mar", state: "published" },
-  { id: "a2", name: "Giorno 1 · Apertura & Keynote", kind: "session", count: 1120, date: "12 mar", state: "published" },
-  { id: "a3", name: "Giorno 1 · Area Networking", kind: "zone", count: 860, date: "12 mar", state: "published" },
-  { id: "a4", name: "Giorno 2 · Palco Centrale", kind: "stage", count: 3210, date: "13 mar", state: "published" },
-  { id: "a5", name: "Giorno 2 · Sessioni Parallele", kind: "session", count: 1940, date: "13 mar", state: "review" },
-  { id: "a6", name: "Giorno 2 · Cena di Gala", kind: "session", count: 1460, date: "13 mar", state: "review" },
-  { id: "a7", name: "Giorno 3 · Palco Nord", kind: "stage", count: 2070, date: "14 mar", state: "review" },
-  { id: "a8", name: "Giorno 3 · Premiazione", kind: "session", count: 980, date: "14 mar", state: "scheduled", release: "Via libera 14 mar 18:00" },
+  { id: "a1", nome: "Giorno 1 · Palco Centrale", tipo: "palco", foto: 2480, giorno: "12/03/2026", stato: "pubblicato", aggiornato: "12/03/2026 18:40" },
+  { id: "a2", nome: "Giorno 1 · Apertura e keynote", tipo: "sessione", foto: 1120, giorno: "12/03/2026", stato: "pubblicato", aggiornato: "12/03/2026 11:05" },
+  { id: "a3", nome: "Giorno 1 · Area networking", tipo: "zona", foto: 860, giorno: "12/03/2026", stato: "pubblicato", aggiornato: "12/03/2026 19:20" },
+  { id: "a4", nome: "Giorno 2 · Palco Centrale", tipo: "palco", foto: 3210, giorno: "13/03/2026", stato: "pubblicato", aggiornato: "13/03/2026 18:10" },
+  { id: "a5", nome: "Giorno 2 · Sessioni parallele", tipo: "sessione", foto: 1940, giorno: "13/03/2026", stato: "in-revisione", aggiornato: "13/03/2026 17:55" },
+  { id: "a6", nome: "Giorno 2 · Cena di gala", tipo: "sessione", foto: 1460, giorno: "13/03/2026", stato: "in-revisione", aggiornato: "13/03/2026 23:40" },
+  { id: "a7", nome: "Giorno 3 · Palco Nord", tipo: "palco", foto: 2070, giorno: "14/03/2026", stato: "in-revisione", aggiornato: "14/03/2026 12:30" },
+  { id: "a8", nome: "Giorno 3 · Premiazione", tipo: "sessione", foto: 980, giorno: "14/03/2026", stato: "programmato", viaLibera: "14/03/2026 18:00", aggiornato: "14/03/2026 17:10" },
 ];
 
-const FILTERS: { key: "all" | Kind; label: string }[] = [
-  { key: "all", label: "Tutti" },
-  { key: "day", label: "Giorno" },
-  { key: "session", label: "Sessione" },
-  { key: "stage", label: "Palco" },
-  { key: "zone", label: "Zona" },
-];
+const NOME_TIPO: Record<Tipo, string> = { giorno: "Giorno", sessione: "Sessione", palco: "Palco", zona: "Zona" };
 
-const fmt = (n: number) => n.toLocaleString("it-IT");
-
-const StateBadge = ({ state }: { state: State }) => {
-  if (state === "published") return <span className="badge badge-success">Pubblicato</span>;
-  if (state === "scheduled") return <span className="badge badge-info">Programmato</span>;
-  return <span className="badge badge-warning">In revisione</span>;
+const STATO: Record<Stato, { forma: EsitoTipo; parola: string }> = {
+  pubblicato: { forma: "fatto", parola: "Pubblicato" },
+  "in-revisione": { forma: "attesa", parola: "In revisione" },
+  programmato: { forma: "corso", parola: "Programmato" },
 };
+
+const FILTRI: { key: "tutti" | Tipo; label: string }[] = [
+  { key: "tutti", label: "Tutti" },
+  { key: "giorno", label: "Giorno" },
+  { key: "sessione", label: "Sessione" },
+  { key: "palco", label: "Palco" },
+  { key: "zona", label: "Zona" },
+];
 
 export default function Album() {
   const { event } = useActiveEvent();
-  const [albums, setAlbums] = useState<Album[]>(SEED);
-  const [filter, setFilter] = useState<"all" | Kind>("all");
+  const [album, setAlbum] = useState<Album[]>(SEED);
+  const [filtro, setFiltro] = useState<"tutti" | Tipo>("tutti");
+  const [apertoId, setApertoId] = useState<string | null>(null);
+  const { avviso, mostra } = useAvviso();
 
-  const shown = useMemo(() => (filter === "all" ? albums : albums.filter((a) => a.kind === filter)), [albums, filter]);
-  const totalPhotos = useMemo(() => albums.reduce((s, a) => s + a.count, 0), [albums]);
+  const mostrati = useMemo(
+    () => (filtro === "tutti" ? album : album.filter((a) => a.tipo === filtro)),
+    [album, filtro],
+  );
+  const totali = useMemo(() => {
+    const foto = album.reduce((s, a) => s + a.foto, 0);
+    const pubblicati = album.filter((a) => a.stato === "pubblicato").length;
+    return { foto, pubblicati };
+  }, [album]);
 
-  // Instant state change (workspace rule): review/scheduled → published.
-  const release = (id: string) => setAlbums((as) => as.map((a) => (a.id === id ? { ...a, state: "published", release: undefined } : a)));
+  const aperto = album.find((a) => a.id === apertoId) ?? null;
+
+  function pubblica(id: string) {
+    const a = album.find((x) => x.id === id);
+    setAlbum((as) => as.map((x) => (x.id === id ? { ...x, stato: "pubblicato", viaLibera: undefined } : x)));
+    setApertoId(null);
+    mostra({ variante: "success", testo: `«${a?.nome ?? "Album"}» è pubblicato: le foto sono cercabili.` });
+  }
 
   return (
-    <>
-      <AppBar />
-      <main className="fz-page">
-        <div className="fz-head">
-          <div>
-            <h1>Album</h1>
-            <p className="muted"><b>{albums.length}</b> album · <b>{fmt(totalPhotos)}</b> foto organizzate{event ? ` · ${event.name}` : ""}</p>
-          </div>
-          <button className="btn btn-primary" type="button" data-press aria-disabled="true" title="Richiede l'endpoint album">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14" /></svg>
-            Crea album
-          </button>
-        </div>
+    <Shell
+      titolo="Album"
+      dove={`${nf(album.length)} album`}
+      evento={event ? event.name : null}
+      azioni={
+        // Mentre il pannello è aperto questo pulsante non è più il nero della
+        // pagina. aria-disabled, non disabled: così si raggiunge e si spiega.
+        <button
+          className={"btn" + (aperto ? "" : " btn--primary")}
+          type="button"
+          aria-disabled="true"
+          title="Creare un album richiede l'endpoint POST /v1/photographer/albums, che non esiste ancora."
+          onClick={(e) => e.preventDefault()}
+        >
+          Crea l'album
+        </button>
+      }
+    >
+      <div className="callout callout--info" role="note">
+        <IconInfo />
+        <span className="callout__text">
+          <strong>Funzione in arrivo.</strong> Album, assegnazione delle foto ed embargo
+          richiedono le tabelle <code>albums</code> e <code>photo_albums</code>
+          {" "}(<code>photos.embargo_until</code>) e gli endpoint{" "}
+          <code>GET/POST /v1/photographer/albums</code> e{" "}
+          <code>POST /v1/photographer/albums/:id/release</code> (G4–G6, G9). Gli album elencati
+          qui sotto sono di esempio: pubblicarli non cambia niente sul server.
+        </span>
+      </div>
 
-        {/* GAP flag. */}
-        <div className="banner banner-info" style={{ marginBottom: "var(--s-5)" }}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9" /><path d="M12 11v5" /><path d="M12 7.5h.01" /></svg>
-          <span>Funzione in arrivo: endpoint da aggiungere. Album, assegnazione e embargo/release richiedono le tabelle <code>albums</code> / <code>photo_albums</code> (<code>photos.embargo_until</code>) e <code>GET/POST /v1/photographer/albums</code>, <code>POST /v1/photographer/albums/:id/release</code> (spec 03 §5.2, G4–G6, G9). I dati qui sotto sono di esempio.</span>
-        </div>
+      <div className="summary">
+        <span><b className="dato">{nf(album.length)}</b> album</span>
+        <span><b className="dato">{nf(totali.foto)}</b> foto organizzate</span>
+        <span><b className="dato">{nf(totali.pubblicati)}</b> pubblicati</span>
+        <Quota n={totali.pubblicati} su={album.length} suffisso="degli album pubblicato" />
+      </div>
 
-        <div className="fz-filters" role="group" aria-label="Filtra album per tipo">
-          {FILTERS.map((f) => (
-            <button key={f.key} type="button" className={"chip" + (filter === f.key ? " is-active" : "")} aria-pressed={filter === f.key} onClick={() => setFilter(f.key)} data-press>{f.label}</button>
-          ))}
-        </div>
+      {/* Le schede cambiano quale elenco si guarda; il conteggio è un chip. */}
+      <div className="tabs" role="tablist" aria-label="Filtra gli album per tipo">
+        {FILTRI.map((f) => {
+          const n = f.key === "tutti" ? album.length : album.filter((a) => a.tipo === f.key).length;
+          return (
+            <button
+              key={f.key} className="tab" type="button" role="tab"
+              aria-selected={filtro === f.key} onClick={() => setFiltro(f.key)}
+            >
+              {f.label} <span className="chip"><b>{nf(n)}</b></span>
+            </button>
+          );
+        })}
+      </div>
 
-        {shown.length > 0 ? (
-          <section className="album-grid" aria-label="Album dell'evento">
-            {shown.map((a) => (
-              <article className="card album" key={a.id}>
-                <div className={"cover kind-" + a.kind}>
-                  <div className="cover-badge"><StateBadge state={a.state} /></div>
-                  <svg className="cover-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m12 2.6 8.5 4.2-8.5 4.2L3.5 6.8 12 2.6Z" /><path d="m3.5 12 8.5 4.2 8.5-4.2" /><path d="m3.5 17.2 8.5 4.2 8.5-4.2" /></svg>
-                </div>
-                <div className="body">
-                  <span className="nm">{a.name}</span>
-                  <span className="meta">{fmt(a.count)} foto · {a.date}</span>
-                  {a.release && <span className="release-line">Embargo · {a.release}</span>}
-                  <div className="foot">
-                    <button className="btn btn-secondary btn-sm" type="button" data-press>Apri</button>
-                    {a.state !== "published" && (
-                      <button className="btn btn-primary btn-sm" type="button" onClick={() => release(a.id)} data-press>{a.state === "scheduled" ? "Pubblica ora" : "Pubblica"}</button>
+      {mostrati.length === 0 ? (
+        <div className="empty">
+          <IconAlbum />
+          <h2>Nessun album di questo tipo</h2>
+          <p>Cambia filtro per vedere gli altri album dell'evento.</p>
+        </div>
+      ) : (
+        <div className="tbl-wrap">
+          <table className="tbl tbl--schede">
+            <thead>
+              <tr>
+                <th scope="col">Album</th>
+                <th scope="col">Tipo</th>
+                <th scope="col" className="num">Foto</th>
+                <th scope="col">Giorno</th>
+                <th scope="col">Stato</th>
+              </tr>
+            </thead>
+            <tbody>
+              {mostrati.map((a) => (
+                <tr key={a.id} aria-selected={a.id === apertoId || undefined}>
+                  <td>
+                    {/* Il nome apre il pannello: è un'azione che è una frase,
+                        ed è il controllo a cui il fuoco deve tornare. */}
+                    <button className="btn btn--link" type="button" onClick={() => setApertoId(a.id)}>
+                      {a.nome}
+                    </button>
+                    {a.viaLibera && (
+                      <span className="cell-sub">In embargo: le foto si vedono dal {a.viaLibera}.</span>
                     )}
-                  </div>
-                </div>
-              </article>
-            ))}
-          </section>
-        ) : (
-          <div className="empty">
-            <svg className="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="m12 2.6 8.5 4.2-8.5 4.2L3.5 6.8 12 2.6Z" /><path d="m3.5 12 8.5 4.2 8.5-4.2" /></svg>
-            <h3>Nessun album di questo tipo</h3>
-            <p>Cambia filtro per vedere gli altri album.</p>
-          </div>
+                  </td>
+                  <td data-etichetta="Tipo">{NOME_TIPO[a.tipo]}</td>
+                  <td className="num" data-etichetta="Foto">{nf(a.foto)}</td>
+                  <td data-etichetta="Giorno">{a.giorno}</td>
+                  <td data-etichetta="Stato">
+                    <Esito tipo={STATO[a.stato].forma}>{STATO[a.stato].parola}</Esito>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <Pannello
+        aperto={aperto != null}
+        titolo={aperto?.nome ?? "Album"}
+        sotto={aperto ? `${NOME_TIPO[aperto.tipo]} · ${aperto.giorno}` : undefined}
+        onChiudi={() => setApertoId(null)}
+        piede={
+          aperto && aperto.stato !== "pubblicato" ? (
+            <>
+              {/* Primario a sinistra, Annulla subito dopo. Pubblicare non è
+                  irreversibile (si può tornare in revisione), quindi non è un
+                  primario pericolo. */}
+              <button className="btn btn--primary" type="button" onClick={() => pubblica(aperto.id)}>
+                {aperto.stato === "programmato" ? "Pubblica adesso l'album" : "Pubblica l'album"}
+              </button>
+              <button className="btn btn--ghost" type="button" onClick={() => setApertoId(null)}>Annulla</button>
+            </>
+          ) : (
+            <button className="btn" type="button" onClick={() => setApertoId(null)}>Chiudi il pannello</button>
+          )
+        }
+      >
+        {aperto && (
+          <>
+            {/* Dentro il pannello si separa con una linea, non con un altro
+                riquadro: niente riquadro dentro un riquadro. */}
+            <section className="panel__sez">
+              <h3>Com'è fatto</h3>
+              <dl className="dl">
+                <dt>Foto</dt><dd>{nf(aperto.foto)}</dd>
+                <dt>Tipo</dt><dd>{NOME_TIPO[aperto.tipo]}</dd>
+                <dt>Giorno</dt><dd>{aperto.giorno}</dd>
+                <dt>Ultima aggiunta</dt><dd>{aperto.aggiornato}</dd>
+                <dt>Stato</dt><dd><Esito tipo={STATO[aperto.stato].forma}>{STATO[aperto.stato].parola}</Esito></dd>
+                <dt>Via libera</dt><dd>{aperto.viaLibera ?? "—"}</dd>
+              </dl>
+            </section>
+
+            <section className="panel__sez">
+              <h3>Chi vedrà queste foto</h3>
+              <p className="nota">
+                {aperto.stato === "pubblicato"
+                  ? "L'album è pubblicato: chi compare in una di queste foto la trova nella sua galleria."
+                  : aperto.stato === "programmato"
+                    ? `L'album è in embargo fino al ${aperto.viaLibera ?? "—"}. Fino a quel momento nessun partecipante vede queste foto, nemmeno chi compare dentro.`
+                    : "L'album è in revisione: le foto sono caricate e indicizzate, ma nessuno le vede ancora."}
+              </p>
+            </section>
+
+            <section className="panel__sez">
+              <h3>Quanto manca</h3>
+              <p className="nota">
+                Le foto di questo album sono <b className="dato">{nf(aperto.foto)}</b> su{" "}
+                <b className="dato">{nf(totali.foto)}</b> dell'evento.
+              </p>
+              <Quota n={aperto.foto} su={totali.foto} suffisso="delle foto dell'evento" />
+              <p className="nota-min sp-sopra">
+                Quante foto hanno già un volto riconosciuto non è un dato che l'API espone oggi:
+                serve <code>GET /v1/photographer/stats?eventId=</code> (G3). Finché non c'è, qui
+                sta <span className="dato">—</span> e non uno zero.
+              </p>
+              <dl className="dl sp-sopra">
+                <dt>Volti riconosciuti</dt><dd>{num(null)}</dd>
+                <dt>Foto scaricate</dt><dd>{num(null)}</dd>
+              </dl>
+            </section>
+          </>
         )}
-      </main>
-    </>
+      </Pannello>
+
+      <Toast avviso={avviso} />
+    </Shell>
   );
 }
