@@ -805,3 +805,46 @@ test("liveness rejection records the `liveness` reason on the gallery", async ()
   assert.equal(f.faces.selfieEmbeds, 0, "no embedding after a liveness rejection");
   assert.equal(f.mailer.sent.length, 1, "the ready mail still goes out on a liveness rejection");
 });
+
+test("LIVENESS_REQUIRED fails closed when the service cannot judge liveness (v4 F05)", async () => {
+  // Engine without a checkLiveness capability (e.g. the model weights are absent):
+  // required liveness must refuse the gallery rather than fall through to a match.
+  const f = await fixture({ LIVENESS_REQUIRED: true });
+  await ingest(f, [255, 0, 0]);
+  await selfie(f, [255, 0, 0]);
+  const gallery = await f.db.findGalleryByUser(f.participantId, f.eventId);
+  assert.equal(gallery?.reason, "liveness");
+  assert.equal(f.faces.selfieEmbeds, 0, "no search runs when liveness cannot be proven");
+});
+
+test("LIVENESS_REQUIRED rejects a `none` liveness verdict (v4 F05)", async () => {
+  // A verdict with method "none" means no real anti-spoofing model ran; required
+  // liveness treats that as not-live instead of silently serving the gallery.
+  const f = await fixture({ LIVENESS_REQUIRED: true });
+  f.deps.faces = {
+    ...f.faces,
+    async checkLiveness() {
+      return { live: true, score: 0, method: "none" };
+    },
+  };
+  await ingest(f, [255, 0, 0]);
+  await selfie(f, [255, 0, 0]);
+  const gallery = await f.db.findGalleryByUser(f.participantId, f.eventId);
+  assert.equal(gallery?.reason, "liveness");
+});
+
+test("LIVENESS_REQUIRED delivers the gallery on a genuine live verdict (v4 F05)", async () => {
+  const f = await fixture({ LIVENESS_REQUIRED: true });
+  f.deps.faces = {
+    ...f.faces,
+    async checkLiveness() {
+      return { live: true, score: 0.95, method: "silent-face" };
+    },
+  };
+  const red = await ingest(f, [255, 0, 0]);
+  await selfie(f, [255, 0, 0]);
+  const gallery = await f.db.findGalleryByUser(f.participantId, f.eventId);
+  assert.equal(gallery?.reason, null, "a real live verdict lets the match proceed");
+  const page = await f.db.listGalleryPage(f.participantId, f.eventId, { limit: 10 });
+  assert.deepEqual(page.items.map((item) => item.photoId), [red]);
+});

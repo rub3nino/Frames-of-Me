@@ -866,6 +866,24 @@ test("selfie is refused when the event is list-based and the email is not on it"
   assert.equal(allowed.status, 202);
 });
 
+test("concurrent consent POSTs are idempotent (v4 report S4)", async () => {
+  const h = await harness();
+  const participant = await h.db.createUser({ email: "race@example.com", role: "participant" });
+  const cookie = await sessionCookie(h.db, participant.id);
+  const post = () =>
+    h.app.request(
+      json("POST", `/v1/events/${h.event.slug}/consent`, { textVersion: CONSENT_TEXT_VERSION, accepted: true }, { cookie }),
+    );
+  const responses = await Promise.all(Array.from({ length: 8 }, post));
+  for (const res of responses) assert.equal(res.status, 201);
+  const ids = await Promise.all(
+    responses.map(async (res) => ((await res.json()) as { id: string }).id),
+  );
+  // One active consent: every concurrent request resolves to the same row.
+  assert.equal(new Set(ids).size, 1, "8 parallel consents must collapse to a single active row");
+  assert.equal(await h.db.hasActiveConsent(participant.id, h.event.id), true);
+});
+
 test("health reports 503 when the database does not answer", async () => {
   const h = await harness();
   const ok = await h.app.request("http://api.local/health");

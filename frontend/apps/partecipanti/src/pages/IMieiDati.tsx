@@ -15,6 +15,11 @@ export default function IMieiDati() {
 
   function flash(msg: string) { setToast(msg); setTimeout(() => setToast(null), 2600); }
 
+  // v4 report B4: these GDPR actions have no self-service endpoint yet (they pass
+  // through the organiser today). The UI must say so honestly instead of claiming a
+  // request was registered when nothing happened.
+  const GAP_MESSAGE = "Non ancora disponibile in autonomia: contatta l'organizzatore dell'evento per questa richiesta.";
+
   async function logout() {
     if (busy) return;
     setBusy(true);
@@ -37,7 +42,7 @@ export default function IMieiDati() {
           <p>Hai acconsentito all'uso del tuo volto per trovare le foto in cui compari. Puoi revocarlo quando vuoi: smetteremo di cercarti nelle nuove foto.</p>
           <div className="actions">
             {/* GAP: nessun endpoint di revoca self-service in CONTRACTS (oggi via admin). */}
-            <button className="btn btn-secondary" type="button" onClick={() => flash("Richiesta registrata")} data-press>Revoca il consenso</button>
+            <button className="btn btn-secondary" type="button" onClick={() => flash(GAP_MESSAGE)} data-press>Revoca il consenso</button>
             <div className="banner banner-info">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="9" /><path d="M12 8h.01M11 12h1v4h1" strokeLinecap="round" /></svg>
               <span>Funzione in arrivo: endpoint da aggiungere.</span>
@@ -51,7 +56,7 @@ export default function IMieiDati() {
           <p>Ricevi via email una copia dei dati che ti riguardano: email, consensi registrati e l'elenco delle foto collegate al tuo account.</p>
           <div className="actions">
             {/* GAP: nessun endpoint di portabilità/esportazione self-service in CONTRACTS. */}
-            <button className="btn btn-secondary" type="button" onClick={() => flash("Richiesta registrata")} data-press>
+            <button className="btn btn-secondary" type="button" onClick={() => flash(GAP_MESSAGE)} data-press>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 3v12" /><path d="M7 11l5 5 5-5" /><path d="M5 20h14" /></svg>
               Scarica i miei dati
             </button>
@@ -103,7 +108,7 @@ export default function IMieiDati() {
         </div>
         <div className="modal-row">
           <button className="btn btn-secondary" type="button" onClick={() => setDel(false)} data-press>Annulla</button>
-          <button className="btn btn-danger" type="button" onClick={() => { setDel(false); flash("Richiesta registrata"); }} data-press>Cancella</button>
+          <button className="btn btn-danger" type="button" onClick={() => { setDel(false); flash(GAP_MESSAGE); }} data-press>Cancella</button>
         </div>
       </div>
 

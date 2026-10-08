@@ -443,7 +443,10 @@ type MatchContext = {
 /**
  * Searches the event with the selfie and rebuilds the participant's gallery (v5, A1).
  * With `LIVENESS_CHECK=true` and an engine that can judge liveness, a rejected selfie gets
- * an empty gallery with reason `liveness` (the "ready" mail still goes out). With an engine
+ * an empty gallery with reason `liveness` (the "ready" mail still goes out). With
+ * `LIVENESS_REQUIRED=true` the check fails closed (v4 report F05): only a genuine positive
+ * verdict serves a gallery; a missing model, an unavailable service or a non-live verdict
+ * all reject. With an engine
  * that embeds selfies, the selfie is gated (no face, too small, low quality, two people)
  * before any search: a rejected selfie gets an empty gallery, a reason and no mail. On a
  * successful match the selfie vector is stored on the gallery so later uploads attach even
@@ -462,21 +465,39 @@ async function matchSelfie(
   const event = await deps.db.findEventById(job.eventId);
   if (!event) throw new Error("Event missing");
   const context: MatchContext = { job, event, selfieSha256: sha256Hex(selfie.body), liveness: null };
-  const liveness = deps.env.LIVENESS_CHECK ? deps.faces.checkLiveness?.bind(deps.faces) : undefined;
+  // v4 report F05: a match is the only thing standing between a stranger with a
+  // victim's photo and the victim's whole gallery, so the liveness decision fails
+  // closed when LIVENESS_REQUIRED is set. "Required" means we deliver a gallery ONLY
+  // on a genuine positive verdict: a missing model (method "none"), an unavailable
+  // service, or a non-live verdict all reject, instead of the lenient fall-through
+  // that let the reported attack succeed. LIVENESS_CHECK alone keeps the old lenient
+  // behaviour (reject only an explicit live===false), for non-production deploys.
+  const required = deps.env.LIVENESS_REQUIRED;
+  const liveness =
+    deps.env.LIVENESS_CHECK || required ? deps.faces.checkLiveness?.bind(deps.faces) : undefined;
+  const rejectLiveness = async (): Promise<JobNote> => {
+    context.liveness = "rejected";
+    await emptyGallery(context, deps, "liveness", null, previousSelfieKey);
+    await logMatchRun(context, deps, { reason: "liveness", selfieFaces: null, engineMs: null, hits: [] });
+    await enqueue(deps, "email", {
+      userId: job.userId,
+      eventId: job.eventId,
+      galleryPath: `/e/${event.slug}`,
+      kind: "ready",
+    } satisfies EmailPayload);
+    return { liveness: "rejected" };
+  };
+  if (required && !liveness) {
+    // Required but the engine cannot judge liveness at all: never serve the gallery.
+    return rejectLiveness();
+  }
   if (liveness) {
     const verdict = await liveness({ imageBytes, contentType: "image/jpeg" });
-    context.liveness = verdict.live === false ? "rejected" : "live";
-    if (verdict.live === false) {
-      await emptyGallery(context, deps, "liveness", null, previousSelfieKey);
-      await logMatchRun(context, deps, { reason: "liveness", selfieFaces: null, engineMs: null, hits: [] });
-      await enqueue(deps, "email", {
-        userId: job.userId,
-        eventId: job.eventId,
-        galleryPath: `/e/${event.slug}`,
-        kind: "ready",
-      } satisfies EmailPayload);
-      return { liveness: "rejected" };
-    }
+    const live = required
+      ? verdict.live === true && verdict.method !== "none"
+      : verdict.live !== false;
+    context.liveness = live ? "live" : "rejected";
+    if (!live) return rejectLiveness();
   }
   const embedSelfie = deps.faces.embedSelfie?.bind(deps.faces);
   const searchByVector = deps.faces.searchByVector?.bind(deps.faces);

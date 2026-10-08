@@ -96,6 +96,17 @@ export const envSchema = z
       blankToUndefined,
       z.enum(["true", "false"]).default("false"),
     ),
+    /**
+     * Fail-closed liveness (v4 report F05). When "true", a selfie match is delivered
+     * ONLY on a genuine positive liveness verdict from the face service: a missing
+     * model, an unavailable service, or a non-live verdict all reject the gallery
+     * instead of silently falling through. Implies LIVENESS_CHECK. Keep "true" in any
+     * deployment that serves real participants.
+     */
+    LIVENESS_REQUIRED: z.preprocess(
+      blankToUndefined,
+      z.enum(["true", "false"]).default("false"),
+    ),
     AWS_REGION: z.literal("eu-central-1").default("eu-central-1"),
     REKOGNITION_COLLECTION_PREFIX: z.string().min(1).default("rephoto-"),
     REKOGNITION_SEARCH_MAX_FACES: z.preprocess(
@@ -223,7 +234,8 @@ export const envSchema = z
     WORKER_PUBLISH_METRICS: env.WORKER_PUBLISH_METRICS === "true",
     SMTP_SECURE:
       env.SMTP_SECURE === undefined ? env.SMTP_PORT === 465 : env.SMTP_SECURE === "true",
-    LIVENESS_CHECK: env.LIVENESS_CHECK === "true",
+    LIVENESS_CHECK: env.LIVENESS_CHECK === "true" || env.LIVENESS_REQUIRED === "true",
+    LIVENESS_REQUIRED: env.LIVENESS_REQUIRED === "true",
     INSIGHTFACE_ANCHOR_MIN_COSINE: env.INSIGHTFACE_ANCHOR_MIN_COSINE ?? env.INSIGHTFACE_SURE_COSINE,
     FACE_INDEX_SOURCE:
       env.FACE_INDEX_SOURCE ?? (env.FACE_ENGINE === "insightface" ? "original" : "web"),

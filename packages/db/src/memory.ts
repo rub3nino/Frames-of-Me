@@ -68,7 +68,7 @@ type MagicLink = {
   createdAt: Date;
 };
 
-type Consent = { userId: string; eventId: string; withdrawnAt: Date | null };
+type Consent = { id: string; userId: string; eventId: string; grantedAt: Date; withdrawnAt: Date | null };
 
 type FaceRow = FaceInsert & { id: string; photoId: string; eventId: string };
 
@@ -293,8 +293,15 @@ export class MemoryDatabase implements Database {
     void input.textVersion;
     void input.ip;
     void input.userAgent;
-    this.consents.push({ userId: input.userId, eventId: input.eventId, withdrawnAt: null });
-    return { id: randomUUID(), grantedAt: new Date() };
+    // Mirror the postgres partial-unique behaviour (migration 013, v4 report S4):
+    // one active consent per (user, event); a repeat returns the existing row.
+    const active = this.consents
+      .filter((row) => row.userId === input.userId && row.eventId === input.eventId && !row.withdrawnAt)
+      .sort((a, b) => a.grantedAt.getTime() - b.grantedAt.getTime() || compareText(a.id, b.id))[0];
+    if (active) return { id: active.id, grantedAt: active.grantedAt };
+    const consent = { id: randomUUID(), userId: input.userId, eventId: input.eventId, grantedAt: new Date(), withdrawnAt: null };
+    this.consents.push(consent);
+    return { id: consent.id, grantedAt: consent.grantedAt };
   }
 
   async hasActiveConsent(userId: string, eventId: string): Promise<boolean> {

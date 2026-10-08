@@ -255,12 +255,24 @@ export class PostgresDatabase implements Database {
     ip: string;
     userAgent: string;
   }): Promise<{ id: string; grantedAt: Date }> {
+    // Idempotent under the consents_active_unique partial index (migration 013):
+    // a second concurrent POST (v4 report S4) conflicts and inserts nothing, so we
+    // fall back to returning the existing active consent instead of a duplicate row.
     const rows = await this.sql<{ id: string; granted_at: Date }[]>`
       insert into consents (user_id, event_id, text_version, ip, user_agent)
       values (${input.userId}, ${input.eventId}, ${input.textVersion}, ${input.ip}, ${input.userAgent})
+      on conflict (user_id, event_id) where withdrawn_at is null do nothing
       returning id, granted_at
     `;
-    const row = rows[0];
+    const inserted = rows[0];
+    if (inserted) return { id: inserted.id, grantedAt: inserted.granted_at };
+    const existing = await this.sql<{ id: string; granted_at: Date }[]>`
+      select id, granted_at from consents
+      where user_id = ${input.userId} and event_id = ${input.eventId} and withdrawn_at is null
+      order by granted_at asc, id asc
+      limit 1
+    `;
+    const row = existing[0];
     if (!row) throw new Error("Consent insert failed");
     return { id: row.id, grantedAt: row.granted_at };
   }
