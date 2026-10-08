@@ -1,0 +1,171 @@
+/* Frames of Me — stili globali.
+   Il primo import sono i token di brand: nel codice si usano SOLO i ruoli var(--…). */
+@import "./assets/tokens.css";
+/* Motore di animazione della mascotte (idle, cammina, scuoti, triste) */
+@import "./assets/mascot/pecorella.css";
+
+/* ---------- Reset ---------- */
+*, *::before, *::after { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--surface-page);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: var(--leading-body);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+img { display: block; max-width: 100%; }
+
+h1, h2, h3, h4, p { margin: 0; }
+
+a { color: inherit; }
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+input { font: inherit; color: inherit; }
+
+/* Numeri sempre tabulari, formato it-IT */
+.num { font-variant-numeric: tabular-nums; }
+
+/* ---------- Focus visibile ---------- */
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+
+/* ---------- Bottoni (pill, alti 48 / 40 desktop) ---------- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  height: var(--control-h);
+  padding: 0 var(--space-6);
+  border-radius: var(--radius-pill);
+  font-weight: var(--weight-semibold);
+  font-size: var(--text-base);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: transform var(--dur-press) var(--ease-out),
+              background-color var(--dur-fast) var(--ease-out),
+              border-color var(--dur-fast) var(--ease-out),
+              opacity var(--dur-fast) var(--ease-out);
+}
+
+.btn:active { transform: scale(0.97); }
+
+.btn-primary {
+  background: var(--surface-inverse);
+  color: var(--text-on-inverse);
+  box-shadow: var(--shadow-raised);
+}
+@media (hover: hover) and (pointer: fine) {
+  .btn-primary:hover { background: var(--surface-night); }
+}
+
+.btn-secondary {
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  border: 1px solid var(--line-strong);
+}
+@media (hover: hover) and (pointer: fine) {
+  .btn-secondary:hover { background: var(--surface-hover); border-color: var(--line-control); }
+}
+
+.btn-accent {
+  background: var(--accent);
+  color: var(--surface-raised);
+}
+@media (hover: hover) and (pointer: fine) {
+  .btn-accent:hover { background: var(--accent-hover); }
+}
+
+.btn-ghost { color: var(--text-secondary); }
+@media (hover: hover) and (pointer: fine) {
+  .btn-ghost:hover { background: var(--surface-hover); }
+}
+
+.btn[disabled], .btn[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.btn[disabled]:active, .btn[aria-disabled="true"]:active { transform: none; }
+
+@media (min-width: 768px) {
+  .btn { height: var(--control-h-desktop); }
+  .btn-lg { height: var(--control-h); padding: 0 var(--space-8); font-size: var(--text-md); }
+}
+
+/* ---------- Input (pill) ---------- */
+.field { display: grid; gap: 6px; text-align: left; }
+
+.field-label {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--text-secondary);
+  padding-left: var(--space-4);
+}
+
+.input {
+  height: var(--control-h);
+  width: 100%;
+  padding: 0 var(--space-5);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--line-control);
+  background: var(--surface-raised);
+  transition: border-color var(--dur-fast) var(--ease-out),
+              box-shadow var(--dur-fast) var(--ease-out);
+}
+
+.input::placeholder { color: var(--text-tertiary); }
+
+.input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* ---------- Reveal allo scroll (480ms, una volta sola) ---------- */
+.reveal {
+  opacity: 0;
+  transform: translateY(20px);
+  transition: opacity var(--dur-reveal) var(--ease-out),
+              transform var(--dur-reveal) var(--ease-out);
+}
+
+.reveal.is-visible {
+  opacity: 1;
+  transform: none;
+}
+
+/* ---------- Titoli display ---------- */
+.display {
+  font-family: var(--font-display);
+  font-weight: var(--weight-bold);
+  line-height: var(--leading-tight);
+  letter-spacing: -0.02em;
+}
+
+/* ---------- Reduced motion ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .reveal { transform: none; transition: opacity 150ms ease; }
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 150ms !important;
+  }
+}
