@@ -21,9 +21,23 @@ export const HASH_SLICE_BYTES = 4 * 1024 * 1024;
 /** Per-part XHR timeout. */
 export const PART_TIMEOUT_MS = 120_000;
 
+/**
+ * The content type to send for a chosen file, or `null` if it is not a photo we accept.
+ *
+ * Lenient on purpose, because the browser's `type` is not reliable on the population that
+ * uses this most: iOS reports `image/jpg` for some pickers, and a file forwarded through a
+ * messaging app can arrive with an empty type or `application/octet-stream`. So an
+ * unrecognised type falls back to the filename extension.
+ *
+ * The one thing that is NOT lenient is video: it is out of v6 (decision 4, frozen), and
+ * without this guard the extension fallback would accept a `video/quicktime` file that
+ * happens to be named `.jpg` and hand it to the api as a JPEG.
+ */
 export function contentTypeOf(file: File): ImageType | null {
-  if (file.type === "image/jpeg" || file.type === "image/png") return file.type;
-  if (file.type === "image/jpg") return "image/jpeg";
+  const reported = file.type.split(";")[0]?.trim().toLowerCase() ?? "";
+  if (reported === "image/jpeg" || reported === "image/png") return reported;
+  if (reported === "image/jpg") return "image/jpeg";
+  if (reported.startsWith("video/")) return null;
   const name = file.name.toLowerCase();
   if (name.endsWith(".jpg") || name.endsWith(".jpeg")) return "image/jpeg";
   if (name.endsWith(".png")) return "image/png";
@@ -139,6 +153,27 @@ function putPart(
     };
     xhr.send(blob);
   });
+}
+
+/**
+ * One presigned PUT of a whole object: the single-part transfer, with everything the
+ * multipart path gets around the request itself — the MinIO proxy rewrite, the
+ * {@link PART_TIMEOUT_MS} timeout, byte-level progress and abort.
+ *
+ * Exported for the crowd album, which is deliberately single-PUT only (see
+ * `lib/crowd.ts`): it needs those four properties without needing parts. Resolves when the
+ * object is stored; the ETag is dropped because a single-part `complete` sends no parts.
+ */
+export async function putWholeObject(
+  url: string,
+  blob: Blob,
+  contentType: string | null,
+  onProgress?: Progress,
+  signal?: AbortSignal,
+): Promise<void> {
+  throwIfAborted(signal);
+  await putPart(url, blob, contentType, (loaded) => onProgress?.(loaded, blob.size), signal);
+  onProgress?.(blob.size, blob.size);
 }
 
 /** `api()` with abort support: the fetch is cancelled and rejects with an AbortError. */

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { Shell } from "@/components/shell";
 import { ApiError, api } from "@/lib/api";
 import { pathForRole } from "@/lib/paths";
@@ -17,6 +17,34 @@ import type { User } from "@/lib/types";
  */
 const GOOGLE_ENABLED = process.env.NEXT_PUBLIC_GOOGLE_LOGIN === "true";
 
+const ALBUM_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * HOW A PARTICIPANT REACHES THE CROWD ALBUM. Nothing in this app used to build an
+ * `/album/<uuid>` url, so the album was unreachable unless someone was handed a uuid, and
+ * this page is the only screen every participant passes through.
+ *
+ * There is no participant-facing route that lists an event's albums — `GET
+ * /v1/admin/events/:id/albums` is staff-only — so the album id has to arrive from outside.
+ * Two ways in, and both are deliberate:
+ *
+ *  1. `/?album=<uuid>`, the deep link a table card or badge QR carries. After signing in,
+ *     the participant lands in that album instead of at `/selfie`, and if they are already
+ *     signed in they go straight there. The id is validated as a uuid before it is used.
+ *  2. `NEXT_PUBLIC_CROWD_ALBUM_ID`, a standing link shown under the form, for a deployment
+ *     that has one crowd album for the whole event — which is how this app is already
+ *     deployed, one event per instance (`NEXT_PUBLIC_EVENT_SLUG`). It only ADDS a link; it
+ *     never changes where a normal sign-in goes, because the primary flow is still selfie →
+ *     personal matches.
+ *
+ * Neither makes the album public. `GET /v1/albums/:id/photos` still requires a participant
+ * session and membership of the event, and `visibility = 'link'` means "not listed", never
+ * "readable by anyone with the url". The link is a way to find the album, not a way in.
+ */
+const CROWD_ALBUM_ID = ALBUM_ID.test(process.env.NEXT_PUBLIC_CROWD_ALBUM_ID ?? "")
+  ? (process.env.NEXT_PUBLIC_CROWD_ALBUM_ID as string)
+  : null;
+
 function SignIn() {
   const router = useRouter();
   const params = useSearchParams();
@@ -28,6 +56,26 @@ function SignIn() {
   const [error, setError] = useState<string | null>(
     params.get("google") === "annullato" ? "Accesso con Google annullato." : null,
   );
+
+  /** The scanned album, if this page was opened as `/?album=<uuid>`. */
+  const albumParam = params.get("album");
+  const album = albumParam && ALBUM_ID.test(albumParam) ? albumParam : null;
+  const albumHref = album ?? CROWD_ALBUM_ID;
+
+  // Already signed in and arriving from the card: go to the album without asking again.
+  // One request, and only on the deep-link path; a failure just leaves the form visible.
+  useEffect(() => {
+    if (!album) return;
+    let cancel = false;
+    void api(`/v1/albums/${album}/photos?limit=1`)
+      .then(() => {
+        if (!cancel) router.replace(`/album/${album}`);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancel = true;
+    };
+  }, [album, router]);
 
   async function onLogin(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -47,7 +95,8 @@ function SignIn() {
       } catch {
         /* private mode */
       }
-      router.replace(pathForRole(data.user.role));
+      // The scanned album wins over the role's usual landing page: it is what they asked for.
+      router.replace(album ? `/album/${album}` : pathForRole(data.user.role));
     } catch (cause) {
       setError(
         cause instanceof ApiError ? cause.message : "Qualcosa non ha funzionato. Riprova.",
@@ -138,6 +187,9 @@ function SignIn() {
       <div>
         <h1>Trova le tue foto</h1>
         <p className="lede">Entra con Google o con la tua email.</p>
+        {album ? (
+          <p className="note">Dopo l&apos;accesso entri nell&apos;album di tutti.</p>
+        ) : null}
       </div>
       {GOOGLE_ENABLED ? (
         <div className="actions">
@@ -199,6 +251,13 @@ function SignIn() {
           Password dimenticata?
         </button>
       </p>
+      {albumHref && !album ? (
+        <p className="note">
+          <Link className="linkish" href={`/album/${albumHref}`}>
+            Album di tutti: le foto dei partecipanti
+          </Link>
+        </p>
+      ) : null}
       <p className="note">
         <Link className="linkish" href="/staff">
           Sei fotografo o staff?

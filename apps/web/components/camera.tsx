@@ -22,8 +22,8 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isUploadsClosed, uploadToAlbum } from "@/lib/crowd";
+import { contentTypeOf } from "@/lib/upload";
 import {
-  isAcceptedImage,
   POLAROID_FILTER_LABELS,
   POLAROID_FILTERS,
   renderPolaroid,
@@ -156,15 +156,23 @@ export function Camera({ albumId, eventName, eventDate, onUploaded, onClose }: P
     async (file: File | undefined) => {
       if (!file) return;
       setError(null);
-      // Decision 4 (frozen): no video in v6. `accept` is only a hint, so the real type is
-      // what decides, and a .mov from the photo roll is refused here.
-      if (!isAcceptedImage(file.type)) {
+      // Decision 4 (frozen): no video in v6. `accept` is only a hint, so the real file is
+      // what decides, and `contentTypeOf` refuses every `video/*` outright.
+      //
+      // It is deliberately not the strict JPEG/PNG test: a photo picked on an iPhone can
+      // report `image/jpg`, and one forwarded through a messaging app can report nothing at
+      // all, and both are photos this album wants. The resolved type is then put BACK on the
+      // file, because `renderPolaroid` refuses anything whose own type is not exactly
+      // `image/jpeg` or `image/png`.
+      const type = contentTypeOf(file);
+      if (!type) {
         setError("Puoi inviare solo foto (JPEG o PNG). I video non sono ammessi.");
         return;
       }
-      setCapture(file);
+      const source = file.type === type ? file : new File([file], file.name, { type });
+      setCapture(source);
       try {
-        await compose(file, filter);
+        await compose(source, filter);
         setPhase("review");
       } catch {
         setError("Non riesco a leggere questa immagine. Prova con un'altra foto.");

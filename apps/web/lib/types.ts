@@ -383,6 +383,19 @@ export type ModerationState = "pending" | "approved" | "rejected" | "auto_reject
 
 export type ModerationQueueItem = {
   id: string;
+  /**
+   * What the shipped route actually calls the id (`GET /v1/admin/moderation` answers
+   * `{ items: [{ photoId, ... }] }`). `itemsOf` in components/admin/moderation.tsx
+   * normalises it onto `id`, so both spellings work.
+   */
+  photoId?: string;
+  uploaderId?: string;
+  /** Distinct open reports whose reason COUNTS: the api's own number. */
+  openReports?: number;
+  /** Open `not_me` reports, reported but never counted. */
+  notMeReports?: number;
+  /** The distinct reasons behind those reports, when the api sends no per-report rows. */
+  reasons?: string[];
   albumId?: string;
   moderationState?: ModerationState;
   createdAt?: string;
