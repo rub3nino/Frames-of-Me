@@ -1,4 +1,4 @@
-# RePhoto v6 — implementation spec: albums, crowd gallery, Google login
+# Frames of Me v6 — implementation spec: albums, crowd gallery, Google login
 
 Source: the product decisions taken on 2026-10-07 (conversation log) on top of the v5 code. Everything here is additive to v5 (new tables, new columns, new routes, new env vars). Code/comments English, UI Italian.
 
