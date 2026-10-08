@@ -110,7 +110,10 @@ async function databaseReady(): Promise<{ ok: true } | { ok: false; reason: stri
   try {
     const tables = await sql<{ name: string | null }[]>`select to_regclass('public.photos') as name`;
     if (!tables[0]?.name) {
-      return { ok: false, reason: "DATABASE_URL has no `photos` table (run `npm run db:migrate`)" };
+      return { ok: false, reason: "DATABASE_URL has no `photos` table — this suite then vanishes from the totals "
+          + "instead of being counted as skipped, so the run reads green while 13 tests "
+          + "are missing. Fix: DATABASE_URL=<url> node --import tsx packages/db/src/migrate.ts "
+          + "(not `pnpm db:migrate`, which hardcodes --env-file=.env)" };
     }
     const indexes = await sql<{ indexname: string }[]>`
       select indexname from pg_indexes
