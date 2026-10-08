@@ -189,8 +189,7 @@ export default function Foto() {
           <div className="input-group">
             {Ico.cerca}
             <input
-              className="input"
-              style={{ minWidth: 260 }}
+              className="input cerca"
               type="search"
               value={cerca}
               onChange={(e) => setCerca(e.target.value)}

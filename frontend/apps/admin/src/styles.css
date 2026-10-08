@@ -133,11 +133,15 @@ body { background: var(--surface-page); }
    Filtri a sinistra, ricerca a destra, tutto alto 32 così sta su una riga.
    Nessuna transizione: un filtro non si anima. */
 .strumenti { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; margin-bottom: var(--space-4); }
-.strumenti__fine { margin-left: auto; display: flex; align-items: center; gap: var(--space-2); }
+.strumenti__fine { margin-left: auto; display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
 .strumenti .tabs { margin-bottom: 0; }
 /* Etichetta e controllo sulla stessa riga, nella barra degli strumenti: è il
    `.field` sdraiato, non un componente nuovo. */
 .campo-riga { display: inline-flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm); color: var(--text-secondary); }
+/* Il campo di ricerca di una schermata: larghezza in una classe e non in uno
+   stile in linea, altrimenti a 768 px vince lui e la barra esce dallo
+   schermo. */
+.cerca { min-width: 240px; }
 
 /* --- Blocchi di una schermata ---------------------------------------------
    Solo spazio verticale e una riga di titolo: niente riquadro dentro un
@@ -292,6 +296,8 @@ body { background: var(--surface-page); }
 @media (max-width: 1024px) {
   .guscio, .guscio[data-compressa="true"] { grid-template-columns: minmax(0, 1fr); }
   .topbar__cassetto { display: inline-flex; }
+  /* Comprimere un cassetto non vuol dire niente: il tasto sparisce. */
+  .topbar__comprimi { display: none; }
   .barra {
     position: fixed; inset: 0 auto 0 0; width: var(--sidebar-w); z-index: var(--z-overlay);
     border-right: 1px solid var(--line-strong); box-shadow: var(--shadow-float);
@@ -313,7 +319,15 @@ body { background: var(--surface-page); }
 @media (max-width: 768px) {
   .topbar { padding-inline: var(--space-4); }
   .pagina { padding-inline: var(--space-4); }
-  .topbar .select { min-width: 120px; }
+  .topbar .select { min-width: 0; }
+  /* Alla larghezza del pollice la topbar tiene solo il cassetto e l'ambito:
+     l'identificativo dell'evento è già nel nome accanto, e una barra che
+     scorre di lato è una barra rotta. */
+  .topbar__fine { display: none; }
+  .testa__azioni, .strumenti, .strumenti__fine { width: 100%; }
+  .strumenti__fine { margin-left: 0; }
+  .testa__azioni .input-group { width: 100%; }
+  .cerca { min-width: 0; width: 100%; }
 }
 
 /* Il cassetto dissolve invece di scorrere, come il pannello — e solo dove il

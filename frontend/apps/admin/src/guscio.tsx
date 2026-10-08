@@ -153,7 +153,7 @@ export function Guscio({ children }: { children: ReactNode }) {
             {Ico.cassetto}
           </button>
           <button
-            className="btn btn--ghost btn--icon btn--sm"
+            className="btn btn--ghost btn--icon btn--sm topbar__comprimi"
             type="button"
             onClick={comprimi}
             aria-label={compressa ? "Allarga la barra laterale" : "Comprimi la barra laterale"}

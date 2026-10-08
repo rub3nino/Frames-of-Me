@@ -145,8 +145,7 @@ export default function Gallerie() {
             <div className="input-group">
               {Ico.cerca}
               <input
-                className="input"
-                style={{ minWidth: 240 }}
+                className="input cerca"
                 type="email"
                 value={cerca}
                 onChange={(e) => setCerca(e.target.value)}
