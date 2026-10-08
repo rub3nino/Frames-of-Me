@@ -1,12 +1,23 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { JobType, PhotoCollection, PhotoStatus, Role } from "@rephoto/contracts";
+import type { JobType, PhotoStatus, Role } from "@rephoto/contracts";
 import {
   JOB_MAX_ATTEMPTS,
   JOB_PRIORITY,
+  // v6 (agent C): `not_me` never counts toward the auto-pending threshold. The predicate
+  // and MODERATION_COUNTING_REASONS in the contracts carry the reasoning.
+  countsTowardModeration,
   STALE_RUNNING_MS,
   THROTTLE_REQUEUE_SECONDS,
 } from "@rephoto/contracts";
-import { DuplicateKeyError } from "./types.js";
+import {
+  AlbumRecognitionLockedError,
+  AlbumRecognitionNotAllowedError,
+  DuplicateKeyError,
+  // v6 (agent E): tagging
+  nextTagConsent,
+  normalizeDisplayName,
+  TAG_SEARCH_MIN_PREFIX,
+} from "./types.js";
 import type {
   AnchoredGallery,
   ClaimedJob,
@@ -31,6 +42,7 @@ import type {
   UserRow,
   EventWithCounts,
   FeedbackExportRow,
+  FeedbackSource,
   FeedbackVerdict,
   GalleryExportRow,
   GalleryListCursor,
@@ -42,13 +54,44 @@ import type {
   PhotoAdminFilters,
   PhotoAdminRow,
   PhotoDetail,
-  PublicGalleryItem,
-  PublicGalleryCursor,
   ClaimOptions,
   GalleryMatchPatch,
   MatchHitInsert,
   MatchRunInsert,
   QueryVectorGallery,
+  AlbumInsert,
+  AlbumPatch,
+  AlbumRow,
+  // v6 (agent B)
+  EventCodeRow,
+  IdentityProvider,
+  // v6 (agent D): admin console
+  AlbumPhotographerRow,
+  EventCodePatch,
+  EventStatus,
+  EventStatusAlbum,
+  PhotosByStatus,
+  // v6 (agent C)
+  AlbumPhoto,
+  ModerationItem,
+  ModerationState,
+  ReportReason,
+  ReportRow,
+  // v6 (agent G)
+  ConsentState,
+  ConsentWithdrawal,
+  RetentionAlarmMail,
+  RetentionOutcome,
+  RetentionStatusRow,
+  // v6 (agent E): event membership + tagging
+  AuditEntryRow,
+  EventMemberRow,
+  EventMemberSource,
+  PhotoTagRow,
+  PhotoTagWithNameRow,
+  TagProfileRow,
+  TaggableUserRow,
+  TaggedPhotoRow,
 } from "./types.js";
 
 /** Same cap as PostgresDatabase.findGalleriesByQueryVector. */
@@ -57,6 +100,8 @@ const EVENT_ID = "00000000-0000-4000-8000-000000000001";
 const ADMIN_ID = "00000000-0000-4000-8000-000000000002";
 const PHOTOGRAPHER_ID = "00000000-0000-4000-8000-000000000003";
 const INVITE_ID = "00000000-0000-4000-8000-000000000004";
+/** v6: slug of the official album every event gets (migration 009). */
+const DEFAULT_ALBUM_SLUG = "ufficiale";
 
 type MagicLink = {
   email: string;
@@ -68,7 +113,14 @@ type MagicLink = {
   createdAt: Date;
 };
 
-type Consent = { userId: string; eventId: string; withdrawnAt: Date | null };
+type Consent = {
+  userId: string;
+  eventId: string;
+  withdrawnAt: Date | null;
+  // v6 (agent G): read back by findConsentState / the privacy page.
+  grantedAt: Date;
+  textVersion: string;
+};
 
 type FaceRow = FaceInsert & { id: string; photoId: string; eventId: string };
 
@@ -113,6 +165,61 @@ type JobRow = {
   durationMs: number | null;
 };
 
+/**
+ * `MemoryDatabase.transaction` support. The store keeps its rows in maps, sets and
+ * arrays of plain objects and mutates some of them in place (`row.uses += 1` in
+ * `claimEventCode` is the one that matters here), so a snapshot has to copy the
+ * containers *and* the plain rows inside them. Anything that is not a map, set, array
+ * or plain object — a `Date`, a number, a string — is kept by reference: those are never
+ * mutated in place by this class.
+ */
+function cloneStored<T>(value: T): T {
+  if (value instanceof Map) {
+    return new Map([...value].map(([key, item]) => [key, cloneStored(item)])) as unknown as T;
+  }
+  if (value instanceof Set) return new Set(value) as unknown as T;
+  if (Array.isArray(value)) return value.map((item) => cloneStored(item)) as unknown as T;
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    Object.getPrototypeOf(value) === Object.prototype
+  ) {
+    const copy: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) copy[key] = cloneStored(item);
+    return copy as T;
+  }
+  return value;
+}
+
+type MemorySnapshot = Array<[string, unknown]>;
+
+/** Copies every collection field of the store, rows included. */
+function snapshotCollections(store: object): MemorySnapshot {
+  return Object.entries(store).map(([key, value]) => [key, cloneStored(value)]);
+}
+
+/**
+ * Puts a snapshot back. The fields are `readonly`, so each container is emptied and
+ * refilled in place rather than reassigned — which also keeps any reference another
+ * object holds to a collection valid.
+ */
+function restoreCollections(store: object, snapshot: MemorySnapshot): void {
+  const target = store as unknown as Record<string, unknown>;
+  for (const [key, saved] of snapshot) {
+    const current = target[key];
+    if (current instanceof Map && saved instanceof Map) {
+      current.clear();
+      for (const [k, v] of saved) current.set(k, v);
+    } else if (current instanceof Set && saved instanceof Set) {
+      current.clear();
+      for (const v of saved) current.add(v);
+    } else if (Array.isArray(current) && Array.isArray(saved)) {
+      current.length = 0;
+      current.push(...saved);
+    }
+  }
+}
+
 export class MemoryDatabase implements Database {
   private readonly users = new Map<string, UserRow>();
   private readonly passwords = new Map<string, string>();
@@ -130,13 +237,25 @@ export class MemoryDatabase implements Database {
   private readonly invites: Invite[] = [];
   private readonly eventPhotographers = new Set<string>();
   private readonly eventParticipants = new Set<string>();
-  private readonly moderation = new Map<string, { status: "approved" | "pending" | "blocked"; reason: string | null; updatedBy: string }>();
-  private readonly reports = new Set<string>();
   // v5 (agent D): photos.filename/tags, gallery_feedback, and a read model of match_runs/match_hits.
   private readonly photoMeta = new Map<string, { filename: string | null; tags: string[] }>();
   private readonly feedback: FeedbackRow[] = [];
   private readonly matchRunRows: MatchRunStored[] = [];
   private readonly matchHitRows: MatchHitStored[] = [];
+  // v6 (agent A): albums. Migration 009 gives every event an official album and a
+  // trigger adds one to each new event; `ensureDefaultAlbum` is that trigger here.
+  private readonly albums = new Map<string, AlbumRow>();
+
+  // v6 (agent B): user_identities, event_codes, users.email_verified_at.
+  private readonly identities = new Map<string, IdentityStored>();
+  private readonly eventCodes = new Map<string, EventCodeRow>();
+  private readonly emailVerified = new Map<string, Date>();
+
+  // v6 (agent C): photos.moderation_state/moderated_by/moderated_at and `reports`.
+  private readonly moderation = new Map<string, { moderatedBy: string | null; moderatedAt: Date | null }>();
+  private readonly reports: ReportRow[] = [];
+  // v6 (agent G): retention_schedule (migration 015).
+  private readonly retentionSchedule = new Map<string, RetentionScheduleStored>();
 
   async seedDemo(): Promise<void> {
     if (!(await this.findEventBySlug("demo"))) {
@@ -175,10 +294,35 @@ export class MemoryDatabase implements Database {
       usedAt: new Date(),
     });
     await this.addEventPhotographer(EVENT_ID, PHOTOGRAPHER_ID);
+    this.ensureDefaultAlbum(EVENT_ID);
   }
 
   async ping(): Promise<void> {
     return undefined;
+  }
+
+  /**
+   * The in-memory mirror of `PostgresDatabase.transaction`: snapshot every collection,
+   * run `fn` against this same store, and put the snapshot back if `fn` throws. That is
+   * enough to prove the property the real transaction gives us — an interrupted
+   * registration leaves no claimed event code — without a database.
+   *
+   * Two honest limits, neither of which the tests depend on:
+   *  - it is not isolated. A second caller writing while `fn` is awaited would see the
+   *    uncommitted rows, and a rollback would discard its writes too. The test suite is
+   *    sequential, and this class is a test double.
+   *  - the snapshot clones the stored graph one container at a time (maps, sets, arrays
+   *    and plain rows), so an in-place field write like `row.uses += 1` is undone, but a
+   *    `Date` or a typed array held inside a row is shared with the snapshot.
+   */
+  async transaction<T>(fn: (tx: Database) => Promise<T>): Promise<T> {
+    const snapshot = snapshotCollections(this);
+    try {
+      return await fn(this);
+    } catch (error) {
+      restoreCollections(this, snapshot);
+      throw error;
+    }
   }
 
   async findEventBySlug(slug: string): Promise<EventRow | null> {
@@ -231,6 +375,9 @@ export class MemoryDatabase implements Database {
 
   async setUserPassword(userId: string, passwordHash: string): Promise<void> {
     this.passwords.set(userId, passwordHash);
+    // v6 hardening (agent H): mirrors the Postgres implementation — any password change
+    // retires the user's open reset links.
+    await this.invalidatePasswordResetTokens(userId);
   }
 
   async findUserForLogin(
@@ -290,11 +437,17 @@ export class MemoryDatabase implements Database {
     ip: string;
     userAgent: string;
   }): Promise<{ id: string; grantedAt: Date }> {
-    void input.textVersion;
     void input.ip;
     void input.userAgent;
-    this.consents.push({ userId: input.userId, eventId: input.eventId, withdrawnAt: null });
-    return { id: randomUUID(), grantedAt: new Date() };
+    const grantedAt = new Date();
+    this.consents.push({
+      userId: input.userId,
+      eventId: input.eventId,
+      withdrawnAt: null,
+      grantedAt,
+      textVersion: input.textVersion,
+    });
+    return { id: randomUUID(), grantedAt };
   }
 
   async hasActiveConsent(userId: string, eventId: string): Promise<boolean> {
@@ -311,15 +464,6 @@ export class MemoryDatabase implements Database {
     }).length;
   }
 
-  async countUploadsSince(userId: string, eventId: string, since: Date): Promise<number> {
-    return [...this.uploads.values()].filter(
-      (upload) =>
-        (upload.uploaderId ?? upload.photographerId) === userId &&
-        upload.eventId === eventId &&
-        upload.createdAt >= since,
-    ).length;
-  }
-
   async findPhotoBySha(eventId: string, sha256: string): Promise<PhotoRow | null> {
     for (const photo of this.photos.values()) {
       if (photo.eventId === eventId && photo.sha256 === sha256) return photo;
@@ -327,6 +471,7 @@ export class MemoryDatabase implements Database {
     return null;
   }
 
+  /** Event-wide, like {@link findPhotoBySha}: see the note on the Postgres implementation. */
   async findOwnPhotoBySha(
     photographerId: string,
     eventId: string,
@@ -339,9 +484,7 @@ export class MemoryDatabase implements Database {
   async insertUploadSession(input: {
     id: string;
     eventId: string;
-    photographerId: string | null;
-    uploaderId?: string;
-    collection?: PhotoCollection;
+    photographerId: string;
     s3UploadId: string | null;
     objectKey: string;
     sha256: string;
@@ -353,15 +496,17 @@ export class MemoryDatabase implements Database {
     originalBytes?: number | null;
     filename?: string | null;
     tags?: string[];
+    albumId?: string | null;
   }): Promise<void> {
     this.uploads.set(input.id, {
+      // v6 (agent C): the album chosen at init, carried to complete; the event's official
+      // album when the caller gives none, exactly as `insertPhoto` resolves it.
+      albumId: input.albumId ?? this.ensureDefaultAlbum(input.eventId).id,
       filename: input.filename ?? null,
       tags: [...(input.tags ?? [])],
       id: input.id,
       eventId: input.eventId,
       photographerId: input.photographerId,
-      uploaderId: input.uploaderId ?? input.photographerId,
-      collection: input.collection ?? "official",
       s3UploadId: input.s3UploadId,
       objectKey: input.objectKey,
       sha256: input.sha256,
@@ -441,9 +586,7 @@ export class MemoryDatabase implements Database {
   async insertPhoto(input: {
     id: string;
     eventId: string;
-    photographerId: string | null;
-    uploaderId?: string;
-    collection?: PhotoCollection;
+    photographerId: string;
     sha256: string;
     originalKey: string;
     contentType: ImageContentType;
@@ -451,15 +594,17 @@ export class MemoryDatabase implements Database {
     originalStatus?: OriginalStatus;
     filename?: string | null;
     tags?: string[];
+    albumId?: string;
   }): Promise<PhotoRow> {
-    if (await this.findPhotoBySha(input.eventId, input.sha256)) throw new DuplicateKeyError();
+    // v6: dedup is per album (`photos unique (album_id, sha256)`), so the same bytes may
+    // exist once in the official album and once in a crowd album.
+    const albumId = input.albumId ?? this.ensureDefaultAlbum(input.eventId).id;
+    if (await this.findPhotoByAlbumSha(albumId, input.sha256)) throw new DuplicateKeyError();
     this.photoMeta.set(input.id, { filename: input.filename ?? null, tags: [...(input.tags ?? [])] });
     const photo: PhotoRow = {
       id: input.id,
       eventId: input.eventId,
       photographerId: input.photographerId,
-      uploaderId: input.uploaderId ?? input.photographerId,
-      collection: input.collection ?? "official",
       sha256: input.sha256,
       originalKey: input.originalKey,
       contentType: input.contentType,
@@ -469,8 +614,14 @@ export class MemoryDatabase implements Database {
       indexedAt: null,
       error: null,
       createdAt: new Date(),
+      albumId,
+      // v6 (agent C): moderation `post` is the default — a photo arrives approved and is
+      // visible at once (`photos.moderation_state default 'approved'`, migration 010).
+      moderationState: "approved",
     };
     this.photos.set(photo.id, photo);
+    // The `photos_album_first_upload` trigger of migration 009.
+    await this.markAlbumFirstUpload(albumId);
     return photo;
   }
 
@@ -536,44 +687,6 @@ export class MemoryDatabase implements Database {
       if (photo) rows.push(photo);
     }
     return rows;
-  }
-
-  async listPublicPhotosByIds(eventId: string, photoIds: string[]): Promise<PhotoRow[]> {
-    const wanted = new Set(photoIds);
-    return [...this.photos.values()].filter(
-      (photo) => photo.eventId === eventId && photo.collection === "public" && wanted.has(photo.id),
-    );
-  }
-
-  async reportPhoto(input: { photoId: string; reporterId: string; reason: string }): Promise<boolean> {
-    const key = `${input.photoId}:${input.reporterId}`;
-    if (this.reports.has(key)) return false;
-    this.reports.add(key);
-    return true;
-  }
-
-  async setPhotoModeration(input: { photoId: string; status: "approved" | "pending" | "blocked"; reason: string | null; actorId: string }): Promise<void> {
-    this.moderation.set(input.photoId, { status: input.status, reason: input.reason, updatedBy: input.actorId });
-  }
-
-  async listPublicGallery(
-    eventId: string,
-    input: { limit: number; cursor?: PublicGalleryCursor },
-  ): Promise<PublicGalleryItem[]> {
-    return [...this.photos.values()]
-      .filter((photo) => photo.eventId === eventId && photo.collection === "public" && photo.status === "indexed" && (this.moderation.get(photo.id)?.status ?? "approved") === "approved")
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id))
-      .filter((photo) => !input.cursor || photo.createdAt < input.cursor.createdAt || (photo.createdAt.getTime() === input.cursor.createdAt.getTime() && photo.id < input.cursor.photoId))
-      // Mirror the postgres JOIN: drop photos without both derivatives BEFORE limiting, so a
-      // page holds up to `limit` renderable items rather than fewer.
-      .flatMap((photo) => {
-        const thumb = this.derivatives.find((row) => row.photoId === photo.id && row.kind === "thumb");
-        const web = this.derivatives.find((row) => row.photoId === photo.id && row.kind === "web");
-        return thumb && web
-          ? [{ photoId: photo.id, createdAt: photo.createdAt, thumbKey: thumb.s3Key, webKey: web.s3Key, originalReady: photo.originalStatus === "present" }]
-          : [];
-      })
-      .slice(0, input.limit);
   }
 
   async listOwnedPhotos(userId: string, eventId: string, photoIds: string[]): Promise<PhotoRow[]> {
@@ -734,6 +847,9 @@ export class MemoryDatabase implements Database {
         const web = this.derivatives.find((row) => row.photoId === item.photoId && row.kind === "web");
         const photo = this.photos.get(item.photoId);
         if (!thumb || !web || !photo) return [];
+        // v6 (agent C): a photo withheld by moderation leaves every gallery until a
+        // moderator rules. Everything is `approved` by default, so v5 behaviour is unchanged.
+        if (photo.moderationState !== "approved") return [];
         return [
           {
             photoId: item.photoId,
@@ -845,6 +961,11 @@ export class MemoryDatabase implements Database {
     for (let index = this.derivatives.length - 1; index >= 0; index -= 1) {
       if (this.derivatives[index]?.photoId === photoId) this.derivatives.splice(index, 1);
     }
+    // v6 (agent C): `reports.photo_id ... on delete cascade` (migration 010).
+    for (let index = this.reports.length - 1; index >= 0; index -= 1) {
+      if (this.reports[index]?.photoId === photoId) this.reports.splice(index, 1);
+    }
+    this.moderation.delete(photoId);
     this.photos.delete(photoId);
   }
 
@@ -928,8 +1049,24 @@ export class MemoryDatabase implements Database {
     return this.eventParticipants.has(`${eventId}:${email}`);
   }
 
-  async insertAudit(): Promise<void> {
-    return undefined;
+  // v6 (agent E): the rows are kept now (they used to be dropped), so `listAuditForTarget`
+  // answers here exactly as it does in Postgres and the tagging tests can assert the audit
+  // trail without a database. Nothing else reads them.
+  async insertAudit(input: {
+    actorId: string | null;
+    action: string;
+    target: string;
+    meta: Record<string, unknown>;
+  }): Promise<void> {
+    this.auditRows.push({
+      id: randomUUID(),
+      actorId: input.actorId,
+      action: input.action,
+      target: input.target,
+      // Copied, so a caller that reuses its meta object cannot rewrite history.
+      meta: { ...input.meta },
+      createdAt: new Date(),
+    });
   }
 
   async metrics(): Promise<Metrics> {
@@ -1297,6 +1434,7 @@ export class MemoryDatabase implements Database {
       createdAt: new Date(),
     };
     this.events.set(event.id, event);
+    this.ensureDefaultAlbum(event.id);
     return event;
   }
 
@@ -1487,6 +1625,7 @@ export class MemoryDatabase implements Database {
     photoId: string;
     verdict: FeedbackVerdict;
     scoreAtTime: number | null;
+    source: FeedbackSource;
   }): Promise<void> {
     const existing = this.feedback.find(
       (row) =>
@@ -1495,6 +1634,8 @@ export class MemoryDatabase implements Database {
     if (existing) {
       existing.verdict = input.verdict;
       existing.scoreAtTime = input.scoreAtTime;
+      // Mirrors `on conflict ... set source = excluded.source` in Postgres (migration 018).
+      existing.source = input.source;
       existing.createdAt = new Date();
       return;
     }
@@ -1504,16 +1645,12 @@ export class MemoryDatabase implements Database {
   async listFeedback(
     userId: string,
     eventId: string,
-    photoIds?: string[],
+    photoIds?: readonly string[],
   ): Promise<Array<{ photoId: string; verdict: FeedbackVerdict }>> {
-    const wanted = photoIds === undefined ? null : new Set(photoIds);
+    const wanted = photoIds ? new Set(photoIds) : null;
     return this.feedback
-      .filter(
-        (row) =>
-          row.userId === userId &&
-          row.eventId === eventId &&
-          (wanted === null || wanted.has(row.photoId)),
-      )
+      .filter((row) => row.userId === userId && row.eventId === eventId)
+      .filter((row) => wanted === null || wanted.has(row.photoId))
       .map((row) => ({ photoId: row.photoId, verdict: row.verdict }));
   }
 
@@ -1630,6 +1767,7 @@ export class MemoryDatabase implements Database {
         verdict: row.verdict,
         scoreAtTime: row.scoreAtTime,
         createdAt: row.createdAt,
+        source: row.source,
       };
     }
   }
@@ -1690,9 +1828,204 @@ export class MemoryDatabase implements Database {
     return id;
   }
 
+  // ---- auth v6 (agent B): identities, event codes, lazy e-mail verification -------------
+
+  async findUserByIdentity(
+    provider: IdentityProvider,
+    subject: string,
+  ): Promise<UserRow | null> {
+    const identity = this.identities.get(identityKey(provider, subject));
+    if (!identity) return null;
+    return this.findUserById(identity.userId);
+  }
+
+  async insertIdentity(input: {
+    userId: string;
+    provider: IdentityProvider;
+    subject: string;
+    email: string | null;
+  }): Promise<void> {
+    const key = identityKey(input.provider, input.subject);
+    if (this.identities.has(key)) throw new DuplicateKeyError();
+    this.identities.set(key, {
+      userId: input.userId,
+      provider: input.provider,
+      subject: input.subject,
+      email: input.email,
+      createdAt: new Date(),
+    });
+  }
+
+  async createEventCode(input: {
+    eventId: string;
+    code: string;
+    label?: string | null;
+    maxUses?: number | null;
+    expiresAt?: Date | null;
+  }): Promise<EventCodeRow> {
+    const key = eventCodeKey(input.eventId, input.code);
+    if (this.eventCodes.has(key)) throw new DuplicateKeyError();
+    const row: EventCodeRow = {
+      eventId: input.eventId,
+      code: input.code,
+      label: input.label ?? null,
+      maxUses: input.maxUses ?? null,
+      uses: 0,
+      expiresAt: input.expiresAt ?? null,
+      createdAt: new Date(),
+    };
+    this.eventCodes.set(key, row);
+    return { ...row };
+  }
+
+  async findEventCode(eventId: string, code: string): Promise<EventCodeRow | null> {
+    const row = this.eventCodes.get(eventCodeKey(eventId, code));
+    return row ? { ...row } : null;
+  }
+
+  async claimEventCode(code: string): Promise<EventCodeRow | null> {
+    const now = new Date();
+    // Same tie-break as Postgres (`order by created_at, event_id limit 1`): the same code
+    // string in two events claims exactly one row, the oldest valid one.
+    const candidates = [...this.eventCodes.values()]
+      .filter(
+        (row) =>
+          row.code === code &&
+          (row.expiresAt === null || row.expiresAt > now) &&
+          (row.maxUses === null || row.uses < row.maxUses),
+      )
+      .sort(
+        (a, b) =>
+          a.createdAt.getTime() - b.createdAt.getTime() || compareText(a.eventId, b.eventId),
+      );
+    const row = candidates[0];
+    if (!row) return null;
+    row.uses += 1;
+    return { ...row };
+  }
+
+  async markEmailVerified(userId: string, at: Date = new Date()): Promise<void> {
+    if (!this.users.has(userId)) return;
+    if (this.emailVerified.has(userId)) return;
+    this.emailVerified.set(userId, at);
+  }
+
+  async findEmailVerifiedAt(userId: string): Promise<Date | null> {
+    return this.emailVerified.get(userId) ?? null;
+  }
+
   private adminPhoto(photo: PhotoRow): PhotoAdminRow {
     const meta = this.photoMeta.get(photo.id);
     return { ...photo, filename: meta?.filename ?? null, tags: [...(meta?.tags ?? [])] };
+  }
+
+  // ---- albums and vector isolation v6 (agent A) -------------------------------------------
+
+  async createAlbum(input: AlbumInsert): Promise<AlbumRow> {
+    if (input.kind === "crowd" && input.recognition === true) {
+      throw new AlbumRecognitionNotAllowedError();
+    }
+    if (await this.findAlbumBySlug(input.eventId, input.slug)) throw new DuplicateKeyError();
+    const album: AlbumRow = {
+      id: input.id ?? randomUUID(),
+      eventId: input.eventId,
+      slug: input.slug,
+      name: input.name,
+      kind: input.kind,
+      recognition: input.recognition ?? false,
+      moderation: input.moderation ?? "post",
+      visibility: input.visibility ?? "participants",
+      maxPhotosPerUser: input.maxPhotosPerUser ?? null,
+      uploadsOpen: input.uploadsOpen ?? true,
+      retentionDays: input.retentionDays ?? null,
+      firstUploadAt: null,
+      createdAt: new Date(),
+    };
+    this.albums.set(album.id, album);
+    return album;
+  }
+
+  async findAlbum(id: string): Promise<AlbumRow | null> {
+    return this.albums.get(id) ?? null;
+  }
+
+  async findAlbumBySlug(eventId: string, slug: string): Promise<AlbumRow | null> {
+    for (const album of this.albums.values()) {
+      if (album.eventId === eventId && album.slug === slug) return album;
+    }
+    return null;
+  }
+
+  async listAlbums(eventId: string): Promise<AlbumRow[]> {
+    return [...this.albums.values()]
+      .filter((album) => album.eventId === eventId)
+      .sort(
+        (a, b) => a.createdAt.getTime() - b.createdAt.getTime() || compareText(a.id, b.id),
+      );
+  }
+
+  async findDefaultAlbum(eventId: string): Promise<AlbumRow | null> {
+    return this.findAlbumBySlug(eventId, DEFAULT_ALBUM_SLUG);
+  }
+
+  async listRecognitionAlbumIds(eventId: string): Promise<string[]> {
+    return (await this.listAlbums(eventId))
+      .filter((album) => album.recognition)
+      .map((album) => album.id);
+  }
+
+  async updateAlbum(id: string, patch: AlbumPatch): Promise<AlbumRow | null> {
+    const album = this.albums.get(id);
+    if (!album) return null;
+    if (patch.recognition !== undefined && patch.recognition !== album.recognition) {
+      // Decision 3 (frozen): the trigger of migration 009 refuses this in Postgres.
+      if (album.firstUploadAt !== null) throw new AlbumRecognitionLockedError();
+      if (album.kind === "crowd" && patch.recognition) throw new AlbumRecognitionNotAllowedError();
+      album.recognition = patch.recognition;
+    }
+    if (patch.name !== undefined) album.name = patch.name;
+    if (patch.moderation !== undefined) album.moderation = patch.moderation;
+    if (patch.visibility !== undefined) album.visibility = patch.visibility;
+    if (patch.maxPhotosPerUser !== undefined) album.maxPhotosPerUser = patch.maxPhotosPerUser;
+    if (patch.uploadsOpen !== undefined) album.uploadsOpen = patch.uploadsOpen;
+    if (patch.retentionDays !== undefined) album.retentionDays = patch.retentionDays;
+    return album;
+  }
+
+  async markAlbumFirstUpload(albumId: string, at: Date = new Date()): Promise<void> {
+    const album = this.albums.get(albumId);
+    if (album && album.firstUploadAt === null) album.firstUploadAt = at;
+  }
+
+  async findPhotoByAlbumSha(albumId: string, sha256: string): Promise<PhotoRow | null> {
+    for (const photo of this.photos.values()) {
+      if (photo.albumId === albumId && photo.sha256 === sha256) return photo;
+    }
+    return null;
+  }
+
+  /** The `events_default_album` trigger of migration 009: every event has one. */
+  private ensureDefaultAlbum(eventId: string): AlbumRow {
+    for (const album of this.albums.values()) {
+      if (album.eventId === eventId && album.slug === DEFAULT_ALBUM_SLUG) return album;
+    }
+    const album: AlbumRow = {
+      id: randomUUID(),
+      eventId,
+      slug: DEFAULT_ALBUM_SLUG,
+      name: "Album ufficiale",
+      kind: "official",
+      recognition: true,
+      moderation: "off",
+      visibility: "participants",
+      maxPhotosPerUser: null,
+      uploadsOpen: true,
+      retentionDays: null,
+      firstUploadAt: null,
+      createdAt: new Date(),
+    };
+    this.albums.set(album.id, album);
+    return album;
   }
 
   private galleryOf(userId: string, eventId: string): Gallery | undefined {
@@ -1704,6 +2037,872 @@ export class MemoryDatabase implements Database {
       .filter((row) => row.photographerId === photographerId && row.eventId === eventId)
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || compareText(b.id, a.id));
   }
+
+  // ---- admin console v6 (agent D) -------------------------------------------------------
+
+  // `album_photographers` of migration 017: albumId -> (userId -> created_at). A class field
+  // declared here and not at the top of the class so the whole area is one block; field
+  // initializers run in declaration order at construction either way.
+  private readonly albumPhotographers = new Map<string, Map<string, Date>>();
+
+  async listEventCodes(eventId: string): Promise<EventCodeRow[]> {
+    return [...this.eventCodes.values()]
+      .filter((row) => row.eventId === eventId)
+      .sort(
+        (a, b) =>
+          b.createdAt.getTime() - a.createdAt.getTime() || compareText(a.code, b.code),
+      )
+      .map((row) => ({ ...row }));
+  }
+
+  // ---- event membership + tagging v6 (agent E) -------------------------------------------
+
+  /** `event_members` (migration 013), keyed by `user_id\0event_id` (its primary key). */
+  private readonly eventMembers = new Map<string, EventMemberStored>();
+  /** `users.display_name` (migration 013). Global, keyed by user id. */
+  private readonly displayNames = new Map<string, string>();
+  /** `photo_tags`, keyed by `photo_id\0user_id` (the primary key of migration 013). */
+  private readonly photoTags = new Map<string, PhotoTagStored>();
+  /** `audit_log`, so `listAuditForTarget` works without Postgres. */
+  private readonly auditRows: AuditEntryRow[] = [];
+
+  async addEventMember(input: {
+    userId: string;
+    eventId: string;
+    source: EventMemberSource;
+  }): Promise<EventMemberRow> {
+    const key = eventMemberKey(input.userId, input.eventId);
+    const existing = this.eventMembers.get(key);
+    // Idempotent and non-destructive, like the Postgres `on conflict ... do update` no-op:
+    // the recorded `source` is how the person FIRST came to belong to the event.
+    if (existing) return { ...existing };
+    const row: EventMemberStored = {
+      userId: input.userId,
+      eventId: input.eventId,
+      source: input.source,
+      taggable: false,
+      taggableConsentVersion: null,
+      taggableConsentAt: null,
+      createdAt: new Date(),
+    };
+    this.eventMembers.set(key, row);
+    return { ...row };
+  }
+
+  async isEventMember(userId: string, eventId: string): Promise<boolean> {
+    return this.eventMembers.has(eventMemberKey(userId, eventId));
+  }
+
+  async findEventMember(userId: string, eventId: string): Promise<EventMemberRow | null> {
+    const row = this.eventMembers.get(eventMemberKey(userId, eventId));
+    return row ? { ...row } : null;
+  }
+
+  async findTagProfile(userId: string, eventId: string): Promise<TagProfileRow | null> {
+    if (!this.users.has(userId)) return null;
+    // No membership row means no tagging profile, and no way to opt in — the inner join in
+    // the Postgres version.
+    const member = this.eventMembers.get(eventMemberKey(userId, eventId));
+    if (!member) return null;
+    // The column defaults: `taggable false`, `display_name null`. Never "unknown means yes".
+    return {
+      userId,
+      eventId,
+      taggable: member.taggable,
+      displayName: this.displayNames.get(userId) ?? null,
+      consentTextVersion: member.taggableConsentVersion,
+      consentAt: member.taggableConsentAt,
+    };
+  }
+
+  async setTagProfile(
+    userId: string,
+    eventId: string,
+    input: {
+      taggable: boolean;
+      displayName?: string | null;
+      consentTextVersion?: string | null;
+    },
+  ): Promise<TagProfileRow | null> {
+    const current = await this.findTagProfile(userId, eventId);
+    if (!current) return null;
+    const member = this.eventMembers.get(eventMemberKey(userId, eventId));
+    if (!member) return null;
+    const name =
+      input.displayName === undefined
+        ? current.displayName
+        : normalizeDisplayName(input.displayName);
+    if (input.taggable && !name) return null;
+    const consent = nextTagConsent(current, input);
+    if (input.taggable && !consent.version) return null;
+    if (name === null) this.displayNames.delete(userId);
+    else this.displayNames.set(userId, name);
+    member.taggable = input.taggable;
+    member.taggableConsentVersion = consent.version;
+    member.taggableConsentAt = consent.at;
+    return {
+      userId,
+      eventId,
+      taggable: input.taggable,
+      displayName: name,
+      consentTextVersion: consent.version,
+      consentAt: consent.at,
+    };
+  }
+
+  async searchTaggableUsers(input: {
+    eventId: string;
+    prefix: string;
+    limit: number;
+  }): Promise<TaggableUserRow[]> {
+    const prefix = input.prefix.trim().toLowerCase();
+    // Same second line of defence as Postgres: a short prefix returns nothing here too.
+    if (prefix.length < TAG_SEARCH_MIN_PREFIX) return [];
+    const rows: TaggableUserRow[] = [];
+    // Two membership tests, both non-biometric: a member row for THIS event, and the
+    // per-event opt-in. See the comment on the Postgres version — a recognition consent must
+    // NOT be required, and a person who opted in at event A is not suggested at event B.
+    for (const member of this.eventMembers.values()) {
+      if (member.eventId !== input.eventId || !member.taggable) continue;
+      const displayName = this.displayNames.get(member.userId);
+      if (!displayName) continue;
+      if (!displayName.toLowerCase().startsWith(prefix)) continue;
+      rows.push({ userId: member.userId, displayName });
+    }
+    return rows
+      .sort(
+        (a, b) =>
+          compareText(a.displayName.toLowerCase(), b.displayName.toLowerCase()) ||
+          compareText(a.userId, b.userId),
+      )
+      .slice(0, input.limit);
+  }
+
+  async insertPhotoTag(input: {
+    photoId: string;
+    userId: string;
+    taggedBy: string;
+  }): Promise<PhotoTagRow | null> {
+    // The event comes from the photo, so the per-event opt-in is checked against the event
+    // the photo actually belongs to and not against one the caller named.
+    const photo = this.photos.get(input.photoId);
+    if (!photo) return null;
+    const profile = await this.findTagProfile(input.userId, photo.eventId);
+    if (!profile || !profile.taggable || !profile.displayName) return null;
+    const key = photoTagKey(input.photoId, input.userId);
+    // Mirrors `on conflict (photo_id, user_id) do nothing`: an existing row, 'removed'
+    // included, is left exactly as it is, so a refused tag stays refused.
+    if (this.photoTags.has(key)) return null;
+    const row: PhotoTagStored = {
+      photoId: input.photoId,
+      userId: input.userId,
+      taggedBy: input.taggedBy,
+      state: "active",
+      createdAt: new Date(),
+    };
+    this.photoTags.set(key, row);
+    return { ...row };
+  }
+
+  async findPhotoTag(photoId: string, userId: string): Promise<PhotoTagRow | null> {
+    const row = this.photoTags.get(photoTagKey(photoId, userId));
+    return row ? { ...row } : null;
+  }
+
+  async removePhotoTag(photoId: string, userId: string): Promise<PhotoTagRow | null> {
+    const row = this.photoTags.get(photoTagKey(photoId, userId));
+    if (!row || row.state !== "active") return null;
+    row.state = "removed";
+    return { ...row };
+  }
+
+  async listActivePhotoTagsForUser(userId: string, eventId: string): Promise<PhotoTagRow[]> {
+    // Scoped to the event, because the opt-in is: opting out of event A must not remove the
+    // tags the same person accepted at event B.
+    return [...this.photoTags.values()]
+      .filter(
+        (row) =>
+          row.userId === userId &&
+          row.state === "active" &&
+          this.photos.get(row.photoId)?.eventId === eventId,
+      )
+      .sort(
+        (a, b) =>
+          b.createdAt.getTime() - a.createdAt.getTime() || compareText(a.photoId, b.photoId),
+      )
+      .map((row) => ({ ...row }));
+  }
+
+  async updateEventCode(
+    eventId: string,
+    code: string,
+    patch: EventCodePatch,
+  ): Promise<EventCodeRow | null> {
+    const row = this.eventCodes.get(eventCodeKey(eventId, code));
+    if (!row) return null;
+    if (patch.label !== undefined) row.label = patch.label;
+    if (patch.maxUses !== undefined) row.maxUses = patch.maxUses;
+    if (patch.expiresAt !== undefined) row.expiresAt = patch.expiresAt;
+    return { ...row };
+  }
+
+  async revokeEventCode(eventId: string, code: string): Promise<EventCodeRow | null> {
+    const row = this.eventCodes.get(eventCodeKey(eventId, code));
+    if (!row) return null;
+    // Postgres evaluates `now()`; here the only clock there is, is this one.
+    row.expiresAt = new Date();
+    return { ...row };
+  }
+
+  async addAlbumPhotographer(albumId: string, userId: string): Promise<void> {
+    const grants = this.albumPhotographers.get(albumId) ?? new Map<string, Date>();
+    if (!grants.has(userId)) grants.set(userId, new Date());
+    this.albumPhotographers.set(albumId, grants);
+  }
+
+  async removeAlbumPhotographer(albumId: string, userId: string): Promise<boolean> {
+    const grants = this.albumPhotographers.get(albumId);
+    if (!grants) return false;
+    const removed = grants.delete(userId);
+    // An empty list is no list: the album goes back to the event-level grant.
+    if (grants.size === 0) this.albumPhotographers.delete(albumId);
+    return removed;
+  }
+
+  async listAlbumPhotographers(albumId: string): Promise<AlbumPhotographerRow[]> {
+    const grants = this.albumPhotographers.get(albumId);
+    if (!grants) return [];
+    const rows: AlbumPhotographerRow[] = [];
+    for (const [userId, createdAt] of grants) {
+      const user = this.users.get(userId);
+      if (!user) continue;
+      rows.push({ albumId, userId, email: user.email, createdAt });
+    }
+    return rows.sort((a, b) => compareText(a.email, b.email));
+  }
+
+  async isAlbumPhotographerAllowed(albumId: string, userId: string): Promise<boolean> {
+    const grants = this.albumPhotographers.get(albumId);
+    if (!grants || grants.size === 0) return true;
+    return grants.has(userId);
+  }
+
+  async eventStatus(eventId: string): Promise<EventStatus> {
+    const photos = [...this.photos.values()].filter((photo) => photo.eventId === eventId);
+    const photosByStatus: PhotosByStatus = { uploaded: 0, processing: 0, indexed: 0, error: 0 };
+    for (const photo of photos) photosByStatus[photo.status] += 1;
+    const galleries = this.galleries.filter((gallery) => gallery.eventId === eventId);
+    const perAlbum = new Map<string, number>();
+    for (const photo of photos) {
+      perAlbum.set(photo.albumId, (perAlbum.get(photo.albumId) ?? 0) + 1);
+    }
+    const albums = (await this.listAlbums(eventId)).map(
+      (album): EventStatusAlbum => ({
+        id: album.id,
+        slug: album.slug,
+        name: album.name,
+        kind: album.kind,
+        recognition: album.recognition,
+        moderation: album.moderation,
+        uploadsOpen: album.uploadsOpen,
+        photos: perAlbum.get(album.id) ?? 0,
+        firstUploadAt: album.firstUploadAt,
+      }),
+    );
+    return {
+      photos: photos.length,
+      photosByStatus,
+      originalsPending: photos.filter((photo) => photo.originalStatus === "pending").length,
+      faces: this.faces.filter((face) => face.eventId === eventId).length,
+      galleries: galleries.length,
+      galleriesMatched: galleries.filter((gallery) => gallery.matchedAt !== null).length,
+      selfiesWaiting: galleries.filter(
+        (gallery) => gallery.queryEmbedding !== null && gallery.matchedAt === null,
+      ).length,
+      albums,
+    };
+  }
+
+  // ---- crowd upload and moderation v6 (agent C) -----------------------------------------
+
+  async countAlbumPhotosByUploader(albumId: string, uploaderId: string): Promise<number> {
+    let count = 0;
+    for (const photo of this.photos.values()) {
+      if (photo.albumId !== albumId || photo.photographerId !== uploaderId) continue;
+      if (photo.moderationState === "approved" || photo.moderationState === "pending") count += 1;
+    }
+    return count;
+  }
+
+  async countAlbumUploadsSince(
+    albumId: string,
+    uploaderId: string,
+    since: Date,
+  ): Promise<number> {
+    let count = 0;
+    for (const upload of this.uploads.values()) {
+      if (upload.albumId !== albumId || upload.photographerId !== uploaderId) continue;
+      if (upload.createdAt >= since) count += 1;
+    }
+    return count;
+  }
+
+  // ---- privacy and retention scheduling v6 (agent G) ---------------------------------------
+
+  async findConsentState(userId: string, eventId: string): Promise<ConsentState> {
+    const rows = this.consents
+      .filter((row) => row.userId === userId && row.eventId === eventId)
+      .sort((a, b) => b.grantedAt.getTime() - a.grantedAt.getTime());
+    const active = rows.find((row) => row.withdrawnAt === null);
+    const withdrawn = rows.find((row) => row.withdrawnAt !== null)?.withdrawnAt ?? null;
+    const gallery = this.galleryOf(userId, eventId);
+    return {
+      grantedAt: active?.grantedAt ?? null,
+      textVersion: active?.textVersion ?? null,
+      withdrawnAt: withdrawn,
+      gallery: gallery
+        ? {
+            photos: this.items.filter((item) => item.galleryId === gallery.id).length,
+            selfieVector: gallery.queryEmbedding !== null,
+            anchors: gallery.anchorFaceIds.length,
+            matchedAt: gallery.matchedAt,
+          }
+        : null,
+    };
+  }
+
+  async withdrawConsent(input: { userId: string; eventId: string }): Promise<ConsentWithdrawal> {
+    let consents = 0;
+    for (const row of this.consents) {
+      if (row.userId !== input.userId || row.eventId !== input.eventId) continue;
+      if (row.withdrawnAt !== null) continue;
+      row.withdrawnAt = new Date();
+      consents += 1;
+    }
+    const gallery = this.galleryOf(input.userId, input.eventId);
+    const anchors = gallery ? [...gallery.anchorFaceIds] : [];
+    const items = gallery ? this.items.filter((item) => item.galleryId === gallery.id) : [];
+    const itemFaceIds = items
+      .map((item) => this.faces.find((face) => face.id === item.faceId)?.externalId)
+      .filter((id): id is string => id !== undefined);
+    const externalFaceIds = [...new Set([...anchors, ...itemFaceIds])];
+    const selfieKeys: string[] = [];
+    let galleryItems = 0;
+    let selfieVector = false;
+    if (gallery) {
+      galleryItems = items.length;
+      selfieVector = gallery.queryEmbedding !== null;
+      if (gallery.selfieKey) selfieKeys.push(gallery.selfieKey);
+      for (let index = this.items.length - 1; index >= 0; index -= 1) {
+        if (this.items[index]?.galleryId === gallery.id) this.items.splice(index, 1);
+      }
+      const position = this.galleries.indexOf(gallery);
+      if (position >= 0) this.galleries.splice(position, 1);
+    }
+    // No vector store here: the fake engine owns the templates, and the api hands it
+    // `externalFaceIds` through FaceEngine.deleteFaces. Other galleries lose the anchors
+    // that pointed at those templates, exactly as in Postgres.
+    if (externalFaceIds.length > 0) {
+      for (const row of this.galleries) {
+        if (row.eventId !== input.eventId) continue;
+        row.anchorFaceIds = row.anchorFaceIds.filter((id) => !externalFaceIds.includes(id));
+      }
+    }
+    let feedback = 0;
+    for (let index = this.feedback.length - 1; index >= 0; index -= 1) {
+      const row = this.feedback[index];
+      if (row?.userId === input.userId && row.eventId === input.eventId) {
+        this.feedback.splice(index, 1);
+        feedback += 1;
+      }
+    }
+    let matchRuns = 0;
+    for (let index = this.matchRunRows.length - 1; index >= 0; index -= 1) {
+      const row = this.matchRunRows[index];
+      if (row?.userId !== input.userId || row.eventId !== input.eventId) continue;
+      for (let hit = this.matchHitRows.length - 1; hit >= 0; hit -= 1) {
+        if (this.matchHitRows[hit]?.runId === row.id) this.matchHitRows.splice(hit, 1);
+      }
+      this.matchRunRows.splice(index, 1);
+      matchRuns += 1;
+    }
+    return {
+      consents,
+      galleryDeleted: gallery !== undefined,
+      galleryItems,
+      selfieVector,
+      anchors: anchors.length,
+      faceVectors: 0,
+      externalFaceIds,
+      selfieKeys,
+      feedback,
+      matchRuns,
+    };
+  }
+
+  async claimRetentionWindow(input: {
+    eventId: string;
+    windowStart: Date;
+    windowSeconds: number;
+  }): Promise<boolean> {
+    const existing = this.retentionSchedule.get(input.eventId);
+    if (existing && existing.windowStart.getTime() >= input.windowStart.getTime()) return false;
+    this.retentionSchedule.set(input.eventId, {
+      windowStart: input.windowStart,
+      windowSeconds: input.windowSeconds,
+      claimedAt: new Date(),
+      runs: (existing?.runs ?? 0) + 1,
+      lastOutcome: "enqueued",
+      lastJobId: null,
+      lastError: null,
+      // A claim does not clear the notified alarm: the suppression is per window, and the
+      // claim happens in the same window the alarm was reported in.
+      notifiedAlarm: existing?.notifiedAlarm ?? null,
+      notifiedWindow: existing?.notifiedWindow ?? null,
+    });
+    return true;
+  }
+
+  async recordRetentionRun(input: {
+    eventId: string;
+    outcome: RetentionOutcome;
+    jobId?: string | null;
+    error?: string | null;
+  }): Promise<void> {
+    const row = this.retentionSchedule.get(input.eventId);
+    if (!row) return;
+    row.lastOutcome = input.outcome;
+    row.lastJobId = input.jobId ?? null;
+    row.lastError = input.error ?? null;
+  }
+
+  async listRetentionStatus(): Promise<RetentionStatusRow[]> {
+    const rows: RetentionStatusRow[] = [];
+    for (const event of [...this.events.values()].sort(
+      (a, b) => a.createdAt.getTime() - b.createdAt.getTime() || compareText(a.id, b.id),
+    )) {
+      const state = this.retentionSchedule.get(event.id);
+      const job = [...this.jobs]
+        .filter(
+          (row) =>
+            row.type === "retention" &&
+            (row.payload as { eventId?: unknown } | null)?.eventId === event.id,
+        )
+        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || compareText(b.id, a.id))[0];
+      rows.push({
+        eventId: event.id,
+        slug: event.slug,
+        retentionDays: event.retentionDays,
+        windowStart: state?.windowStart ?? null,
+        windowSeconds: state?.windowSeconds ?? null,
+        claimedAt: state?.claimedAt ?? null,
+        runs: state?.runs ?? 0,
+        lastOutcome: state?.lastOutcome ?? null,
+        lastJobId: state?.lastJobId ?? null,
+        lastError: state?.lastError ?? null,
+        lastJob: job
+          ? {
+              id: job.id,
+              status: job.status,
+              error: job.lastError,
+              finishedAt: job.finishedAt,
+            }
+          : null,
+      });
+    }
+    return rows;
+  }
+
+  async listAlbumPhotosCreatedBefore(
+    albumId: string,
+    cutoff: Date,
+    limit?: number,
+  ): Promise<PhotoRow[]> {
+    const rows = [...this.photos.values()]
+      .filter((photo) => photo.albumId === albumId && photo.createdAt < cutoff)
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+    return limit === undefined ? rows : rows.slice(0, limit);
+  }
+
+  async claimRetentionAlarmMail(input: {
+    eventId: string;
+    alarm: RetentionAlarmMail;
+    window: Date;
+  }): Promise<boolean> {
+    const row = this.retentionSchedule.get(input.eventId);
+    if (!row) return false;
+    const fresh =
+      row.notifiedWindow === null ||
+      row.notifiedWindow.getTime() < input.window.getTime() ||
+      row.notifiedAlarm !== input.alarm;
+    if (!fresh) return false;
+    row.notifiedAlarm = input.alarm;
+    row.notifiedWindow = input.window;
+    return true;
+  }
+
+  async clearRetentionAlarmMail(eventId: string): Promise<RetentionAlarmMail | null> {
+    const row = this.retentionSchedule.get(eventId);
+    if (!row || row.notifiedAlarm === null) return null;
+    const previous = row.notifiedAlarm;
+    row.notifiedAlarm = null;
+    row.notifiedWindow = null;
+    return previous;
+  }
+
+  async countPhotosByUploader(eventId: string, userId: string): Promise<number> {
+    let count = 0;
+    for (const photo of this.photos.values()) {
+      if (photo.eventId === eventId && photo.photographerId === userId) count += 1;
+    }
+    return count;
+  }
+
+  // ---- hardening v6 (agent H): password-reset tokens, migration 016 -----------------------
+  //
+  // A table of its own, exactly like in Postgres: nothing here can turn a `magic_links` row
+  // into a password change. The field lives next to its methods so this block is one
+  // contiguous addition.
+  private readonly resetTokens = new Map<string, PasswordResetTokenStored>();
+
+  async insertPasswordResetToken(input: {
+    userId: string;
+    tokenHash: string;
+    expiresAt: Date;
+    ip: string | null;
+  }): Promise<void> {
+    this.resetTokens.set(input.tokenHash, {
+      id: randomUUID(),
+      userId: input.userId,
+      tokenHash: input.tokenHash,
+      expiresAt: input.expiresAt,
+      usedAt: null,
+      ip: input.ip,
+      createdAt: new Date(),
+    });
+  }
+
+  async countPasswordResetTokensSince(input: {
+    userId?: string;
+    ip?: string;
+    since: Date;
+  }): Promise<number> {
+    if (input.userId === undefined && input.ip === undefined) return 0;
+    let count = 0;
+    for (const row of this.resetTokens.values()) {
+      if (row.createdAt < input.since) continue;
+      if (input.userId !== undefined && row.userId !== input.userId) continue;
+      if (input.ip !== undefined && row.ip !== input.ip) continue;
+      count += 1;
+    }
+    return count;
+  }
+
+  async setPhotoModeration(input: {
+    photoId: string;
+    state: ModerationState;
+    moderatorId?: string | null;
+    at?: Date;
+  }): Promise<PhotoRow | null> {
+    const photo = this.photos.get(input.photoId);
+    if (!photo) return null;
+    photo.moderationState = input.state;
+    const human = input.moderatorId ?? null;
+    if (human !== null) {
+      // Only a human ruling stamps the two audit columns; the automatic paths leave them.
+      this.moderation.set(photo.id, { moderatedBy: human, moderatedAt: input.at ?? new Date() });
+    }
+    return photo;
+  }
+
+  async insertReport(input: {
+    photoId: string;
+    reporterId: string;
+    reason: ReportReason;
+    note?: string | null;
+  }): Promise<{ created: boolean; report: ReportRow }> {
+    const existing = this.reports.find(
+      (row) => row.photoId === input.photoId && row.reporterId === input.reporterId,
+    );
+    // `reports unique (photo_id, reporter_id)`: a second tap from the same person changes
+    // nothing, which is what keeps the auto-pending threshold a count of distinct people.
+    // The one exception, mirrored from the Postgres `on conflict ... where`: a stored
+    // `not_me` may be escalated to a counting reason, one-way, so that tapping
+    // "non sono io" does not silently spend the person's only report on this photo.
+    if (existing) {
+      const escalates = existing.reason === "not_me" && input.reason !== "not_me";
+      if (!escalates) return { created: false, report: existing };
+      existing.reason = input.reason;
+      existing.note = input.note ?? existing.note;
+      existing.state = "open";
+      existing.createdAt = new Date();
+      return { created: true, report: existing };
+    }
+    const report: ReportRow = {
+      id: randomUUID(),
+      photoId: input.photoId,
+      reporterId: input.reporterId,
+      reason: input.reason,
+      note: input.note ?? null,
+      state: "open",
+      createdAt: new Date(),
+    };
+    this.reports.push(report);
+    return { created: true, report };
+  }
+
+  async countOpenReports(photoId: string): Promise<number> {
+    // Counting reasons ONLY. A `not_me` report is recorded but never moves a photo: it is
+    // the normal error mode of face matching, not an abuse signal, and it is answered
+    // per-user through `gallery_feedback`. See MODERATION_COUNTING_REASONS.
+    const reporters = new Set<string>();
+    for (const row of this.reports) {
+      if (row.photoId !== photoId || row.state !== "open") continue;
+      if (!countsTowardModeration(row.reason)) continue;
+      reporters.add(row.reporterId);
+    }
+    return reporters.size;
+  }
+
+  async countOpenNotMeReports(photoId: string): Promise<number> {
+    const reporters = new Set<string>();
+    for (const row of this.reports) {
+      if (row.photoId !== photoId || row.state !== "open" || row.reason !== "not_me") continue;
+      reporters.add(row.reporterId);
+    }
+    return reporters.size;
+  }
+
+  async countReportsByUserSince(reporterId: string, since: Date): Promise<number> {
+    return this.reports.filter((row) => row.reporterId === reporterId && row.createdAt >= since)
+      .length;
+  }
+
+  async closeReports(photoId: string): Promise<number> {
+    let closed = 0;
+    for (const row of this.reports) {
+      if (row.photoId === photoId && row.state === "open") {
+        row.state = "closed";
+        closed += 1;
+      }
+    }
+    return closed;
+  }
+
+  async listOpenReports(photoId: string): Promise<ReportRow[]> {
+    return this.reports
+      .filter((row) => row.photoId === photoId && row.state === "open")
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || compareText(a.id, b.id));
+  }
+
+  async listModerationPage(input: {
+    albumId?: string;
+    state?: ModerationState;
+    includeNotMe?: boolean;
+    limit: number;
+    cursor?: UploadCursor;
+  }): Promise<{ items: ModerationItem[]; nextCursor: UploadCursor | null }> {
+    const cursor = input.cursor;
+    const rows: ModerationItem[] = [];
+    for (const photo of this.photos.values()) {
+      if (input.albumId && photo.albumId !== input.albumId) continue;
+      if (input.state && photo.moderationState !== input.state) continue;
+      const open = this.reports.filter((row) => row.photoId === photo.id && row.state === "open");
+      const counting = new Set(
+        open.filter((row) => countsTowardModeration(row.reason)).map((row) => row.reporterId),
+      );
+      const notMe = new Set(
+        open.filter((row) => row.reason === "not_me").map((row) => row.reporterId),
+      );
+      // Everything a moderator still has to look at: not approved, or approved with an open
+      // report whose reason COUNTS. `not_me` alone never queues a photo (it is the normal
+      // error mode of face matching and would bury two moderators); `includeNotMe` asks for
+      // those on purpose.
+      const queued =
+        photo.moderationState !== "approved" ||
+        counting.size > 0 ||
+        (input.includeNotMe === true && notMe.size > 0);
+      if (!queued) continue;
+      if (cursor) {
+        const byTime = photo.createdAt.getTime() - cursor.createdAt.getTime();
+        if (!(byTime < 0 || (byTime === 0 && photo.id < cursor.id))) continue;
+      }
+      rows.push({
+        photoId: photo.id,
+        albumId: photo.albumId,
+        eventId: photo.eventId,
+        uploaderId: photo.photographerId,
+        moderationState: photo.moderationState,
+        createdAt: photo.createdAt,
+        openReports: counting.size,
+        reasons: [...new Set(open.map((row) => row.reason))].sort(compareText),
+        notMeReports: notMe.size,
+        thumbKey: this.derivativeKey(photo.id, "thumb"),
+        webKey: this.derivativeKey(photo.id, "web"),
+      });
+    }
+    rows.sort(
+      (a, b) =>
+        b.createdAt.getTime() - a.createdAt.getTime() || compareText(b.photoId, a.photoId),
+    );
+    const items = rows.slice(0, input.limit);
+    const last = items[items.length - 1];
+    const nextCursor =
+      rows.length > input.limit && last ? { createdAt: last.createdAt, id: last.photoId } : null;
+    return { items, nextCursor };
+  }
+
+  async listAlbumPhotosPage(
+    albumId: string,
+    input: { limit: number; cursor?: UploadCursor },
+  ): Promise<{ items: AlbumPhoto[]; nextCursor: UploadCursor | null }> {
+    const cursor = input.cursor;
+    const rows: AlbumPhoto[] = [];
+    for (const photo of this.photos.values()) {
+      // `approved` only: a photo the report threshold flipped to `pending` leaves the feed.
+      if (photo.albumId !== albumId || photo.moderationState !== "approved") continue;
+      const thumbKey = this.derivativeKey(photo.id, "thumb");
+      const webKey = this.derivativeKey(photo.id, "web");
+      if (!thumbKey || !webKey) continue;
+      if (cursor) {
+        const byTime = photo.createdAt.getTime() - cursor.createdAt.getTime();
+        if (!(byTime < 0 || (byTime === 0 && photo.id < cursor.id))) continue;
+      }
+      rows.push({
+        id: photo.id,
+        albumId: photo.albumId,
+        uploaderId: photo.photographerId,
+        createdAt: photo.createdAt,
+        thumbKey,
+        webKey,
+      });
+    }
+    rows.sort(
+      (a, b) => b.createdAt.getTime() - a.createdAt.getTime() || compareText(b.id, a.id),
+    );
+    const items = rows.slice(0, input.limit);
+    const last = items[items.length - 1];
+    const nextCursor =
+      rows.length > input.limit && last ? { createdAt: last.createdAt, id: last.id } : null;
+    return { items, nextCursor };
+  }
+
+  async listAlbumPhotosByIds(albumId: string, ids: string[]): Promise<AlbumPhoto[]> {
+    const wanted = new Set(ids);
+    const rows: AlbumPhoto[] = [];
+    for (const photo of this.photos.values()) {
+      // Same three conditions as `listAlbumPhotosPage`, so the caller's count comparison is
+      // a real IDOR guard: this album, `approved`, both derivatives.
+      if (!wanted.has(photo.id)) continue;
+      if (photo.albumId !== albumId || photo.moderationState !== "approved") continue;
+      const thumbKey = this.derivativeKey(photo.id, "thumb");
+      const webKey = this.derivativeKey(photo.id, "web");
+      if (!thumbKey || !webKey) continue;
+      rows.push({
+        id: photo.id,
+        albumId: photo.albumId,
+        uploaderId: photo.photographerId,
+        createdAt: photo.createdAt,
+        thumbKey,
+        webKey,
+      });
+    }
+    return rows;
+  }
+
+  /** v6 (agent C): the stored key of one derivative, or null when it is not there yet. */
+  private derivativeKey(photoId: string, kind: "thumb" | "web"): string | null {
+    const row = this.derivatives.find((item) => item.photoId === photoId && item.kind === kind);
+    return row ? row.s3Key : null;
+  }
+  /** Test helper: the ids of the jobs of one type, oldest first. */
+  jobIdsByType(type: JobType): string[] {
+    return this.jobs.filter((row) => row.type === type).map((row) => row.id);
+  }
+
+  /** Test helper: forces a terminal job state, as five failed attempts would. */
+  setJobStatus(id: string, status: "queued" | "running" | "done" | "error"): void {
+    const job = this.jobs.find((row) => row.id === id);
+    if (!job) throw new Error("missing job");
+    job.status = status;
+  }
+
+  /** Test helper: the retention scheduler state of one event, as migration 015 stores it. */
+  retentionScheduleOf(eventId: string): RetentionScheduleStored | undefined {
+    const row = this.retentionSchedule.get(eventId);
+    return row ? { ...row } : undefined;
+  }
+
+  /** Test helper: backdates the last claim, so the scheduler sees a skipped window. */
+  setRetentionClaimedAt(eventId: string, claimedAt: Date): void {
+    const row = this.retentionSchedule.get(eventId);
+    if (!row) throw new Error("missing retention schedule");
+    row.claimedAt = claimedAt;
+  }
+
+  async consumePasswordResetToken(tokenHash: string): Promise<{ userId: string } | null> {
+    const row = this.resetTokens.get(tokenHash);
+    if (!row || row.usedAt !== null || row.expiresAt.getTime() <= Date.now()) return null;
+    row.usedAt = new Date();
+    return { userId: row.userId };
+  }
+
+  async invalidatePasswordResetTokens(userId: string): Promise<number> {
+    let burnt = 0;
+    const now = new Date();
+    for (const row of this.resetTokens.values()) {
+      if (row.userId !== userId || row.usedAt !== null) continue;
+      row.usedAt = now;
+      burnt += 1;
+    }
+    return burnt;
+  }
+
+  async listTaggedPhotosForUser(userId: string, eventId: string): Promise<TaggedPhotoRow[]> {
+    const rows: TaggedPhotoRow[] = [];
+    for (const tag of this.photoTags.values()) {
+      if (tag.userId !== userId || tag.state !== "active") continue;
+      const photo = this.photos.get(tag.photoId);
+      if (!photo || photo.eventId !== eventId) continue;
+      const thumb = this.derivatives.find((d) => d.photoId === photo.id && d.kind === "thumb");
+      const web = this.derivatives.find((d) => d.photoId === photo.id && d.kind === "web");
+      // The Postgres query inner-joins both derivatives: a photo still being processed is
+      // not listed, exactly as in the personal gallery.
+      if (!thumb || !web) continue;
+      rows.push({
+        photoId: photo.id,
+        eventId: photo.eventId,
+        thumbKey: thumb.s3Key,
+        webKey: web.s3Key,
+        taggedBy: tag.taggedBy,
+        createdAt: tag.createdAt,
+      });
+    }
+    return rows.sort(
+      (a, b) => b.createdAt.getTime() - a.createdAt.getTime() || compareText(a.photoId, b.photoId),
+    );
+  }
+
+  async listPhotoTags(photoId: string): Promise<PhotoTagWithNameRow[]> {
+    const rows = [...this.photoTags.values()].filter(
+      (row) => row.photoId === photoId && row.state === "active",
+    );
+    return rows
+      .sort(
+        (a, b) =>
+          a.createdAt.getTime() - b.createdAt.getTime() || compareText(a.userId, b.userId),
+      )
+      .map((row) => ({
+        ...row,
+        displayName: this.displayNames.get(row.userId) ?? null,
+      }));
+  }
+
+  async listAuditForTarget(target: string): Promise<AuditEntryRow[]> {
+    return this.auditRows
+      .filter((row) => row.target === target)
+      .map((row) => ({ ...row }));
+  }
 }
 
 type FeedbackRow = {
@@ -1713,6 +2912,8 @@ type FeedbackRow = {
   verdict: FeedbackVerdict;
   scoreAtTime: number | null;
   createdAt: Date;
+  /** `gallery_feedback.source` (migration 018): which flow wrote the row. */
+  source: FeedbackSource;
 };
 
 type MatchRunStored = {
@@ -1776,4 +2977,80 @@ function compareText(a: string, b: string): number {
 
 export function seedInviteHash(): string {
   return createHash("sha256").update("seed-invite").digest("hex");
+}
+
+// ---- auth v6 (agent B) --------------------------------------------------------------------
+
+type IdentityStored = {
+  userId: string;
+  provider: IdentityProvider;
+  subject: string;
+  email: string | null;
+  createdAt: Date;
+};
+
+function identityKey(provider: IdentityProvider, subject: string): string {
+  return `${provider}\u0000${subject}`;
+}
+
+function eventCodeKey(eventId: string, code: string): string {
+  return `${eventId}\u0000${code}`;
+}
+
+// ---- privacy and retention scheduling v6 (agent G) ----------------------------------------
+
+type RetentionScheduleStored = {
+  windowStart: Date;
+  windowSeconds: number;
+  claimedAt: Date;
+  runs: number;
+  lastOutcome: RetentionOutcome;
+  lastJobId: string | null;
+  lastError: string | null;
+  /** The alarm already mailed, and the window it was mailed for (migration 015). */
+  notifiedAlarm: RetentionAlarmMail | null;
+  notifiedWindow: Date | null;
+};
+
+// ---- hardening v6 (agent H) ---------------------------------------------------------------
+
+/** One row of `password_reset_tokens` (migration 016). */
+type PasswordResetTokenStored = {
+  id: string;
+  userId: string;
+  tokenHash: string;
+  expiresAt: Date;
+  usedAt: Date | null;
+  ip: string | null;
+  createdAt: Date;
+};
+
+// ---- event membership + tagging v6 (agent E) ----------------------------------------------
+
+type EventMemberStored = {
+  userId: string;
+  eventId: string;
+  source: EventMemberSource;
+  taggable: boolean;
+  taggableConsentVersion: string | null;
+  taggableConsentAt: Date | null;
+  createdAt: Date;
+};
+
+/** The `event_members` primary key (user_id, event_id) as one map key. */
+function eventMemberKey(userId: string, eventId: string): string {
+  return `${userId}\u0000${eventId}`;
+}
+
+type PhotoTagStored = {
+  photoId: string;
+  userId: string;
+  taggedBy: string | null;
+  state: "active" | "removed";
+  createdAt: Date;
+};
+
+/** The `photo_tags` primary key (photo_id, user_id) as one map key. */
+function photoTagKey(photoId: string, userId: string): string {
+  return `${photoId}\u0000${userId}`;
 }

@@ -1,7 +1,7 @@
 """Frames of Me face service: FastAPI front for insightface (SCRFD + ArcFace) on CPU.
 
 Endpoints (see README.md):
-  GET  /health        -> { ok, model, providers }
+  GET  /health        -> { ok, version, max_faces_cap, model, providers }
   GET  /metrics       -> plain text counters and latency percentiles (no Prometheus client)
   POST /v1/embed      -> { width, height, faces: [{ bbox, score, quality, embedding, norm, yaw }] }
   POST /v1/liveness   -> { live, score, method }
@@ -39,6 +39,18 @@ MAX_REQUEST_BYTES = MAX_UPLOAD_BYTES + 64 * 1024
 # legitimately hold 100+ detectable faces; each one costs an ArcFace pass (~10 ms).
 MAX_FACES_CAP = 150
 MAX_FACES_LIMIT = MAX_FACES_CAP  # backwards-compatible alias
+# Reported by /health together with MAX_FACES_CAP, so a client can tell which build it is
+# talking to before it sends work (v6 hardening H2).
+#
+# During v6 wave 1 a stale `rephoto-face-service` image enforced `max_faces <= 50` while the
+# code said 150 and the worker asked for 100. Every `index` job got an HTTP 422 straight from
+# the query validator, five attempts each, and the photos ended in `error` — while /health
+# kept answering `{"ok": true}`, because "ok" only ever meant "the model object exists". A
+# health check that cannot say which build answered it cannot catch a wrong build.
+#
+# Bump this whenever the request or response contract of /v1/embed or /v1/liveness changes,
+# MAX_FACES_CAP included: it is the version the worker's compatibility check logs.
+SERVICE_VERSION = "1.1.0"
 DEFAULT_DET_SIZE = 1024
 DEFAULT_MODEL_CONCURRENCY = 2
 DEFAULT_DECODE_CONCURRENCY = 4
@@ -194,6 +206,10 @@ class HealthOut(BaseModel):
     ok: bool
     model: str
     providers: list[str]
+    # v6 hardening H2: which build this is, and the largest `max_faces` it will accept. A
+    # client about to ask for more than `max_faces_cap` knows before it tries.
+    version: str = SERVICE_VERSION
+    max_faces_cap: int = MAX_FACES_CAP
 
 
 def api_error(status: int, code: str, message: str) -> HTTPException:
@@ -281,7 +297,7 @@ def create_app(*, analyzer: Analyzer | None = None, liveness: NoLiveness | Silen
             log.info("liveness method: %s", app.state.liveness.method)
         yield
 
-    app = FastAPI(title="Frames of Me face service", version="1.0.0", lifespan=lifespan, docs_url=None, redoc_url=None)
+    app = FastAPI(title="Frames of Me face service", version=SERVICE_VERSION, lifespan=lifespan, docs_url=None, redoc_url=None)
     app.state.analyzer = analyzer
     app.state.liveness = liveness
     app.state.settings = settings
@@ -304,8 +320,20 @@ def create_app(*, analyzer: Analyzer | None = None, liveness: NoLiveness | Silen
     @app.get("/health", response_model=HealthOut)
     async def health() -> Any:
         an: Analyzer | None = app.state.analyzer
+        # `version` and `max_faces_cap` are reported even while the model is still loading:
+        # a 503 that says which build answered lets a client refuse the right work straight
+        # away instead of retrying into a 422 (v6 hardening H2).
         if an is None:
-            return JSONResponse(status_code=503, content={"ok": False, "model": settings.model_name, "providers": []})
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "ok": False,
+                    "model": settings.model_name,
+                    "providers": [],
+                    "version": SERVICE_VERSION,
+                    "max_faces_cap": MAX_FACES_CAP,
+                },
+            )
         return HealthOut(ok=True, model=an.model_name, providers=list(an.providers))
 
     @app.get("/metrics", response_class=PlainTextResponse)

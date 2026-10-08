@@ -1,9 +1,13 @@
 import { createSHA256 } from "hash-wasm";
 import { ApiError, api } from "@/lib/api";
-import type { UploadCompleteResponse, UploadInitResponse, UploadLookupResponse } from "@/lib/types";
+import type {
+  AlbumUploadDedupeResponse,
+  UploadCompleteResponse,
+  UploadInitResponse,
+  UploadLookupResponse,
+} from "@/lib/types";
 
 export type ImageType = "image/jpeg" | "image/png";
-export type PhotoCollection = "public" | "official";
 
 export type Progress = (loaded: number, total: number) => void;
 export type UploadOutcome = { photoId: string };
@@ -17,9 +21,23 @@ export const HASH_SLICE_BYTES = 4 * 1024 * 1024;
 /** Per-part XHR timeout. */
 export const PART_TIMEOUT_MS = 120_000;
 
+/**
+ * The content type to send for a chosen file, or `null` if it is not a photo we accept.
+ *
+ * Lenient on purpose, because the browser's `type` is not reliable on the population that
+ * uses this most: iOS reports `image/jpg` for some pickers, and a file forwarded through a
+ * messaging app can arrive with an empty type or `application/octet-stream`. So an
+ * unrecognised type falls back to the filename extension.
+ *
+ * The one thing that is NOT lenient is video: it is out of v6 (decision 4, frozen), and
+ * without this guard the extension fallback would accept a `video/quicktime` file that
+ * happens to be named `.jpg` and hand it to the api as a JPEG.
+ */
 export function contentTypeOf(file: File): ImageType | null {
-  if (file.type === "image/jpeg" || file.type === "image/png") return file.type;
-  if (file.type === "image/jpg") return "image/jpeg";
+  const reported = file.type.split(";")[0]?.trim().toLowerCase() ?? "";
+  if (reported === "image/jpeg" || reported === "image/png") return reported;
+  if (reported === "image/jpg") return "image/jpeg";
+  if (reported.startsWith("video/")) return null;
   const name = file.name.toLowerCase();
   if (name.endsWith(".jpg") || name.endsWith(".jpeg")) return "image/jpeg";
   if (name.endsWith(".png")) return "image/png";
@@ -137,6 +155,27 @@ function putPart(
   });
 }
 
+/**
+ * One presigned PUT of a whole object: the single-part transfer, with everything the
+ * multipart path gets around the request itself — the MinIO proxy rewrite, the
+ * {@link PART_TIMEOUT_MS} timeout, byte-level progress and abort.
+ *
+ * Exported for the crowd album, which is deliberately single-PUT only (see
+ * `lib/crowd.ts`): it needs those four properties without needing parts. Resolves when the
+ * object is stored; the ETag is dropped because a single-part `complete` sends no parts.
+ */
+export async function putWholeObject(
+  url: string,
+  blob: Blob,
+  contentType: string | null,
+  onProgress?: Progress,
+  signal?: AbortSignal,
+): Promise<void> {
+  throwIfAborted(signal);
+  await putPart(url, blob, contentType, (loaded) => onProgress?.(loaded, blob.size), signal);
+  onProgress?.(blob.size, blob.size);
+}
+
 /** `api()` with abort support: the fetch is cancelled and rejects with an AbortError. */
 function post<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
   throwIfAborted(signal);
@@ -219,14 +258,15 @@ export async function uploadOriginal(
   sha256: string,
   onProgress: Progress,
   signal?: AbortSignal,
-  collection: PhotoCollection = "official",
 ): Promise<UploadOutcome> {
   const filename = checkOriginal(file);
   onProgress(0, file.size);
-  const created = await post<UploadInitResponse>(
-    "/v1/uploads/init",
-    { eventId, filename, contentType: type, sha256, bytes: file.size, stage: "original", collection },
-    signal,
+  const created = throwIfDeduped(
+    await post<UploadInitResponse | AlbumUploadDedupeResponse>(
+      "/v1/uploads/init",
+      { eventId, filename, contentType: type, sha256, bytes: file.size, stage: "original" },
+      signal,
+    ),
   );
   const done = await transfer(created, file, type, onProgress, signal);
   return { photoId: done.photoId };
@@ -249,19 +289,21 @@ export async function uploadWebStage(
   if (web.size < 1) throw new Error("La versione web è vuota.");
   if (web.size > WEB_STAGE_MAX_BYTES) throw new Error("La versione web supera gli 8 MB.");
   onProgress(0, web.size);
-  const created = await post<UploadInitResponse>(
-    "/v1/uploads/init",
-    {
-      eventId,
-      filename,
-      contentType: "image/jpeg",
-      sha256,
-      bytes: web.size,
-      stage: "web",
-      originalContentType: type,
-      originalBytes: file.size,
-    },
-    signal,
+  const created = throwIfDeduped(
+    await post<UploadInitResponse | AlbumUploadDedupeResponse>(
+      "/v1/uploads/init",
+      {
+        eventId,
+        filename,
+        contentType: "image/jpeg",
+        sha256,
+        bytes: web.size,
+        stage: "web",
+        originalContentType: type,
+        originalBytes: file.size,
+      },
+      signal,
+    ),
   );
   const done = await transfer(created, web, "image/jpeg", onProgress, signal);
   return { photoId: done.photoId };
@@ -314,4 +356,22 @@ export async function uploadPhoto(
 ): Promise<string> {
   const outcome = await uploadOriginal(file, eventId, contentType, sha256, onProgress, signal);
   return outcome.photoId;
+}
+
+/**
+ * v6 (agent C): `uploads/init` answers 200 `{ status: "already-uploaded" }` when the same
+ * sha256 is already in the target album — dedup is per album since migration 009, and the
+ * server treats it as an answer rather than an error.
+ *
+ * The upload queue has one well-tested path for "these bytes are already there" and it is
+ * keyed on a 409, so the new shape is translated back into that ApiError here instead of
+ * being threaded through five call sites. Everything downstream is unchanged.
+ */
+function throwIfDeduped(
+  response: UploadInitResponse | AlbumUploadDedupeResponse,
+): UploadInitResponse {
+  if ("status" in response && response.status === "already-uploaded") {
+    throw new ApiError("Questa foto è già stata caricata.", 409);
+  }
+  return response as UploadInitResponse;
 }

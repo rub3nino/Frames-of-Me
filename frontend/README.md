@@ -29,7 +29,7 @@ frontend/
 │  └─ api-client/    ← one typed fetch client for ../../apps/api (auth, event, selfie,
 │                      gallery, uploads, admin). Every app imports this.
 ├─ apps/
-│  ├─ landing/       → framesofme.com        · static marketing page (serif + pastel). DONE, deploy-ready.
+│  ├─ landing/       → framesofme.com         · static marketing page (serif + pastel). DONE, deploy-ready.
 │  ├─ partecipanti/  → app.framesofme.com     · guest flow (iscrizione·selfie·galleria·consenso minori)
 │  ├─ fotografi/     → foto.framesofme.com    · photographer portal (upload·album·copertura·…)
 │  └─ admin/         → admin.framesofme.com   · staff console (dashboard·gdpr·cms·…)

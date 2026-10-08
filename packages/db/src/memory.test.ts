@@ -365,3 +365,52 @@ describe("MemoryDatabase v2 rows", () => {
     await db.ping();
   });
 });
+
+describe("MemoryDatabase transaction (v6 integration)", () => {
+  it("rolls back an interrupted registration, down to the use the event code had spent", async () => {
+    const db = await seeded();
+    await db.createEventCode({ eventId: EVENT_ID, code: "BADGE-UNICO", maxUses: 1 });
+    await assert.rejects(
+      db.transaction(async (tx) => {
+        const claimed = await tx.claimEventCode("BADGE-UNICO");
+        assert.ok(claimed);
+        // `claimEventCode` increments `uses` on the stored row in place, which is why the
+        // snapshot has to copy the rows and not only the map holding them.
+        assert.equal((await tx.findEventCode(EVENT_ID, "BADGE-UNICO"))?.uses, 1);
+        const user = await tx.insertUser("in-coda@example.com", "participant");
+        await tx.setUserPassword(user.id, "scrypt$00$00");
+        throw new Error("the process died before the membership write");
+      }),
+      /died before the membership write/,
+    );
+    assert.equal((await db.findEventCode(EVENT_ID, "BADGE-UNICO"))?.uses, 0);
+    assert.equal(await db.findUserByEmailRole("in-coda@example.com", "participant"), null);
+    assert.equal(await db.findUserForLogin("in-coda@example.com", "participant"), null);
+  });
+
+  it("commits what the callback returns and leaves earlier writes alone", async () => {
+    const db = await seeded();
+    await db.createEventCode({ eventId: EVENT_ID, code: "BADGE-DUE", maxUses: 2 });
+    const before = await db.insertUser("prima@example.com", "participant");
+    const userId = await db.transaction(async (tx) => {
+      const claimed = await tx.claimEventCode("BADGE-DUE");
+      assert.ok(claimed);
+      const user = await tx.insertUser("seconda@example.com", "participant");
+      await tx.addEventMember({ userId: user.id, eventId: claimed.eventId, source: "event_code" });
+      return user.id;
+    });
+    assert.equal(await db.isEventMember(userId, EVENT_ID), true);
+    assert.equal((await db.findEventCode(EVENT_ID, "BADGE-DUE"))?.uses, 1);
+    // A later rollback must not reach back past the commit it follows.
+    await assert.rejects(
+      db.transaction(async (tx) => {
+        await tx.claimEventCode("BADGE-DUE");
+        throw new Error("interrotta");
+      }),
+      /interrotta/,
+    );
+    assert.equal((await db.findEventCode(EVENT_ID, "BADGE-DUE"))?.uses, 1);
+    assert.equal(await db.isEventMember(userId, EVENT_ID), true);
+    assert.ok(await db.findUserById(before.id));
+  });
+});

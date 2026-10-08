@@ -14,6 +14,13 @@ name: rephoto
 # defaults are non-secret dev values so `docker compose -f docker-compose.coolify.yml up` also works
 # locally for a smoke test; override every secret (SESSION_SECRET, S3_SECRET_KEY, POSTGRES_PASSWORD)
 # in Coolify. No real secret is committed here.
+#
+# ONE variable has no default on purpose: S3_APP_SECRET_KEY (v6 hardening H3, see below and
+# "MinIO credentials" in RUN.md). Without it `docker compose config` fails with a message
+# naming it, and nothing is started. That is deliberate: the alternative was handing a public
+# object store an application key whose secret is printed in this repository. For a local
+# smoke test of this file:
+#   S3_APP_SECRET_KEY=smoke-test-only docker compose -f docker-compose.coolify.yml up
 
 x-app-env: &app_env
   DATABASE_URL: ${DATABASE_URL:-postgres://rephoto:rephoto@postgres:5432/rephoto}
@@ -22,8 +29,23 @@ x-app-env: &app_env
   # (SigV4 includes the host), i.e. https://s3.framesofme.com in Coolify.
   S3_ENDPOINT: ${S3_ENDPOINT:-http://minio:9000}
   S3_BUCKET: ${S3_BUCKET:-rephoto}
-  S3_ACCESS_KEY: ${S3_ACCESS_KEY:-rephoto}
-  S3_SECRET_KEY: ${S3_SECRET_KEY:-rephoto-secret}
+  # v6 hardening H3 — least privilege. These used to read S3_ACCESS_KEY / S3_SECRET_KEY,
+  # which the `minio` service below ALSO used as MINIO_ROOT_USER / MINIO_ROOT_PASSWORD: the
+  # api's own key WAS the MinIO root account. A leaked application key was therefore full
+  # administrative access to the object store — delete any bucket, read the backup copy, add
+  # users, rewrite policies — and that key lives in two long-running Node processes and signs
+  # every presigned URL handed to a browser.
+  #
+  # `rephoto-app` may only get/put/delete objects inside S3_BUCKET; `minio-init` creates it
+  # and attaches the policy (deploy/scripts/minio-provision.sh — the one provisioning path,
+  # shared with deploy/compose.yml and the local docker-compose.yml). Root is used only by
+  # minio-init and the MinIO console.
+  #
+  # S3_APP_SECRET_KEY is REQUIRED: a default here would be a published secret on a public
+  # bucket. Generate one (`openssl rand -base64 24`) and add it in Coolify. Migration steps,
+  # in order, and what happens if you deploy before doing them: RUN.md, "MinIO credentials".
+  S3_ACCESS_KEY: ${S3_APP_ACCESS_KEY:-rephoto-app}
+  S3_SECRET_KEY: ${S3_APP_SECRET_KEY:?add S3_APP_SECRET_KEY in Coolify (v6 hardening H3; see "MinIO credentials" in RUN.md). It is the bucket-scoped application key for api and worker, and it must NOT be the MinIO root password.}
   S3_REGION: ${S3_REGION:-eu-central-1}
   S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE:-true}
   SESSION_SECRET: ${SESSION_SECRET:-dev-only-change-me-please-32chars}
@@ -71,8 +93,13 @@ services:
     image: cgr.dev/chainguard/minio:latest
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
-      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-rephoto}
-      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-rephoto-secret}
+      # v6 hardening H3: root is its own account now, not the api's key. It deliberately
+      # falls back to the OLD variables, so an existing deployment keeps the root account it
+      # already has until MINIO_ROOT_USER / MINIO_ROOT_PASSWORD are set in Coolify. Renaming
+      # outright would silently change who root is on the next deploy — and MinIO reads root
+      # from the environment on every start, so that is a real change, not a no-op.
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-${S3_ACCESS_KEY:-rephoto}}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-${S3_SECRET_KEY:-rephoto-secret}}
       # Allow the browser on the web origin to PUT directly to presigned URLs.
       MINIO_API_CORS_ALLOW_ORIGIN: ${WEB_ORIGIN:-http://localhost:3000}
     expose:
@@ -94,19 +121,29 @@ services:
           memory: 1g
 
   minio-init:
-    # Creates the bucket and a lifecycle rule that expires selfie objects (selfies/*) after 1 day,
-    # so any kept selfie (KEEP_SELFIES) is deleted automatically. Runs once and exits.
+    # Creates the bucket, the bucket-scoped `rephoto-app` policy and the application user api
+    # and worker sign with (v6 hardening H3), and the lifecycle rule that expires selfie
+    # objects (selfies/*) after a day, so any kept selfie (KEEP_SELFIES) is deleted
+    # automatically. Runs once per deploy and exits; idempotent.
+    #
+    # This is the ONLY place the MinIO root credentials are used.
     image: cgr.dev/chainguard/minio:latest
     depends_on:
       minio:
         condition: service_healthy
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        /usr/bin/mc alias set local http://minio:9000 "${S3_ACCESS_KEY:-rephoto}" "${S3_SECRET_KEY:-rephoto-secret}"
-        /usr/bin/mc mb --ignore-existing local/${S3_BUCKET:-rephoto}
-        /usr/bin/mc ilm rule add --expire-days 1 --prefix "selfies/" local/${S3_BUCKET:-rephoto} || \
-        /usr/bin/mc ilm rule add --expiry-days 1 --prefix "selfies/" local/${S3_BUCKET:-rephoto} || true
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-${S3_ACCESS_KEY:-rephoto}}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-${S3_SECRET_KEY:-rephoto-secret}}
+      S3_BUCKET: ${S3_BUCKET:-rephoto}
+      S3_APP_ACCESS_KEY: ${S3_APP_ACCESS_KEY:-rephoto-app}
+      S3_APP_SECRET_KEY: ${S3_APP_SECRET_KEY:?add S3_APP_SECRET_KEY in Coolify (v6 hardening H3; see "MinIO credentials" in RUN.md). It is the bucket-scoped application key for api and worker, and it must NOT be the MinIO root password.}
+      # Keeps this file's pre-H3 behaviour: selfies/* expires after a day. Left unset in the
+      # local and deploy/ stacks, where the script skips the rule entirely.
+      S3_SELFIE_EXPIRE_DAYS: ${S3_SELFIE_EXPIRE_DAYS:-1}
+    volumes:
+      # The one provisioning path, shared with deploy/compose.yml and docker-compose.yml.
+      - ./deploy/scripts/minio-provision.sh:/provision.sh:ro
+    entrypoint: ["/bin/sh", "/provision.sh"]
     restart: "no"
 
   mailpit:

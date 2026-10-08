@@ -18,7 +18,7 @@ import { appendFile, mkdir, readdir, readFile, stat, writeFile } from "node:fs/p
 import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { DeleteObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
-import { jobDedupeKey, objectKeys } from "@rephoto/contracts";
+import { DEFAULT_ALBUM_SLUG, jobDedupeKey, objectKeys } from "@rephoto/contracts";
 import { createSql, DuplicateKeyError, PostgresDatabase } from "@rephoto/db";
 import type { ImageContentType } from "@rephoto/db";
 
@@ -35,6 +35,8 @@ Required:
   --photographer <email>  Photographer e-mail; created and added to the event when missing
 
 Options:
+  --album <slug>          Album of the event the photos land in (default "ufficiale", the
+                          official album every event gets from migration 009)
   --parallel <n>          Files in flight at once (default 8)
   --rate <photos/s>       Cap on starts per second (default unlimited)
   --synth <n>             For every real photo also import n synthetic copies: same pixels, random
@@ -50,13 +52,17 @@ Options:
 Environment (same names as api/worker): DATABASE_URL, S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY,
 S3_SECRET_KEY, S3_REGION (default eu-central-1), S3_FORCE_PATH_STYLE.
 
-Manifest statuses: uploaded | duplicate (same sha256 already in the event) | error | dry-run.
+Manifest statuses: uploaded | duplicate (same sha256 already in the SAME album) | error | dry-run.
+Dedup is per album since v6 (photos unique (album_id, sha256)): the same bytes may exist once
+in the official album and once in a crowd album.
 `;
 
 type Options = {
   dir: string;
   event: string;
   photographer: string;
+  /** v6: album slug within the event; the official album when not given. */
+  album: string;
   parallel: number;
   rate: number | null;
   synth: number;
@@ -75,6 +81,7 @@ function parseOptions(argv: string[]): Options | null {
       dir: { type: "string" },
       event: { type: "string" },
       photographer: { type: "string" },
+      album: { type: "string", default: DEFAULT_ALBUM_SLUG },
       parallel: { type: "string", default: "8" },
       rate: { type: "string" },
       synth: { type: "string", default: "0" },
@@ -110,6 +117,7 @@ function parseOptions(argv: string[]): Options | null {
     dir: resolve(values.dir as string),
     event: values.event as string,
     photographer: (values.photographer as string).toLowerCase(),
+    album: (values.album as string).trim() || DEFAULT_ALBUM_SLUG,
     parallel: Math.max(1, Math.floor(int(values.parallel, "parallel", 1) ?? 8)),
     rate: int(values.rate, "rate", 0.001),
     synth: Math.floor(int(values.synth, "synth", 0) ?? 0),
@@ -328,6 +336,7 @@ async function main(): Promise<void> {
     }
     console.log(
       `plan: ${items.length} photos, ${(total / 1024 / 1024).toFixed(1)} MiB, event=${options.event}, photographer=${options.photographer}` +
+        `, album=${options.album}` +
         (options.convert ? ", convert" : "") +
         (options.tags.length ? `, tags=${options.tags.join(",")}` : "") +
         ` (${((Date.now() - started) / 1000).toFixed(1)} s)`,
@@ -352,6 +361,22 @@ async function main(): Promise<void> {
       console.log(`created photographer ${photographer.email} (${photographer.id})`);
     }
     await db.addEventPhotographer(event.id, photographer.id);
+
+    // v6: every photo belongs to an album (`photos.album_id`, migration 009) and dedup is
+    // per album, so the album is resolved once, up front, and a wrong slug stops the run
+    // before a single object is written.
+    const album = await db.findAlbumBySlug(event.id, options.album);
+    if (!album) {
+      throw new Error(
+        `album not found: ${options.album} in event ${options.event} ` +
+          `(the official album is "${DEFAULT_ALBUM_SLUG}"; create others from the admin console)`,
+      );
+    }
+    if (album.kind === "crowd") {
+      console.warn(
+        `album ${album.slug} is a crowd album: it never gets face recognition (decision 2)`,
+      );
+    }
 
     // photos.filename / photos.tags arrive with migration 007; fill them when present.
     const columns = await sql<{ column_name: string }[]>`
@@ -399,7 +424,7 @@ async function main(): Promise<void> {
         ({ sha256, bytes } = await sha256Stream(item.path));
       }
 
-      const existing = await db.findPhotoBySha(event.id, sha256);
+      const existing = await db.findPhotoByAlbumSha(album.id, sha256);
       if (existing) {
         return { name: item.name, sha256, photoId: existing.id, status: "duplicate", bytes, ms: Date.now() - t0 };
       }
@@ -425,12 +450,13 @@ async function main(): Promise<void> {
           contentType,
           bytes,
           originalStatus: "present",
+          albumId: album.id,
         });
       } catch (error) {
         if (!(error instanceof DuplicateKeyError)) throw error;
         // Same bytes landed first under a parallel slot: the object we wrote is unreferenced.
         await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: originalKey })).catch(() => undefined);
-        const winner = await db.findPhotoBySha(event.id, sha256);
+        const winner = await db.findPhotoByAlbumSha(album.id, sha256);
         return { name: item.name, sha256, photoId: winner?.id ?? null, status: "duplicate", bytes, ms: Date.now() - t0 };
       }
       if (hasFilename || hasTags) {

@@ -760,36 +760,6 @@ test("a reset payload without an actor is invalid and fails terminally", async (
   assert.equal(f.logs.at(-1)?.outcome, "invalid");
 });
 
-test("a public upload derives thumb+web, is marked indexed, and never touches the face engine", async () => {
-  const f = await fixture();
-  const photoId = randomUUID();
-  const bytes = new Uint8Array(await solidPng(10, 20, 30, 24));
-  const originalKey = objectKeys.original(f.eventId, photoId);
-  await f.db.insertPhoto({
-    id: photoId,
-    eventId: f.eventId,
-    photographerId: f.photographerId,
-    collection: "public",
-    sha256: sha256(bytes),
-    originalKey,
-    contentType: "image/png",
-    bytes: bytes.byteLength,
-  });
-  await f.objects.put(originalKey, bytes, "image/png");
-  await f.queue.enqueue("derive", { photoId });
-  await drain(f.deps);
-
-  const photo = await f.db.findPhoto(photoId);
-  assert.equal(photo?.status, "indexed", "public photos reach `indexed` without the face engine");
-  // The core privacy guarantee: no biometric work, no face rows, no attach.
-  assert.equal(f.faces.indexedPhotoIds.includes(photoId), false, "public photo never indexed by the engine");
-  assert.equal((await f.db.findFaceRowsByPhoto(photoId)).length, 0, "public photo has no face rows");
-  // Derivatives still exist so the public gallery can render it.
-  const derivatives = await f.db.listDerivatives(photoId);
-  assert.ok(derivatives.some((d) => d.kind === "thumb"));
-  assert.ok(derivatives.some((d) => d.kind === "web"));
-});
-
 test("liveness rejection records the `liveness` reason on the gallery", async () => {
   const f = await fixture({ LIVENESS_CHECK: true });
   f.deps.faces = {

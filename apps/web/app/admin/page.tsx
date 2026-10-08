@@ -14,10 +14,41 @@ import { StatusSection } from "@/components/admin/status";
 import { ExportSection } from "@/components/admin/export";
 import { ResetSection } from "@/components/admin/reset";
 import { ManageSection } from "@/components/admin/manage";
+// v6 D (agent D): admin console — albums, event codes, moderation, live status,
+// participants, operations.
+import { AlbumsSection } from "@/components/admin/albums";
+import { CodesSection } from "@/components/admin/codes";
+import { LiveSection } from "@/components/admin/live";
+import { ModerationSection } from "@/components/admin/moderation";
+import { OpsSection } from "@/components/admin/ops";
+import { ParticipantsSection } from "@/components/admin/participants";
+import { RetentionSection } from "@/components/admin/retention"; // v6 G (agent G)
 
-type Section = "eventi" | "link" | "gallerie" | "foto" | "stato" | "esporta" | "gestione" | "reset";
+type Section =
+  | "eventi"
+  | "link"
+  | "gallerie"
+  | "foto"
+  | "stato"
+  | "esporta"
+  | "gestione"
+  | "reset"
+  // v6 D (agent D)
+  | "diretta"
+  | "album"
+  | "codici"
+  | "moderazione"
+  | "partecipanti"
+  | "operazioni";
 
 const SECTIONS: Array<{ key: Section; label: string }> = [
+  // v6 D: the event-day screens come first — codes before the doors open, then the live
+  // status and the moderation queue.
+  { key: "diretta", label: "Diretta" },
+  { key: "codici", label: "Codici evento" },
+  { key: "album", label: "Album" },
+  { key: "moderazione", label: "Moderazione" },
+  { key: "partecipanti", label: "Partecipanti" },
   { key: "stato", label: "Stato" },
   { key: "eventi", label: "Eventi" },
   { key: "link", label: "Link di accesso" },
@@ -26,12 +57,15 @@ const SECTIONS: Array<{ key: Section; label: string }> = [
   { key: "esporta", label: "Esporta" },
   { key: "gestione", label: "Gestione" },
   { key: "reset", label: "Reset" },
+  { key: "operazioni", label: "Operazioni" },
 ];
 
+const DEFAULT_SECTION: Section = "diretta";
+
 function readHash(): Section {
-  if (typeof window === "undefined") return "stato";
+  if (typeof window === "undefined") return DEFAULT_SECTION;
   const raw = window.location.hash.replace(/^#/, "");
-  return SECTIONS.some((section) => section.key === raw) ? (raw as Section) : "stato";
+  return SECTIONS.some((section) => section.key === raw) ? (raw as Section) : DEFAULT_SECTION;
 }
 
 export default function AdminPage() {
@@ -50,7 +84,7 @@ export default function AdminPage() {
  */
 function AdminHome() {
   const runtimeSlug = useEventSlug();
-  const [section, setSection] = useState<Section>("stato");
+  const [section, setSection] = useState<Section>(DEFAULT_SECTION);
   const [events, setEvents] = useState<AdminEvent[] | null>(null);
   const [eventsError, setEventsError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -121,6 +155,7 @@ function AdminHome() {
       </nav>
 
       {section === "stato" ? <StatusSection /> : null}
+      {section === "stato" ? <RetentionSection /> : null}
       {section === "eventi" ? (
         <EventsSection
           events={events}
@@ -136,6 +171,12 @@ function AdminHome() {
       {section === "esporta" ? <ExportSection event={selected} /> : null}
       {section === "gestione" ? <ManageSection event={selected} onChanged={refresh} /> : null}
       {section === "reset" ? <ResetSection event={selected} onDone={refresh} /> : null}
+      {section === "diretta" ? <LiveSection event={selected} /> : null}
+      {section === "codici" ? <CodesSection event={selected} /> : null}
+      {section === "album" ? <AlbumsSection event={selected} /> : null}
+      {section === "moderazione" ? <ModerationSection event={selected} /> : null}
+      {section === "partecipanti" ? <ParticipantsSection event={selected} /> : null}
+      {section === "operazioni" ? <OpsSection /> : null}
     </div>
   );
 }

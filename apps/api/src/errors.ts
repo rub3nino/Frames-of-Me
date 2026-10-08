@@ -12,11 +12,37 @@ export const MESSAGES = {
   rateLimited: "Troppe richieste. Riprova più tardi.",
   selfieNotKept: "Il selfie non è stato conservato: serve KEEP_SELFIES e un nuovo selfie.",
   internal: "Errore interno.",
+  // v6 (agent B): self-registration and Google login.
+  eventCodeInvalid: "Codice evento non valido, scaduto o esaurito.",
+  accountExists: "Esiste già un account con questa email. Accedi o reimposta la password.",
+  passwordTooShort: "La password deve avere almeno 10 caratteri.",
+  googleUnavailable: "Accesso con Google non disponibile.",
+  // v6 (agent D): admin console. The two album rules are enforced by the database; these
+  // are the messages the console shows when it hits them anyway.
+  albumCrowdNoRecognition:
+    "Un album «di tutti» non può usare il riconoscimento dei volti. Crea un album ufficiale.",
+  albumRecognitionLocked:
+    "Il riconoscimento non è più modificabile: l'album ha già la prima foto. Crea un nuovo album.",
+  eventCodeExists: "Questo codice esiste già per l'evento.",
+  opsLinksMissing: "Nessun collegamento configurato (OPS_LINK_*).",
+  // v6 (agent C): crowd upload, the uploads_open kill switch and moderation.
+  uploadsClosed: "I caricamenti per questo album sono chiusi.",
+  uploadNotCrowd: "Questo album non accetta caricamenti dai partecipanti.",
+  uploadQuotaReached: "Hai raggiunto il numero massimo di foto per questo album.",
+  photoNotVisible: "Questa foto non è più disponibile.",
+  // v6 (agent E): tagging. The three refusals below are deliberately vague about *why*:
+  // "non taggabile" and "già taggato o rifiutato" must not become an oracle that tells a
+  // stranger whether a given person is at the event or has refused a tag.
+  notEventMember: "Non risulti tra i partecipanti di questo evento.",
+  tagNotAllowed: "Questa persona non può essere taggata.",
+  tagExists: "Il tag non è stato aggiunto.",
+  tagNameRequired: "Scegli un nome visibile prima di attivare i tag.",
 } as const;
 
 export class ApiError extends Error {
   constructor(
-    readonly status: 400 | 401 | 403 | 404 | 409 | 429,
+    // 423 Locked is the `uploads_open = false` kill switch of v6 C2 (agent C).
+    readonly status: 400 | 401 | 403 | 404 | 409 | 423 | 429,
     message: string,
   ) {
     super(message);

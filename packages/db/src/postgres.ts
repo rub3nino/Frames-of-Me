@@ -1,13 +1,24 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { JobType, PhotoCollection, PhotoStatus, Role } from "@rephoto/contracts";
+import type { JobType, PhotoStatus, Role } from "@rephoto/contracts";
 import {
   JOB_MAX_ATTEMPTS,
   JOB_PRIORITY,
+  // v6 (agent C): the reasons that count toward the auto-pending threshold. `not_me` is
+  // excluded on purpose; the constant's own comment says why.
+  MODERATION_COUNTING_REASONS,
   STALE_RUNNING_MS,
   THROTTLE_REQUEUE_SECONDS,
 } from "@rephoto/contracts";
-import { isUniqueViolation, type Sql } from "./sql.js";
-import { DuplicateKeyError } from "./types.js";
+import { inTransaction, isUniqueViolation, type Sql } from "./sql.js";
+import {
+  AlbumRecognitionLockedError,
+  AlbumRecognitionNotAllowedError,
+  DuplicateKeyError,
+  // v6 (agent E): tagging
+  nextTagConsent,
+  normalizeDisplayName,
+  TAG_SEARCH_MIN_PREFIX,
+} from "./types.js";
 import type {
   AnchoredGallery,
   ClaimedJob,
@@ -33,6 +44,7 @@ import type {
   UserRow,
   EventWithCounts,
   FeedbackExportRow,
+  FeedbackSource,
   FeedbackVerdict,
   GalleryExportRow,
   GalleryListCursor,
@@ -44,27 +56,65 @@ import type {
   PhotoAdminFilters,
   PhotoAdminRow,
   PhotoDetail,
-  PublicGalleryItem,
-  PublicGalleryCursor,
-  ModerationStatus,
   BBox,
   ClaimOptions,
   GalleryMatchPatch,
   MatchHitInsert,
   MatchRunInsert,
   QueryVectorGallery,
+  AlbumInsert,
+  AlbumKind,
+  AlbumModeration,
+  AlbumPatch,
+  AlbumRow,
+  AlbumVisibility,
+  // v6 (agent B)
+  EventCodeRow,
+  IdentityProvider,
+  // v6 (agent D): admin console
+  AlbumPhotographerRow,
+  EventCodePatch,
+  EventStatus,
+  EventStatusAlbum,
+  // v6 (agent C)
+  AlbumPhoto,
+  ModerationItem,
+  ModerationState,
+  ReportReason,
+  ReportRow,
+  // v6 (agent G)
+  ConsentState,
+  ConsentWithdrawal,
+  RetentionAlarmMail,
+  RetentionOutcome,
+  RetentionStatusRow,
+  // v6 (agent E): event membership + tagging
+  AuditEntryRow,
+  EventMemberRow,
+  EventMemberSource,
+  PhotoTagRow,
+  PhotoTagState,
+  PhotoTagWithNameRow,
+  TagProfileRow,
+  TaggableUserRow,
+  TaggedPhotoRow,
 } from "./types.js";
 
 const EVENT_ID = "00000000-0000-4000-8000-000000000001";
 const ADMIN_ID = "00000000-0000-4000-8000-000000000002";
 const PHOTOGRAPHER_ID = "00000000-0000-4000-8000-000000000003";
 const INVITE_ID = "00000000-0000-4000-8000-000000000004";
+/** v6: slug of the official album every event gets (migration 009). */
+const DEFAULT_ALBUM_SLUG = "ufficiale";
 
 const PHOTO_COLUMNS =
-  "id, event_id, photographer_id, uploader_id, collection, sha256, status, original_key, content_type, bytes, original_status, indexed_at, error, created_at";
+  "id, event_id, photographer_id, sha256, status, original_key, content_type, bytes, original_status, indexed_at, error, created_at, album_id, moderation_state";
+/** v6: `albums` columns, in the order {@link mapAlbum} reads them. */
+const ALBUM_COLUMNS =
+  "id, event_id, slug, name, kind, recognition, moderation, visibility, max_photos_per_user, uploads_open, retention_days, first_upload_at, created_at";
 const EVENT_COLUMNS = "id, slug, name, retention_days, access, created_at";
 const UPLOAD_COLUMNS =
-  "id, event_id, photographer_id, uploader_id, collection, s3_upload_id, object_key, sha256, content_type, status, bytes, stage, photo_id, original_content_type, original_bytes, filename, tags, created_at";
+  "id, event_id, photographer_id, s3_upload_id, object_key, sha256, content_type, status, bytes, stage, photo_id, original_content_type, original_bytes, filename, tags, created_at, album_id";
 const PHOTO_ADMIN_COLUMNS = `${PHOTO_COLUMNS}, filename, tags`;
 
 function asContentType(value: string): ImageContentType {
@@ -114,6 +164,19 @@ export class PostgresDatabase implements Database {
 
   async ping(): Promise<void> {
     await this.sql`select 1`;
+  }
+
+  /**
+   * One `begin`/`commit` on one pooled connection. The handle handed to `fn` is another
+   * `PostgresDatabase` over the transaction's `sql`, so every existing method works
+   * inside it unchanged; nothing else in this class knows a transaction exists.
+   *
+   * `postgres` rolls back and re-throws if `fn` throws, and a connection that dies
+   * mid-transaction is rolled back by Postgres itself — which is the whole point: an
+   * interrupted registration cannot leave a claimed event code behind.
+   */
+  async transaction<T>(fn: (tx: Database) => Promise<T>): Promise<T> {
+    return await inTransaction(this.sql, (tx) => fn(new PostgresDatabase(tx)));
   }
 
   async findEventBySlug(slug: string): Promise<EventRow | null> {
@@ -178,7 +241,16 @@ export class PostgresDatabase implements Database {
   }
 
   async setUserPassword(userId: string, passwordHash: string): Promise<void> {
-    await this.sql`update users set password_hash = ${passwordHash} where id = ${userId}`;
+    // v6 hardening (agent H): a new password retires every outstanding reset link of that
+    // user, in the same transaction. Doing it here rather than at the call sites means no
+    // future password-changing route can forget it. See migration 016.
+    await inTransaction(this.sql, async (tx) => {
+      await tx`update users set password_hash = ${passwordHash} where id = ${userId}`;
+      await tx`
+        update password_reset_tokens set used_at = now()
+        where user_id = ${userId} and used_at is null
+      `;
+    });
   }
 
   async findUserForLogin(
@@ -281,14 +353,6 @@ export class PostgresDatabase implements Database {
     return rows[0]?.count ?? 0;
   }
 
-  async countUploadsSince(userId: string, eventId: string, since: Date): Promise<number> {
-    const rows = await this.sql<{ count: number }[]>`
-      select count(*)::int as count from upload_sessions
-      where uploader_id = ${userId} and event_id = ${eventId} and created_at >= ${since}
-    `;
-    return rows[0]?.count ?? 0;
-  }
-
   async findPhotoBySha(eventId: string, sha256: string): Promise<PhotoRow | null> {
     const rows = await this.sql<PhotoSql[]>`
       select ${this.sql.unsafe(PHOTO_COLUMNS)}
@@ -297,6 +361,14 @@ export class PostgresDatabase implements Database {
     return rows[0] ? mapPhoto(rows[0]) : null;
   }
 
+  /**
+   * Still EVENT-wide, unlike {@link findPhotoByAlbumSha}: it backs
+   * `GET /v1/uploads/lookup`, which only knows an event. Since v6 the same bytes can exist
+   * once per album (`photos unique (album_id, sha256)`), so with several albums per event
+   * this can return any one of them. Harmless today -- the photographer upload route only
+   * ever writes into the event's official album -- but a lookup that has to be exact needs
+   * an album id in the query.
+   */
   async findOwnPhotoBySha(
     photographerId: string,
     eventId: string,
@@ -313,9 +385,7 @@ export class PostgresDatabase implements Database {
   async insertUploadSession(input: {
     id: string;
     eventId: string;
-    photographerId: string | null;
-    uploaderId?: string;
-    collection?: PhotoCollection;
+    photographerId: string;
     s3UploadId: string | null;
     objectKey: string;
     sha256: string;
@@ -327,17 +397,26 @@ export class PostgresDatabase implements Database {
     originalBytes?: number | null;
     filename?: string | null;
     tags?: string[];
+    albumId?: string | null;
   }): Promise<void> {
+    // v6 (agent C): without an explicit album the session targets the event's official
+    // album, the same resolution `insertPhoto` does, so `complete` always knows where the
+    // photo belongs (`upload_sessions.album_id`, migration 010).
     await this.sql`
       insert into upload_sessions (
-        id, event_id, photographer_id, uploader_id, collection, s3_upload_id, object_key, sha256, content_type, status, bytes,
-        stage, photo_id, original_content_type, original_bytes, filename, tags
+        id, event_id, photographer_id, s3_upload_id, object_key, sha256, content_type, status, bytes,
+        stage, photo_id, original_content_type, original_bytes, filename, tags, album_id
       ) values (
-        ${input.id}, ${input.eventId}, ${input.photographerId}, ${input.uploaderId ?? input.photographerId}, ${input.collection ?? "official"}, ${input.s3UploadId},
+        ${input.id}, ${input.eventId}, ${input.photographerId}, ${input.s3UploadId},
         ${input.objectKey}, ${input.sha256}, ${input.contentType}, 'open', ${input.bytes},
         ${input.stage ?? "original"}, ${input.photoId ?? null},
         ${input.originalContentType ?? null}, ${input.originalBytes ?? null},
-        ${input.filename ?? null}, ${input.tags ?? []}::text[]
+        ${input.filename ?? null}, ${input.tags ?? []}::text[],
+        coalesce(
+          ${input.albumId ?? null}::uuid,
+          (select a.id from albums a
+            where a.event_id = ${input.eventId} and a.slug = ${DEFAULT_ALBUM_SLUG})
+        )
       )
     `;
   }
@@ -378,16 +457,21 @@ export class PostgresDatabase implements Database {
     // The cursor round-trips through a JS Date (millisecond precision) while created_at keeps
     // microseconds: order and compare on the truncated value so rows sharing a millisecond
     // are neither skipped nor repeated.
+    // The explicit 'UTC' third argument is what makes the expression indexable: the two-argument
+    // date_trunc(text, timestamptz) is STABLE (it reads the session TimeZone), so Postgres refuses
+    // it in an index expression; the three-argument form is IMMUTABLE. For a sub-second unit the
+    // value is identical in every real zone (all offsets are whole minutes). The matching indexes
+    // are in migration 014; without them this ordering could not use any index (v6 F3).
     const rows = await this.sql<UploadSql[]>`
       select ${this.sql.unsafe(UPLOAD_COLUMNS)}
       from upload_sessions
       where photographer_id = ${photographerId} and event_id = ${eventId}
         ${
           cursor
-            ? this.sql`and (date_trunc('milliseconds', created_at), id) < (${cursor.createdAt}, ${cursor.id}::uuid)`
+            ? this.sql`and (date_trunc('milliseconds', created_at, 'UTC'), id) < (${cursor.createdAt}, ${cursor.id}::uuid)`
             : this.sql``
         }
-      order by date_trunc('milliseconds', created_at) desc, id desc
+      order by date_trunc('milliseconds', created_at, 'UTC') desc, id desc
       limit ${input.limit + 1}
     `;
     const items = rows.slice(0, input.limit).map(mapUpload);
@@ -444,9 +528,7 @@ export class PostgresDatabase implements Database {
   async insertPhoto(input: {
     id: string;
     eventId: string;
-    photographerId: string | null;
-    uploaderId?: string;
-    collection?: PhotoCollection;
+    photographerId: string;
     sha256: string;
     originalKey: string;
     contentType: ImageContentType;
@@ -454,17 +536,25 @@ export class PostgresDatabase implements Database {
     originalStatus?: OriginalStatus;
     filename?: string | null;
     tags?: string[];
+    albumId?: string;
   }): Promise<PhotoRow> {
     try {
+      // v6: without an explicit album the photo lands in the event's official album, which
+      // every event has (migration 009 backfills it and a trigger adds it to new events).
       const rows = await this.sql<PhotoSql[]>`
         insert into photos (
-          id, event_id, photographer_id, uploader_id, collection, sha256, status, original_key, content_type, bytes, original_status,
-          filename, tags
+          id, event_id, photographer_id, sha256, status, original_key, content_type, bytes, original_status,
+          filename, tags, album_id
         )
         values (
-          ${input.id}, ${input.eventId}, ${input.photographerId}, ${input.uploaderId ?? input.photographerId}, ${input.collection ?? "official"}, ${input.sha256},
+          ${input.id}, ${input.eventId}, ${input.photographerId}, ${input.sha256},
           'uploaded', ${input.originalKey}, ${input.contentType}, ${input.bytes},
-          ${input.originalStatus ?? "present"}, ${input.filename ?? null}, ${input.tags ?? []}::text[]
+          ${input.originalStatus ?? "present"}, ${input.filename ?? null}, ${input.tags ?? []}::text[],
+          coalesce(
+            ${input.albumId ?? null}::uuid,
+            (select a.id from albums a
+              where a.event_id = ${input.eventId} and a.slug = ${DEFAULT_ALBUM_SLUG})
+          )
         )
         returning ${this.sql.unsafe(PHOTO_COLUMNS)}
       `;
@@ -548,65 +638,6 @@ export class PostgresDatabase implements Database {
     return rows.map(mapPhoto);
   }
 
-  async listPublicPhotosByIds(eventId: string, photoIds: string[]): Promise<PhotoRow[]> {
-    if (photoIds.length === 0) return [];
-    const rows = await this.sql<PhotoSql[]>`
-      select ${this.sql.unsafe(PHOTO_COLUMNS)} from photos
-      where event_id = ${eventId} and collection = 'public' and id = any(${photoIds}::uuid[])
-    `;
-    return rows.map(mapPhoto);
-  }
-
-  async reportPhoto(input: { photoId: string; reporterId: string; reason: string }): Promise<boolean> {
-    const rows = await this.sql<{ id: string }[]>`
-      insert into photo_reports (photo_id, reporter_id, reason)
-      values (${input.photoId}, ${input.reporterId}, ${input.reason})
-      on conflict (photo_id, reporter_id) do nothing returning id
-    `;
-    return rows.length > 0;
-  }
-
-  async setPhotoModeration(input: { photoId: string; status: ModerationStatus; reason: string | null; actorId: string }): Promise<void> {
-    await this.sql`
-      insert into photo_moderation (photo_id, status, reason, updated_by)
-      values (${input.photoId}, ${input.status}, ${input.reason}, ${input.actorId})
-      on conflict (photo_id) do update set status = excluded.status, reason = excluded.reason,
-        updated_by = excluded.updated_by, updated_at = now()
-    `;
-  }
-
-  async listPublicGallery(
-    eventId: string,
-    input: { limit: number; cursor?: PublicGalleryCursor },
-  ): Promise<PublicGalleryItem[]> {
-    const rows = await this.sql<{
-      photo_id: string;
-      created_at: Date;
-      thumb_key: string;
-      web_key: string;
-      original_status: OriginalStatus;
-    }[]>`
-      select p.id as photo_id, p.created_at, t.s3_key as thumb_key, w.s3_key as web_key,
-             p.original_status
-      from photos p
-      join derivatives t on t.photo_id = p.id and t.kind = 'thumb'
-      join derivatives w on w.photo_id = p.id and w.kind = 'web'
-      left join photo_moderation m on m.photo_id = p.id
-      where p.event_id = ${eventId} and p.collection = 'public' and p.status = 'indexed'
-        and coalesce(m.status, 'approved') = 'approved'
-        ${input.cursor ? this.sql`and (date_trunc('milliseconds', p.created_at), p.id) < (${input.cursor.createdAt}, ${input.cursor.photoId}::uuid)` : this.sql``}
-      order by date_trunc('milliseconds', p.created_at) desc, p.id desc
-      limit ${input.limit}
-    `;
-    return rows.map((row) => ({
-      photoId: row.photo_id,
-      createdAt: row.created_at,
-      thumbKey: row.thumb_key,
-      webKey: row.web_key,
-      originalReady: row.original_status === "present",
-    }));
-  }
-
   async listOwnedPhotos(userId: string, eventId: string, photoIds: string[]): Promise<PhotoRow[]> {
     if (photoIds.length === 0) return [];
     const rows = await this.sql<PhotoSql[]>`
@@ -650,7 +681,7 @@ export class PostgresDatabase implements Database {
   }
 
   async replaceFaces(photoId: string, eventId: string, faces: FaceInsert[]): Promise<void> {
-    await this.sql.begin(async (tx) => {
+    await inTransaction(this.sql, async (tx) => {
       await tx`delete from gallery_items where face_id in (select id from faces where photo_id = ${photoId})`;
       await tx`delete from faces where photo_id = ${photoId}`;
       for (const face of faces) {
@@ -721,7 +752,7 @@ export class PostgresDatabase implements Database {
     items: Array<{ photoId: string; faceId: string; score: number }>,
     anchors: string[],
   ): Promise<void> {
-    await this.sql.begin(async (tx) => {
+    await inTransaction(this.sql, async (tx) => {
       const rows = await tx<{ id: string }[]>`
         insert into galleries (user_id, event_id, anchor_face_ids, matched_at, notified_at)
         values (${userId}, ${eventId}, ${anchors}::text[], now(), now())
@@ -822,6 +853,10 @@ export class PostgresDatabase implements Database {
       join derivatives t on t.photo_id = gi.photo_id and t.kind = 'thumb'
       join derivatives w on w.photo_id = gi.photo_id and w.kind = 'web'
       where g.user_id = ${userId} and g.event_id = ${eventId}
+        -- v6 (agent C): a photo withheld by moderation leaves every gallery until a
+        -- moderator rules (C2, the report threshold). moderation_state defaults to
+        -- 'approved' (migration 010), so this clause changes nothing for v5 data.
+        and p.moderation_state = 'approved'
         ${
           cursor
             ? this.sql`and (gi.score < ${cursor.score} or (gi.score = ${cursor.score} and gi.photo_id > ${cursor.photoId}::uuid))`
@@ -834,9 +869,11 @@ export class PostgresDatabase implements Database {
       select count(*)::int as count
       from gallery_items gi
       join galleries g on g.id = gi.gallery_id
+      join photos p on p.id = gi.photo_id
       join derivatives t on t.photo_id = gi.photo_id and t.kind = 'thumb'
       join derivatives w on w.photo_id = gi.photo_id and w.kind = 'web'
       where g.user_id = ${userId} and g.event_id = ${eventId}
+        and p.moderation_state = 'approved'
     `;
     return {
       total: totals[0]?.count ?? 0,
@@ -946,7 +983,7 @@ export class PostgresDatabase implements Database {
   }
 
   async deletePhoto(photoId: string): Promise<void> {
-    await this.sql.begin(async (tx) => {
+    await inTransaction(this.sql, async (tx) => {
       await tx`delete from gallery_items where photo_id = ${photoId}`;
       await tx`delete from faces where photo_id = ${photoId}`;
       await tx`delete from face_index where photo_id = ${photoId}`;
@@ -957,7 +994,7 @@ export class PostgresDatabase implements Database {
   async deleteParticipant(userId: string): Promise<boolean> {
     const user = await this.findUserById(userId);
     if (!user || user.role !== "participant") return false;
-    await this.sql.begin(async (tx) => {
+    await inTransaction(this.sql, async (tx) => {
       await tx`delete from gallery_items where gallery_id in (select id from galleries where user_id = ${userId})`;
       await tx`delete from galleries where user_id = ${userId}`;
       await tx`delete from consents where user_id = ${userId}`;
@@ -1132,7 +1169,7 @@ export class PostgresDatabase implements Database {
   async claimJob(options: ClaimOptions = {}): Promise<ClaimedJob | null> {
     const staleSeconds = STALE_RUNNING_MS / 1000;
     const excluded = [...(options.excludeTypes ?? [])];
-    return this.sql.begin(async (tx) => {
+    return inTransaction(this.sql, async (tx) => {
       await tx`
         update jobs
         set status = 'queued', claimed_at = null
@@ -1328,7 +1365,7 @@ export class PostgresDatabase implements Database {
   }
 
   async deleteGalleriesByEvent(eventId: string): Promise<number> {
-    return this.sql.begin(async (tx) => {
+    return inTransaction(this.sql, async (tx) => {
       await tx`
         delete from gallery_items
         where gallery_id in (select id from galleries where event_id = ${eventId})
@@ -1484,15 +1521,15 @@ export class PostgresDatabase implements Database {
       sort_at: Date;
     }[]>`
       select g.user_id, u.email, g.matched_at, g.last_match_reason as reason,
-             date_trunc('milliseconds', coalesce(g.matched_at, 'epoch'::timestamptz)) as sort_at,
+             date_trunc('milliseconds', coalesce(g.matched_at, 'epoch'::timestamptz), 'UTC') as sort_at,
              (select count(*)::int from gallery_items gi where gi.gallery_id = g.id) as total
       from galleries g
       join users u on u.id = g.user_id
       where g.event_id = ${eventId}
         ${
           cursor
-            ? this.sql`and (date_trunc('milliseconds', coalesce(g.matched_at, 'epoch'::timestamptz)) < ${cursor.matchedAt}
-                 or (date_trunc('milliseconds', coalesce(g.matched_at, 'epoch'::timestamptz)) = ${cursor.matchedAt} and g.user_id > ${cursor.userId}::uuid))`
+            ? this.sql`and (date_trunc('milliseconds', coalesce(g.matched_at, 'epoch'::timestamptz), 'UTC') < ${cursor.matchedAt}
+                 or (date_trunc('milliseconds', coalesce(g.matched_at, 'epoch'::timestamptz), 'UTC') = ${cursor.matchedAt} and g.user_id > ${cursor.userId}::uuid))`
             : this.sql``
         }
       order by sort_at desc, g.user_id asc
@@ -1641,10 +1678,10 @@ export class PostgresDatabase implements Database {
         ${filters.tag ? sql`and ${filters.tag} = any(tags)` : sql``}
         ${
           cursor
-            ? sql`and (date_trunc('milliseconds', created_at), id) < (${cursor.createdAt}, ${cursor.id}::uuid)`
+            ? sql`and (date_trunc('milliseconds', created_at, 'UTC'), id) < (${cursor.createdAt}, ${cursor.id}::uuid)`
             : sql``
         }
-      order by date_trunc('milliseconds', created_at) desc, id desc
+      order by date_trunc('milliseconds', created_at, 'UTC') desc, id desc
       limit ${input.limit + 1}
     `;
     const items = rows.slice(0, input.limit).map(mapPhotoAdmin);
@@ -1663,7 +1700,7 @@ export class PostgresDatabase implements Database {
   }
 
   async deleteGallery(userId: string, eventId: string): Promise<boolean> {
-    return this.sql.begin(async (tx) => {
+    return inTransaction(this.sql, async (tx) => {
       const rows = await tx<{ id: string }[]>`
         delete from galleries where user_id = ${userId} and event_id = ${eventId} returning id
       `;
@@ -1677,26 +1714,33 @@ export class PostgresDatabase implements Database {
     photoId: string;
     verdict: FeedbackVerdict;
     scoreAtTime: number | null;
+    source: FeedbackSource;
   }): Promise<void> {
+    // `source` moves with the verdict on a conflict (migration 018): the row records the
+    // judgement that stands, and the flow that produced THAT judgement. A person who refused
+    // a tag and later rules on the same photo in their gallery leaves a `recognition` row,
+    // which is correct — that last ruling is a statement about the matcher.
     await this.sql`
-      insert into gallery_feedback (user_id, event_id, photo_id, verdict, score_at_time)
-      values (${input.userId}, ${input.eventId}, ${input.photoId}, ${input.verdict}, ${input.scoreAtTime})
+      insert into gallery_feedback (user_id, event_id, photo_id, verdict, score_at_time, source)
+      values (${input.userId}, ${input.eventId}, ${input.photoId}, ${input.verdict}, ${input.scoreAtTime}, ${input.source})
       on conflict (user_id, event_id, photo_id) do update
-        set verdict = excluded.verdict, score_at_time = excluded.score_at_time, created_at = now()
+        set verdict = excluded.verdict,
+            score_at_time = excluded.score_at_time,
+            source = excluded.source,
+            created_at = now()
     `;
   }
 
   async listFeedback(
     userId: string,
     eventId: string,
-    photoIds?: string[],
+    photoIds?: readonly string[],
   ): Promise<Array<{ photoId: string; verdict: FeedbackVerdict }>> {
-    if (photoIds !== undefined && photoIds.length === 0) return [];
+    // An empty id list is "this page has no photos": answer without a round trip (v6 F4).
+    if (photoIds && photoIds.length === 0) return [];
     const rows = await this.sql<{ photo_id: string; verdict: FeedbackVerdict }[]>`
-      select photo_id, verdict
-      from gallery_feedback
-      where user_id = ${userId} and event_id = ${eventId}
-        ${photoIds === undefined ? this.sql`` : this.sql`and photo_id = any(${photoIds}::uuid[])`}
+      select photo_id, verdict from gallery_feedback where user_id = ${userId} and event_id = ${eventId}
+        ${photoIds ? this.sql`and photo_id = any(${[...photoIds]}::uuid[])` : this.sql``}
     `;
     return rows.map((row) => ({ photoId: row.photo_id, verdict: row.verdict }));
   }
@@ -1731,10 +1775,10 @@ export class PostgresDatabase implements Database {
         ${input.email ? sql`and u.email = ${input.email}` : sql``}
         ${
           cursor
-            ? sql`and (date_trunc('milliseconds', r.created_at), r.id) < (${cursor.createdAt}, ${cursor.id}::uuid)`
+            ? sql`and (date_trunc('milliseconds', r.created_at, 'UTC'), r.id) < (${cursor.createdAt}, ${cursor.id}::uuid)`
             : sql``
         }
-      order by date_trunc('milliseconds', r.created_at) desc, r.id desc
+      order by date_trunc('milliseconds', r.created_at, 'UTC') desc, r.id desc
       limit ${input.limit + 1}
     `;
     const page = rows.slice(0, input.limit);
@@ -1846,8 +1890,10 @@ export class PostgresDatabase implements Database {
       verdict: FeedbackVerdict;
       score_at_time: number | null;
       created_at: Date;
+      source: FeedbackSource;
     }[]>`
-      select u.email, f.user_id, f.photo_id, p.sha256, p.filename, f.verdict, f.score_at_time, f.created_at
+      select u.email, f.user_id, f.photo_id, p.sha256, p.filename, f.verdict, f.score_at_time,
+             f.created_at, f.source
       from gallery_feedback f
       join users u on u.id = f.user_id
       join photos p on p.id = f.photo_id
@@ -1865,6 +1911,7 @@ export class PostgresDatabase implements Database {
           verdict: row.verdict,
           scoreAtTime: row.score_at_time === null ? null : Number(row.score_at_time),
           createdAt: row.created_at,
+          source: row.source,
         };
       }
     }
@@ -1916,6 +1963,1255 @@ export class PostgresDatabase implements Database {
       })),
     };
   }
+
+  // ---- albums and vector isolation v6 (agent A) -------------------------------------------
+
+  async createAlbum(input: AlbumInsert): Promise<AlbumRow> {
+    let row: AlbumSql | undefined;
+    try {
+      const rows = await this.sql<AlbumSql[]>`
+        insert into albums (
+          id, event_id, slug, name, kind, recognition, moderation, visibility,
+          max_photos_per_user, uploads_open, retention_days
+        )
+        values (
+          coalesce(${input.id ?? null}::uuid, gen_random_uuid()),
+          ${input.eventId}, ${input.slug}, ${input.name}, ${input.kind},
+          ${input.recognition ?? false}, ${input.moderation ?? "post"},
+          ${input.visibility ?? "participants"}, ${input.maxPhotosPerUser ?? null},
+          ${input.uploadsOpen ?? true}, ${input.retentionDays ?? null}
+        )
+        returning ${this.sql.unsafe(ALBUM_COLUMNS)}
+      `;
+      row = rows[0];
+    } catch (error) {
+      throw albumError(error);
+    }
+    if (!row) throw new Error("Album insert failed");
+    const album = mapAlbum(row);
+    if (album.recognition) await this.ensureAlbumVectorIndex(album.id);
+    return album;
+  }
+
+  async findAlbum(id: string): Promise<AlbumRow | null> {
+    const rows = await this.sql<AlbumSql[]>`
+      select ${this.sql.unsafe(ALBUM_COLUMNS)} from albums where id = ${id}
+    `;
+    return rows[0] ? mapAlbum(rows[0]) : null;
+  }
+
+  async findAlbumBySlug(eventId: string, slug: string): Promise<AlbumRow | null> {
+    const rows = await this.sql<AlbumSql[]>`
+      select ${this.sql.unsafe(ALBUM_COLUMNS)} from albums
+      where event_id = ${eventId} and slug = ${slug}
+    `;
+    return rows[0] ? mapAlbum(rows[0]) : null;
+  }
+
+  async listAlbums(eventId: string): Promise<AlbumRow[]> {
+    const rows = await this.sql<AlbumSql[]>`
+      select ${this.sql.unsafe(ALBUM_COLUMNS)} from albums
+      where event_id = ${eventId}
+      order by created_at, id
+    `;
+    return rows.map(mapAlbum);
+  }
+
+  async findDefaultAlbum(eventId: string): Promise<AlbumRow | null> {
+    return this.findAlbumBySlug(eventId, DEFAULT_ALBUM_SLUG);
+  }
+
+  async listRecognitionAlbumIds(eventId: string): Promise<string[]> {
+    const rows = await this.sql<{ id: string }[]>`
+      select id from albums
+      where event_id = ${eventId} and recognition
+      order by created_at, id
+    `;
+    return rows.map((row) => row.id);
+  }
+
+  async updateAlbum(id: string, patch: AlbumPatch): Promise<AlbumRow | null> {
+    let row: AlbumSql | undefined;
+    try {
+      // A `recognition` change after the first upload is refused by the trigger of
+      // migration 009 (SQLSTATE ALBRI), not here: no upload route can side-step it.
+      const rows = await this.sql<AlbumSql[]>`
+        update albums set
+          name = coalesce(${patch.name ?? null}, name),
+          recognition = coalesce(${patch.recognition ?? null}, recognition),
+          moderation = coalesce(${patch.moderation ?? null}, moderation),
+          visibility = coalesce(${patch.visibility ?? null}, visibility),
+          max_photos_per_user = ${
+            patch.maxPhotosPerUser === undefined
+              ? this.sql`max_photos_per_user`
+              : this.sql`${patch.maxPhotosPerUser}::int`
+          },
+          uploads_open = coalesce(${patch.uploadsOpen ?? null}, uploads_open),
+          retention_days = ${
+            patch.retentionDays === undefined
+              ? this.sql`retention_days`
+              : this.sql`${patch.retentionDays}::int`
+          }
+        where id = ${id}
+        returning ${this.sql.unsafe(ALBUM_COLUMNS)}
+      `;
+      row = rows[0];
+    } catch (error) {
+      throw albumError(error);
+    }
+    if (!row) return null;
+    const album = mapAlbum(row);
+    if (album.recognition) await this.ensureAlbumVectorIndex(album.id);
+    return album;
+  }
+
+  async markAlbumFirstUpload(albumId: string, at: Date = new Date()): Promise<void> {
+    await this.sql`
+      update albums set first_upload_at = ${at}
+      where id = ${albumId} and first_upload_at is null
+    `;
+  }
+
+  async findPhotoByAlbumSha(albumId: string, sha256: string): Promise<PhotoRow | null> {
+    const rows = await this.sql<PhotoSql[]>`
+      select ${this.sql.unsafe(PHOTO_COLUMNS)}
+      from photos where album_id = ${albumId} and sha256 = ${sha256}
+    `;
+    return rows[0] ? mapPhoto(rows[0]) : null;
+  }
+
+  /**
+   * The album's partial HNSW index over `face_vectors` (migration 011). A no-op when the
+   * function is absent (a database migrated before 011, or without pgvector).
+   */
+  private async ensureAlbumVectorIndex(albumId: string): Promise<void> {
+    const rows = await this.sql<{ present: boolean }[]>`
+      select to_regprocedure('public.face_vectors_album_index(uuid)') is not null as present
+    `;
+    if (rows[0]?.present !== true) return;
+    await this.sql`select face_vectors_album_index(${albumId})`;
+  }
+
+  // ---- auth v6 (agent B): identities, event codes, lazy e-mail verification -------------
+
+  async findUserByIdentity(
+    provider: IdentityProvider,
+    subject: string,
+  ): Promise<UserRow | null> {
+    const rows = await this.sql<UserSql[]>`
+      select u.id, u.email, u.role, u.created_at
+      from user_identities i join users u on u.id = i.user_id
+      where i.provider = ${provider} and i.subject = ${subject}
+    `;
+    return rows[0] ? mapUser(rows[0]) : null;
+  }
+
+  async insertIdentity(input: {
+    userId: string;
+    provider: IdentityProvider;
+    subject: string;
+    email: string | null;
+  }): Promise<void> {
+    try {
+      await this.sql`
+        insert into user_identities (user_id, provider, subject, email)
+        values (${input.userId}, ${input.provider}, ${input.subject}, ${input.email})
+      `;
+    } catch (error) {
+      if (isUniqueViolation(error)) throw new DuplicateKeyError();
+      throw error;
+    }
+  }
+
+  async createEventCode(input: {
+    eventId: string;
+    code: string;
+    label?: string | null;
+    maxUses?: number | null;
+    expiresAt?: Date | null;
+  }): Promise<EventCodeRow> {
+    try {
+      const rows = await this.sql<EventCodeSql[]>`
+        insert into event_codes (event_id, code, label, max_uses, expires_at)
+        values (
+          ${input.eventId},
+          ${input.code},
+          ${input.label ?? null},
+          ${input.maxUses ?? null},
+          ${input.expiresAt ?? null}
+        )
+        returning event_id, code, label, max_uses, uses, expires_at, created_at
+      `;
+      const row = rows[0];
+      if (!row) throw new Error("Event code insert failed");
+      return mapEventCode(row);
+    } catch (error) {
+      if (isUniqueViolation(error)) throw new DuplicateKeyError();
+      throw error;
+    }
+  }
+
+  async findEventCode(eventId: string, code: string): Promise<EventCodeRow | null> {
+    const rows = await this.sql<EventCodeSql[]>`
+      select event_id, code, label, max_uses, uses, expires_at, created_at
+      from event_codes where event_id = ${eventId} and code = ${code}
+    `;
+    return rows[0] ? mapEventCode(rows[0]) : null;
+  }
+
+  async claimEventCode(code: string): Promise<EventCodeRow | null> {
+    // One statement: the `uses < max_uses` test and the increment cannot interleave, so a
+    // code with `max_uses = 1` is handed out once even under concurrent registrations
+    // (Postgres re-evaluates the where clause against the row the other writer committed).
+    //
+    // The primary key is (event_id, code) and registration only sends the code, so the
+    // subselect pins one event: without it an update would touch the same code in every
+    // event at once. The subselect filters on validity as well, so the usual case — one
+    // event owning the code — behaves exactly as the plain update did.
+    const rows = await this.sql<EventCodeSql[]>`
+      update event_codes
+      set uses = uses + 1
+      where code = ${code}
+        and (expires_at is null or expires_at > now())
+        and (max_uses is null or uses < max_uses)
+        and event_id = (
+          select event_id from event_codes
+          where code = ${code}
+            and (expires_at is null or expires_at > now())
+            and (max_uses is null or uses < max_uses)
+          order by created_at, event_id
+          limit 1
+        )
+      returning event_id, code, label, max_uses, uses, expires_at, created_at
+    `;
+    return rows[0] ? mapEventCode(rows[0]) : null;
+  }
+
+  async markEmailVerified(userId: string, at: Date = new Date()): Promise<void> {
+    await this.sql`
+      update users set email_verified_at = ${at}
+      where id = ${userId} and email_verified_at is null
+    `;
+  }
+
+  async findEmailVerifiedAt(userId: string): Promise<Date | null> {
+    const rows = await this.sql<{ email_verified_at: Date | null }[]>`
+      select email_verified_at from users where id = ${userId}
+    `;
+    return rows[0]?.email_verified_at ?? null;
+  }
+
+  // ---- admin console v6 (agent D) -------------------------------------------------------
+
+  async listEventCodes(eventId: string): Promise<EventCodeRow[]> {
+    const rows = await this.sql<EventCodeSql[]>`
+      select event_id, code, label, max_uses, uses, expires_at, created_at
+      from event_codes
+      where event_id = ${eventId}
+      order by created_at desc, code
+    `;
+    return rows.map(mapEventCode);
+  }
+
+  async updateEventCode(
+    eventId: string,
+    code: string,
+    patch: EventCodePatch,
+  ): Promise<EventCodeRow | null> {
+    // `coalesce` is wrong here: every field is nullable and null means "clear it", so the
+    // untouched case has to be the column itself (same shape as `updateAlbum`).
+    const rows = await this.sql<EventCodeSql[]>`
+      update event_codes set
+        label = ${patch.label === undefined ? this.sql`label` : this.sql`${patch.label}::text`},
+        max_uses = ${
+          patch.maxUses === undefined ? this.sql`max_uses` : this.sql`${patch.maxUses}::int`
+        },
+        expires_at = ${
+          patch.expiresAt === undefined
+            ? this.sql`expires_at`
+            : this.sql`${patch.expiresAt}::timestamptz`
+        }
+      where event_id = ${eventId} and code = ${code}
+      returning event_id, code, label, max_uses, uses, expires_at, created_at
+    `;
+    return rows[0] ? mapEventCode(rows[0]) : null;
+  }
+
+  async revokeEventCode(eventId: string, code: string): Promise<EventCodeRow | null> {
+    const rows = await this.sql<EventCodeSql[]>`
+      update event_codes set expires_at = now()
+      where event_id = ${eventId} and code = ${code}
+      returning event_id, code, label, max_uses, uses, expires_at, created_at
+    `;
+    return rows[0] ? mapEventCode(rows[0]) : null;
+  }
+
+  async addAlbumPhotographer(albumId: string, userId: string): Promise<void> {
+    await this.sql`
+      insert into album_photographers (album_id, user_id)
+      values (${albumId}, ${userId})
+      on conflict (album_id, user_id) do nothing
+    `;
+  }
+
+  async removeAlbumPhotographer(albumId: string, userId: string): Promise<boolean> {
+    const rows = await this.sql<{ album_id: string }[]>`
+      delete from album_photographers
+      where album_id = ${albumId} and user_id = ${userId}
+      returning album_id
+    `;
+    return rows.length > 0;
+  }
+
+  // ---- privacy and retention scheduling v6 (agent G) ---------------------------------------
+
+  async findConsentState(userId: string, eventId: string): Promise<ConsentState> {
+    const vectors = await this.queryVectorAvailable();
+    const [consents, galleries] = await Promise.all([
+      this.sql<{ granted_at: Date; text_version: string; withdrawn_at: Date | null }[]>`
+        select granted_at, text_version, withdrawn_at from consents
+        where user_id = ${userId} and event_id = ${eventId}
+        order by granted_at desc, id desc
+      `,
+      this.sql<{
+        id: string;
+        matched_at: Date | null;
+        anchors: number;
+        has_vector: boolean;
+        photos: number;
+      }[]>`
+        select g.id,
+               g.matched_at,
+               cardinality(g.anchor_face_ids) as anchors,
+               ${vectors ? this.sql`(g.query_embedding is not null)` : this.sql`false`} as has_vector,
+               (select count(*)::int from gallery_items gi where gi.gallery_id = g.id) as photos
+        from galleries g
+        where g.user_id = ${userId} and g.event_id = ${eventId}
+      `,
+    ]);
+    const active = consents.find((row) => row.withdrawn_at === null) ?? null;
+    const withdrawn = consents.find((row) => row.withdrawn_at !== null)?.withdrawn_at ?? null;
+    const gallery = galleries[0];
+    return {
+      grantedAt: active?.granted_at ?? null,
+      textVersion: active?.text_version ?? null,
+      withdrawnAt: withdrawn,
+      gallery: gallery
+        ? {
+            photos: gallery.photos,
+            selfieVector: gallery.has_vector,
+            anchors: Number(gallery.anchors ?? 0),
+            matchedAt: gallery.matched_at,
+          }
+        : null,
+    };
+  }
+
+  async withdrawConsent(input: { userId: string; eventId: string }): Promise<ConsentWithdrawal> {
+    const vectors = await this.queryVectorAvailable();
+    const faceVectorsTable = await this.faceVectorsAvailable();
+    return inTransaction(this.sql, async (tx) => {
+      const consents = await tx<{ id: string }[]>`
+        update consents set withdrawn_at = now()
+        where user_id = ${input.userId} and event_id = ${input.eventId} and withdrawn_at is null
+        returning id
+      `;
+      const galleries = await tx<{
+        id: string;
+        anchor_face_ids: string[];
+        selfie_key: string | null;
+        has_vector: boolean;
+      }[]>`
+        select id, anchor_face_ids, selfie_key,
+               ${vectors ? this.sql`(query_embedding is not null)` : this.sql`false`} as has_vector
+        from galleries
+        where user_id = ${input.userId} and event_id = ${input.eventId}
+        for update
+      `;
+      const gallery = galleries[0];
+      const anchors = gallery?.anchor_face_ids ?? [];
+      // The faces this person was identified as: the gallery's anchors plus the face behind
+      // every gallery item. Both are a person-to-template link made by the system, so both go.
+      const itemFaces = gallery
+        ? await tx<{ external_id: string }[]>`
+            select f.external_id
+            from gallery_items gi join faces f on f.id = gi.face_id
+            where gi.gallery_id = ${gallery.id}
+          `
+        : [];
+      const externalFaceIds = [...new Set([...anchors, ...itemFaces.map((row) => row.external_id)])];
+      let galleryItems = 0;
+      if (gallery) {
+        const removed = await tx`delete from gallery_items where gallery_id = ${gallery.id}`;
+        galleryItems = removed.count;
+        // The row carries query_embedding (the selfie template), the anchors and selfie_key:
+        // deleting it removes all three at once.
+        await tx`delete from galleries where id = ${gallery.id}`;
+      }
+      let faceVectors = 0;
+      if (faceVectorsTable && externalFaceIds.length > 0) {
+        // face_vectors.external_face_id is a uuid; anchors and faces.external_id are text and
+        // may hold a non-uuid id (the fake engine), which never has a row here.
+        const uuids = externalFaceIds.filter((id) => UUID_TEXT.test(id));
+        if (uuids.length > 0) {
+          const removed = await tx`
+            delete from face_vectors
+            where event_id = ${input.eventId} and external_face_id = any(${uuids}::uuid[])
+          `;
+          faceVectors = removed.count;
+        }
+      }
+      if (externalFaceIds.length > 0) {
+        // Another participant's gallery may be anchored on one of these faces (a false match,
+        // or two people in one crop). The template is gone, so the dangling anchor goes too —
+        // exactly what purgePhoto does for a deleted photo. Their gallery_items, their selfie
+        // vector and their photos are untouched.
+        await tx`
+          update galleries
+          set anchor_face_ids = coalesce(
+            (select array_agg(x) from unnest(anchor_face_ids) x where x <> all(${externalFaceIds}::text[])),
+            '{}'::text[]
+          )
+          where event_id = ${input.eventId} and anchor_face_ids && ${externalFaceIds}::text[]
+        `;
+      }
+      const feedback = await tx`
+        delete from gallery_feedback
+        where user_id = ${input.userId} and event_id = ${input.eventId}
+      `;
+      // match_runs holds the raw cosines of this person's selfie against named faces; the hits
+      // cascade with the run (migration 006).
+      const matchRuns = await tx`
+        delete from match_runs where user_id = ${input.userId} and event_id = ${input.eventId}
+      `;
+      return {
+        consents: consents.length,
+        galleryDeleted: gallery !== undefined,
+        galleryItems,
+        selfieVector: gallery?.has_vector === true,
+        anchors: anchors.length,
+        faceVectors,
+        externalFaceIds,
+        selfieKeys: gallery?.selfie_key ? [gallery.selfie_key] : [],
+        feedback: feedback.count,
+        matchRuns: matchRuns.count,
+      };
+    });
+  }
+
+  async claimRetentionWindow(input: {
+    eventId: string;
+    windowStart: Date;
+    windowSeconds: number;
+  }): Promise<boolean> {
+    // Exactly once per (event, window): the `where` of the upsert is re-evaluated against the
+    // row the other writer committed, so the second caller gets no row back (migration 015).
+    const rows = await this.sql<{ event_id: string }[]>`
+      insert into retention_schedule (event_id, window_start, window_seconds, last_outcome, runs)
+      values (${input.eventId}, ${input.windowStart}, ${input.windowSeconds}, 'enqueued', 1)
+      on conflict (event_id) do update
+        set window_start = excluded.window_start,
+            window_seconds = excluded.window_seconds,
+            claimed_at = now(),
+            updated_at = now(),
+            runs = retention_schedule.runs + 1,
+            last_outcome = 'enqueued',
+            last_job_id = null,
+            last_error = null
+        where retention_schedule.window_start < excluded.window_start
+      returning event_id
+    `;
+    return rows.length > 0;
+  }
+
+  // ---- event membership + tagging v6 (agent E) -------------------------------------------
+
+  async addEventMember(input: {
+    userId: string;
+    eventId: string;
+    source: EventMemberSource;
+  }): Promise<EventMemberRow> {
+    // Idempotent and non-destructive: a second call keeps the first row, `source` included,
+    // so the provenance recorded is how the person FIRST came to belong to the event. The
+    // `do update set user_id = excluded.user_id` is a no-op that makes the insert always
+    // return a row, which an `on conflict do nothing` would not.
+    const rows = await this.sql<EventMemberSql[]>`
+      insert into event_members (user_id, event_id, source)
+      values (${input.userId}, ${input.eventId}, ${input.source})
+      on conflict (user_id, event_id) do update set user_id = excluded.user_id
+      returning user_id, event_id, source, taggable,
+                taggable_consent_version, taggable_consent_at, created_at
+    `;
+    const row = rows[0];
+    if (!row) throw new Error("event_members insert returned no row");
+    return mapEventMember(row);
+  }
+
+  async isEventMember(userId: string, eventId: string): Promise<boolean> {
+    const rows = await this.sql<{ ok: number }[]>`
+      select 1 as ok from event_members
+      where user_id = ${userId} and event_id = ${eventId}
+    `;
+    return rows.length > 0;
+  }
+
+  async listAlbumPhotographers(albumId: string): Promise<AlbumPhotographerRow[]> {
+    const rows = await this.sql<
+      { album_id: string; user_id: string; email: string; created_at: Date }[]
+    >`
+      select ap.album_id, ap.user_id, u.email, ap.created_at
+      from album_photographers ap join users u on u.id = ap.user_id
+      where ap.album_id = ${albumId}
+      order by u.email
+    `;
+    return rows.map((row) => ({
+      albumId: row.album_id,
+      userId: row.user_id,
+      email: row.email,
+      createdAt: row.created_at,
+    }));
+  }
+
+  async findEventMember(userId: string, eventId: string): Promise<EventMemberRow | null> {
+    const rows = await this.sql<EventMemberSql[]>`
+      select user_id, event_id, source, taggable,
+             taggable_consent_version, taggable_consent_at, created_at
+      from event_members where user_id = ${userId} and event_id = ${eventId}
+    `;
+    return rows[0] ? mapEventMember(rows[0]) : null;
+  }
+
+  async findTagProfile(userId: string, eventId: string): Promise<TagProfileRow | null> {
+    // The join is an inner one on purpose: no membership row means no tagging profile, and
+    // no way to opt in. That is the honest answer now that membership is recorded.
+    const rows = await this.sql<TagProfileSql[]>`
+      select m.user_id, m.event_id, m.taggable, u.display_name,
+             m.taggable_consent_version, m.taggable_consent_at
+      from event_members m
+      join users u on u.id = m.user_id
+      where m.user_id = ${userId} and m.event_id = ${eventId}
+    `;
+    return rows[0] ? mapTagProfile(rows[0]) : null;
+  }
+
+  async setTagProfile(
+    userId: string,
+    eventId: string,
+    input: {
+      taggable: boolean;
+      displayName?: string | null;
+      consentTextVersion?: string | null;
+    },
+  ): Promise<TagProfileRow | null> {
+    const current = await this.findTagProfile(userId, eventId);
+    if (!current) return null;
+    const name =
+      input.displayName === undefined ? current.displayName : normalizeDisplayName(input.displayName);
+    // `taggable = true` needs a display name, supplied now or already stored. A taggable row
+    // with no name could never be found by the autocomplete anyway, and leaving it possible
+    // invites a later "fall back to the e-mail" patch.
+    if (input.taggable && !name) return null;
+    // The consent pair is the present state: stamped on an opt-in, nulled on an opt-out. The
+    // history lives in `audit_log`.
+    const consent = nextTagConsent(current, input);
+    if (input.taggable && !consent.version) return null;
+    // Two writes: the flag and its consent on the membership row, the name on the user. The
+    // name is global, so it is only written when the caller actually supplied one.
+    if (name !== current.displayName) {
+      await this.sql`update users set display_name = ${name} where id = ${userId}`;
+    }
+    const updated = await this.sql`
+      update event_members
+      set taggable = ${input.taggable},
+          taggable_consent_version = ${consent.version},
+          taggable_consent_at = ${consent.at}
+      where user_id = ${userId} and event_id = ${eventId}
+      returning user_id
+    `;
+    if (updated.length === 0) return null;
+    // Re-read rather than compose a RETURNING across the two tables: one extra round trip on
+    // a route a participant hits by hand, in exchange for one definition of the row.
+    return this.findTagProfile(userId, eventId);
+  }
+
+  async searchTaggableUsers(input: {
+    eventId: string;
+    prefix: string;
+    limit: number;
+  }): Promise<TaggableUserRow[]> {
+    // Second line of defence: the API already refuses a short query, and this makes a future
+    // caller that forgets to get nothing rather than the whole roster.
+    const prefix = input.prefix.trim().toLowerCase();
+    if (prefix.length < TAG_SEARCH_MIN_PREFIX) return [];
+    // Two membership tests, both non-biometric:
+    //   * `event_members` for THIS event — so a person who opted in at event A is not
+    //     suggested at event B (that is `event_members_taggable_idx`);
+    //   * `m.taggable`, the per-event opt-in, which is the consent for tagging.
+    // A recognition consent is NOT required and must never be added back: decision 2 freezes
+    // that a crowd album is never biometric, so its participants never grant one, and tagging
+    // is the only way they can find themselves there.
+    const rows = await this.sql<{ id: string; display_name: string }[]>`
+      select u.id, u.display_name
+      from users u
+      join event_members m on m.user_id = u.id
+      where m.event_id = ${input.eventId}
+        and m.taggable
+        and u.display_name is not null
+        and lower(u.display_name) like ${`${escapeLike(prefix)}%`}
+      order by lower(u.display_name) asc, u.id asc
+      limit ${input.limit}
+    `;
+    return rows.map((row) => ({ userId: row.id, displayName: row.display_name }));
+  }
+
+  async insertPhotoTag(input: {
+    photoId: string;
+    userId: string;
+    taggedBy: string;
+  }): Promise<PhotoTagRow | null> {
+    // One statement, and the opt-in is a `where` on the source rows, so a concurrent opt-out
+    // cannot be raced. The event is taken from the photo itself, so the per-event opt-in is
+    // checked against the event the photo actually belongs to and not against one the caller
+    // named. `on conflict do nothing` keeps a 'removed' row untouched.
+    const rows = await this.sql<PhotoTagSql[]>`
+      insert into photo_tags (photo_id, user_id, tagged_by)
+      select p.id, m.user_id, ${input.taggedBy}::uuid
+      from photos p
+      join event_members m
+        on m.event_id = p.event_id and m.user_id = ${input.userId} and m.taggable
+      join users u on u.id = m.user_id and u.display_name is not null
+      where p.id = ${input.photoId}
+      on conflict (photo_id, user_id) do nothing
+      returning photo_id, user_id, tagged_by, state, created_at
+    `;
+    return rows[0] ? mapPhotoTag(rows[0]) : null;
+  }
+
+  async findPhotoTag(photoId: string, userId: string): Promise<PhotoTagRow | null> {
+    const rows = await this.sql<PhotoTagSql[]>`
+      select photo_id, user_id, tagged_by, state, created_at from photo_tags
+      where photo_id = ${photoId} and user_id = ${userId}
+    `;
+    return rows[0] ? mapPhotoTag(rows[0]) : null;
+  }
+
+  async removePhotoTag(photoId: string, userId: string): Promise<PhotoTagRow | null> {
+    const rows = await this.sql<PhotoTagSql[]>`
+      update photo_tags set state = 'removed'
+      where photo_id = ${photoId} and user_id = ${userId} and state = 'active'
+      returning photo_id, user_id, tagged_by, state, created_at
+    `;
+    return rows[0] ? mapPhotoTag(rows[0]) : null;
+  }
+
+  async listActivePhotoTagsForUser(userId: string, eventId: string): Promise<PhotoTagRow[]> {
+    // Scoped to the event, because the opt-in is: opting out of event A must not remove the
+    // tags the same person accepted at event B.
+    const rows = await this.sql<PhotoTagSql[]>`
+      select pt.photo_id, pt.user_id, pt.tagged_by, pt.state, pt.created_at
+      from photo_tags pt
+      join photos p on p.id = pt.photo_id
+      where pt.user_id = ${userId} and pt.state = 'active' and p.event_id = ${eventId}
+      order by pt.created_at desc, pt.photo_id asc
+    `;
+    return rows.map(mapPhotoTag);
+  }
+
+  async listTaggedPhotosForUser(userId: string, eventId: string): Promise<TaggedPhotoRow[]> {
+    const rows = await this.sql<{
+      photo_id: string;
+      event_id: string;
+      thumb_key: string;
+      web_key: string;
+      tagged_by: string | null;
+      created_at: Date;
+    }[]>`
+      select pt.photo_id, p.event_id, t.s3_key as thumb_key, w.s3_key as web_key,
+             pt.tagged_by, pt.created_at
+      from photo_tags pt
+      join photos p on p.id = pt.photo_id
+      join derivatives t on t.photo_id = pt.photo_id and t.kind = 'thumb'
+      join derivatives w on w.photo_id = pt.photo_id and w.kind = 'web'
+      where pt.user_id = ${userId} and pt.state = 'active' and p.event_id = ${eventId}
+      order by pt.created_at desc, pt.photo_id asc
+    `;
+    return rows.map((row) => ({
+      photoId: row.photo_id,
+      eventId: row.event_id,
+      thumbKey: row.thumb_key,
+      webKey: row.web_key,
+      taggedBy: row.tagged_by,
+      createdAt: row.created_at,
+    }));
+  }
+
+  async isAlbumPhotographerAllowed(albumId: string, userId: string): Promise<boolean> {
+    // One statement: an album with no list is unrestricted (v5 behaviour), an album with a
+    // list only lets through the users on it.
+    const rows = await this.sql<{ allowed: boolean }[]>`
+      select (
+        not exists (select 1 from album_photographers where album_id = ${albumId})
+        or exists (
+          select 1 from album_photographers
+          where album_id = ${albumId} and user_id = ${userId}
+        )
+      ) as allowed
+    `;
+    return rows[0]?.allowed === true;
+  }
+
+  async eventStatus(eventId: string): Promise<EventStatus> {
+    // Event-scoped and exact: unlike `metrics()` these numbers are read while two people
+    // watch the screen on the event day, so an approximation from pg_stat is not enough.
+    const counters = await this.sql<{
+      photos: number;
+      photos_uploaded: number;
+      photos_processing: number;
+      photos_indexed: number;
+      photos_error: number;
+      originals_pending: number;
+      faces: number;
+      galleries: number;
+      galleries_matched: number;
+      selfies_waiting: number;
+    }[]>`
+      select
+        (select count(*)::int from photos where event_id = ${eventId}) as photos,
+        (select count(*)::int from photos where event_id = ${eventId} and status = 'uploaded')
+          as photos_uploaded,
+        (select count(*)::int from photos where event_id = ${eventId} and status = 'processing')
+          as photos_processing,
+        (select count(*)::int from photos where event_id = ${eventId} and status = 'indexed')
+          as photos_indexed,
+        (select count(*)::int from photos where event_id = ${eventId} and status = 'error')
+          as photos_error,
+        (select count(*)::int from photos
+          where event_id = ${eventId} and original_status = 'pending') as originals_pending,
+        (select count(*)::int from faces where event_id = ${eventId}) as faces,
+        (select count(*)::int from galleries where event_id = ${eventId}) as galleries,
+        (select count(*)::int from galleries
+          where event_id = ${eventId} and matched_at is not null) as galleries_matched,
+        (select count(*)::int from galleries
+          where event_id = ${eventId} and query_embedding is not null and matched_at is null)
+          as selfies_waiting
+    `;
+    const albums = await this.sql<{
+      id: string;
+      slug: string;
+      name: string;
+      kind: AlbumKind;
+      recognition: boolean;
+      moderation: AlbumModeration;
+      uploads_open: boolean;
+      first_upload_at: Date | null;
+      photos: number;
+    }[]>`
+      select a.id, a.slug, a.name, a.kind, a.recognition, a.moderation, a.uploads_open,
+             a.first_upload_at,
+             (select count(*)::int from photos p where p.album_id = a.id) as photos
+      from albums a
+      where a.event_id = ${eventId}
+      order by a.created_at, a.id
+    `;
+    const row = counters[0];
+    return {
+      photos: row?.photos ?? 0,
+      photosByStatus: {
+        uploaded: row?.photos_uploaded ?? 0,
+        processing: row?.photos_processing ?? 0,
+        indexed: row?.photos_indexed ?? 0,
+        error: row?.photos_error ?? 0,
+      },
+      originalsPending: row?.originals_pending ?? 0,
+      faces: row?.faces ?? 0,
+      galleries: row?.galleries ?? 0,
+      galleriesMatched: row?.galleries_matched ?? 0,
+      selfiesWaiting: row?.selfies_waiting ?? 0,
+      albums: albums.map(
+        (album): EventStatusAlbum => ({
+          id: album.id,
+          slug: album.slug,
+          name: album.name,
+          kind: album.kind,
+          recognition: album.recognition,
+          moderation: album.moderation,
+          uploadsOpen: album.uploads_open,
+          photos: Number(album.photos),
+          firstUploadAt: album.first_upload_at,
+        }),
+      ),
+    };
+  }
+
+  // ---- crowd upload and moderation v6 (agent C) -----------------------------------------
+
+  async countAlbumPhotosByUploader(albumId: string, uploaderId: string): Promise<number> {
+    const rows = await this.sql<{ count: number }[]>`
+      select count(*)::int as count from photos
+      where album_id = ${albumId}
+        and photographer_id = ${uploaderId}
+        and moderation_state in ('approved', 'pending')
+    `;
+    return rows[0]?.count ?? 0;
+  }
+
+  async countAlbumUploadsSince(
+    albumId: string,
+    uploaderId: string,
+    since: Date,
+  ): Promise<number> {
+    const rows = await this.sql<{ count: number }[]>`
+      select count(*)::int as count from upload_sessions
+      where album_id = ${albumId}
+        and photographer_id = ${uploaderId}
+        and created_at >= ${since}
+    `;
+    return rows[0]?.count ?? 0;
+  }
+
+  async recordRetentionRun(input: {
+    eventId: string;
+    outcome: RetentionOutcome;
+    jobId?: string | null;
+    error?: string | null;
+  }): Promise<void> {
+    await this.sql`
+      update retention_schedule
+      set last_outcome = ${input.outcome},
+          last_job_id = ${input.jobId ?? null},
+          last_error = ${input.error ?? null},
+          updated_at = now()
+      where event_id = ${input.eventId}
+    `;
+  }
+
+  async listRetentionStatus(): Promise<RetentionStatusRow[]> {
+    const rows = await this.sql<RetentionStatusSql[]>`
+      select e.id as event_id,
+             e.slug,
+             e.retention_days,
+             s.window_start,
+             s.window_seconds,
+             s.claimed_at,
+             coalesce(s.runs, 0) as runs,
+             s.last_outcome,
+             s.last_job_id,
+             s.last_error,
+             j.id as job_id,
+             j.status as job_status,
+             j.last_error as job_error,
+             j.finished_at as job_finished_at
+      from events e
+      left join retention_schedule s on s.event_id = e.id
+      left join lateral (
+        select id, status, last_error, finished_at
+        from jobs
+        where type = 'retention' and payload ->> 'eventId' = e.id::text
+        order by created_at desc, id desc
+        limit 1
+      ) j on true
+      order by e.created_at, e.id
+    `;
+    return rows.map(mapRetentionStatus);
+  }
+
+  async listAlbumPhotosCreatedBefore(
+    albumId: string,
+    cutoff: Date,
+    limit?: number,
+  ): Promise<PhotoRow[]> {
+    const rows = await this.sql<PhotoSql[]>`
+      select ${this.sql.unsafe(PHOTO_COLUMNS)}
+      from photos
+      where album_id = ${albumId} and created_at < ${cutoff}
+      order by created_at
+      ${limit === undefined ? this.sql`` : this.sql`limit ${limit}`}
+    `;
+    return rows.map(mapPhoto);
+  }
+
+  async claimRetentionAlarmMail(input: {
+    eventId: string;
+    alarm: RetentionAlarmMail;
+    window: Date;
+  }): Promise<boolean> {
+    // Same shape as the window claim: the `where` is re-evaluated against the row the other
+    // writer committed, so the second caller gets nothing back and sends nothing.
+    const rows = await this.sql<{ event_id: string }[]>`
+      update retention_schedule
+      set notified_alarm = ${input.alarm},
+          notified_window = ${input.window},
+          updated_at = now()
+      where event_id = ${input.eventId}
+        and (notified_window is null
+             or notified_window < ${input.window}
+             or notified_alarm is distinct from ${input.alarm})
+      returning event_id
+    `;
+    return rows.length > 0;
+  }
+
+  async clearRetentionAlarmMail(eventId: string): Promise<RetentionAlarmMail | null> {
+    // `returning notified_alarm` would hand back the *new* value (null): RETURNING in an
+    // update sees the row after the change. The caller needs what the alarm was, to name it
+    // in the "resolved" message, so the old value is read in a CTE. `for update` makes the
+    // pair atomic: a concurrent clear blocks, then re-checks the row, finds it already
+    // cleared and updates nothing — so only one caller ever sends that one message.
+    const rows = await this.sql<{ notified_alarm: RetentionAlarmMail }[]>`
+      with previous as (
+        select event_id, notified_alarm from retention_schedule
+        where event_id = ${eventId} and notified_alarm is not null
+        for update
+      )
+      update retention_schedule s
+      set notified_alarm = null, notified_window = null, updated_at = now()
+      from previous p
+      where s.event_id = p.event_id
+      returning p.notified_alarm
+    `;
+    return rows[0]?.notified_alarm ?? null;
+  }
+
+  async countPhotosByUploader(eventId: string, userId: string): Promise<number> {
+    const rows = await this.sql<{ count: number }[]>`
+      select count(*)::int as count from photos
+      where event_id = ${eventId} and photographer_id = ${userId}
+    `;
+    return rows[0]?.count ?? 0;
+  }
+
+  async setPhotoModeration(input: {
+    photoId: string;
+    state: ModerationState;
+    moderatorId?: string | null;
+    at?: Date;
+  }): Promise<PhotoRow | null> {
+    const human = input.moderatorId ?? null;
+    const at = input.at ?? new Date();
+    // The automatic paths (screening hook, report threshold) leave `moderated_by` /
+    // `moderated_at` untouched: an unruled photo must still read as unruled in the queue.
+    const rows = await this.sql<PhotoSql[]>`
+      update photos set
+        moderation_state = ${input.state},
+        moderated_by = coalesce(${human}::uuid, moderated_by),
+        moderated_at = ${human === null ? this.sql`moderated_at` : this.sql`${at}::timestamptz`}
+      where id = ${input.photoId}
+      returning ${this.sql.unsafe(PHOTO_COLUMNS)}
+    `;
+    return rows[0] ? mapPhoto(rows[0]) : null;
+  }
+
+  async insertReport(input: {
+    photoId: string;
+    reporterId: string;
+    reason: ReportReason;
+    note?: string | null;
+  }): Promise<{ created: boolean; report: ReportRow }> {
+    // One report per person per photo (`reports unique (photo_id, reporter_id)`), so a
+    // repeated tap is an answer rather than an error — with ONE exception: a stored `not_me`
+    // may be escalated to a counting reason.
+    //
+    // Without that exception, tapping "non sono io" would silently spend the person's only
+    // report on this photo, and someone who first corrected a wrong match and then realised
+    // the photo is genuinely inappropriate could never say so. The `where` clause makes the
+    // escalation one-way: a counting reason is never replaced, least of all by `not_me`, so
+    // this cannot be used to un-report something.
+    const inserted = await this.sql<ReportSql[]>`
+      insert into reports (photo_id, reporter_id, reason, note)
+      values (${input.photoId}, ${input.reporterId}, ${input.reason}, ${input.note ?? null})
+      on conflict (photo_id, reporter_id) do update
+        set reason = excluded.reason,
+            note = coalesce(excluded.note, reports.note),
+            state = 'open',
+            created_at = now()
+        where reports.reason = 'not_me' and excluded.reason <> 'not_me'
+      returning ${this.sql.unsafe(REPORT_COLUMNS)}
+    `;
+    const row = inserted[0];
+    if (row) return { created: true, report: mapReport(row) };
+    const existing = await this.sql<ReportSql[]>`
+      select ${this.sql.unsafe(REPORT_COLUMNS)} from reports
+      where photo_id = ${input.photoId} and reporter_id = ${input.reporterId}
+    `;
+    const previous = existing[0];
+    if (!previous) throw new Error("Report insert failed");
+    return { created: false, report: mapReport(previous) };
+  }
+
+  async countOpenReports(photoId: string): Promise<number> {
+    // Counting reasons ONLY. A `not_me` report is recorded but never moves a photo: it is
+    // the normal error mode of face matching, not an abuse signal, and it is answered
+    // per-user through `gallery_feedback`. See MODERATION_COUNTING_REASONS.
+    const rows = await this.sql<{ count: number }[]>`
+      select count(distinct reporter_id)::int as count from reports
+      where photo_id = ${photoId} and state = 'open'
+        and reason = any(${[...MODERATION_COUNTING_REASONS]}::text[])
+    `;
+    return rows[0]?.count ?? 0;
+  }
+
+  async countOpenNotMeReports(photoId: string): Promise<number> {
+    const rows = await this.sql<{ count: number }[]>`
+      select count(distinct reporter_id)::int as count from reports
+      where photo_id = ${photoId} and state = 'open' and reason = 'not_me'
+    `;
+    return rows[0]?.count ?? 0;
+  }
+
+  async countReportsByUserSince(reporterId: string, since: Date): Promise<number> {
+    const rows = await this.sql<{ count: number }[]>`
+      select count(*)::int as count from reports
+      where reporter_id = ${reporterId} and created_at >= ${since}
+    `;
+    return rows[0]?.count ?? 0;
+  }
+
+  async closeReports(photoId: string): Promise<number> {
+    const rows = await this.sql<{ id: string }[]>`
+      update reports set state = 'closed'
+      where photo_id = ${photoId} and state = 'open'
+      returning id
+    `;
+    return rows.length;
+  }
+
+  // ---- hardening v6 (agent H): password-reset tokens, migration 016 -----------------------
+
+  async insertPasswordResetToken(input: {
+    userId: string;
+    tokenHash: string;
+    expiresAt: Date;
+    ip: string | null;
+  }): Promise<void> {
+    await this.sql`
+      insert into password_reset_tokens (user_id, token_hash, expires_at, ip)
+      values (${input.userId}, ${input.tokenHash}, ${input.expiresAt}, ${input.ip})
+    `;
+  }
+
+  async countPasswordResetTokensSince(input: {
+    userId?: string;
+    ip?: string;
+    since: Date;
+  }): Promise<number> {
+    if (input.userId === undefined && input.ip === undefined) return 0;
+    const rows = await this.sql<{ count: string }[]>`
+      select count(*)::text as count from password_reset_tokens
+      where created_at >= ${input.since}
+        and (${input.userId ?? null}::uuid is null or user_id = ${input.userId ?? null})
+        and (${input.ip ?? null}::text is null or ip = ${input.ip ?? null})
+    `;
+    return Number(rows[0]?.count ?? 0);
+  }
+
+  /** One statement: the `used_at is null` guard makes a replay (or a race) return null. */
+  async consumePasswordResetToken(tokenHash: string): Promise<{ userId: string } | null> {
+    const rows = await this.sql<{ user_id: string }[]>`
+      update password_reset_tokens
+      set used_at = now()
+      where token_hash = ${tokenHash}
+        and used_at is null
+        and expires_at > now()
+      returning user_id
+    `;
+    const row = rows[0];
+    return row ? { userId: String(row.user_id) } : null;
+  }
+
+  async invalidatePasswordResetTokens(userId: string): Promise<number> {
+    const rows = await this.sql<{ id: string }[]>`
+      update password_reset_tokens
+      set used_at = now()
+      where user_id = ${userId} and used_at is null
+      returning id
+    `;
+    return rows.length;
+  }
+
+  async listOpenReports(photoId: string): Promise<ReportRow[]> {
+    const rows = await this.sql<ReportSql[]>`
+      select ${this.sql.unsafe(REPORT_COLUMNS)} from reports
+      where photo_id = ${photoId} and state = 'open'
+      order by created_at, id
+    `;
+    return rows.map(mapReport);
+  }
+
+  async listModerationPage(input: {
+    albumId?: string;
+    state?: ModerationState;
+    includeNotMe?: boolean;
+    limit: number;
+    cursor?: UploadCursor;
+  }): Promise<{ items: ModerationItem[]; nextCursor: UploadCursor | null }> {
+    const cursor = input.cursor;
+    const albumId = input.albumId ?? null;
+    const state = input.state ?? null;
+    // The queue is "everything a moderator still has to look at": not approved, or approved
+    // with an open report whose reason COUNTS. `not_me` alone never queues a photo -- with
+    // 6,000 participants wrong matches are the common case and they would bury two
+    // moderators -- but the count is reported so a moderator looking at a photo for another
+    // reason sees it, and `includeNotMe` asks for them on purpose.
+    //
+    // NOTE for anyone adding a `-- ...` comment INSIDE one of these tagged templates: a
+    // backtick in it closes the template literal, and the parser then fails lines away with
+    // a bewildering "',' expected". Name columns bare in SQL comments (moderation_state),
+    // never in the backticks this file uses in its TypeScript comments. It has bitten twice.
+    const rows = await this.sql<ModerationSql[]>`
+      select p.id, p.album_id, p.event_id, p.photographer_id, p.moderation_state, p.created_at,
+             coalesce(r.open_reports, 0)::int as open_reports,
+             coalesce(r.reasons, '{}')::text[] as reasons,
+             coalesce(r.not_me_reports, 0)::int as not_me_reports,
+             thumb.s3_key as thumb_key,
+             web.s3_key as web_key
+      from photos p
+      left join (
+        select photo_id,
+               count(distinct reporter_id) filter (
+                 where reason = any(${[...MODERATION_COUNTING_REASONS]}::text[])
+               ) as open_reports,
+               count(distinct reporter_id) filter (where reason = 'not_me') as not_me_reports,
+               array_agg(distinct reason order by reason) as reasons
+        from reports where state = 'open'
+        group by photo_id
+      ) r on r.photo_id = p.id
+      left join derivatives thumb on thumb.photo_id = p.id and thumb.kind = 'thumb'
+      left join derivatives web on web.photo_id = p.id and web.kind = 'web'
+      where (
+          p.moderation_state <> 'approved'
+          or coalesce(r.open_reports, 0) > 0
+          ${input.includeNotMe ? this.sql`or coalesce(r.not_me_reports, 0) > 0` : this.sql``}
+        )
+        ${albumId ? this.sql`and p.album_id = ${albumId}::uuid` : this.sql``}
+        ${state ? this.sql`and p.moderation_state = ${state}` : this.sql``}
+        ${
+          cursor
+            ? this.sql`and (date_trunc('milliseconds', p.created_at, 'UTC'), p.id) < (${cursor.createdAt}, ${cursor.id}::uuid)`
+            : this.sql``
+        }
+      order by date_trunc('milliseconds', p.created_at, 'UTC') desc, p.id desc
+      limit ${input.limit + 1}
+    `;
+    const items = rows.slice(0, input.limit).map(mapModerationItem);
+    const last = items[items.length - 1];
+    const nextCursor =
+      rows.length > input.limit && last ? { createdAt: last.createdAt, id: last.photoId } : null;
+    return { items, nextCursor };
+  }
+
+  async listAlbumPhotosPage(
+    albumId: string,
+    input: { limit: number; cursor?: UploadCursor },
+  ): Promise<{ items: AlbumPhoto[]; nextCursor: UploadCursor | null }> {
+    const cursor = input.cursor;
+    // `approved` only: a photo flipped to `pending` by the report threshold leaves the feed
+    // on the next page load, with no second switch to keep in sync.
+    const rows = await this.sql<AlbumPhotoSql[]>`
+      select p.id, p.album_id, p.photographer_id, p.created_at,
+             thumb.s3_key as thumb_key, web.s3_key as web_key
+      from photos p
+      join derivatives thumb on thumb.photo_id = p.id and thumb.kind = 'thumb'
+      join derivatives web on web.photo_id = p.id and web.kind = 'web'
+      where p.album_id = ${albumId} and p.moderation_state = 'approved'
+        ${
+          cursor
+            ? this.sql`and (date_trunc('milliseconds', p.created_at, 'UTC'), p.id) < (${cursor.createdAt}, ${cursor.id}::uuid)`
+            : this.sql``
+        }
+      order by date_trunc('milliseconds', p.created_at, 'UTC') desc, p.id desc
+      limit ${input.limit + 1}
+    `;
+    const items = rows.slice(0, input.limit).map(mapAlbumPhoto);
+    const last = items[items.length - 1];
+    const nextCursor =
+      rows.length > input.limit && last ? { createdAt: last.createdAt, id: last.id } : null;
+    return { items, nextCursor };
+  }
+
+  async listAlbumPhotosByIds(albumId: string, ids: string[]): Promise<AlbumPhoto[]> {
+    if (ids.length === 0) return [];
+    // Same three conditions as `listAlbumPhotosPage`: this album, `approved`, both
+    // derivatives. No ordering clause and so no `date_trunc` — an `id = any(...)` lookup is
+    // served by the primary key.
+    const rows = await this.sql<AlbumPhotoSql[]>`
+      select p.id, p.album_id, p.photographer_id, p.created_at,
+             thumb.s3_key as thumb_key, web.s3_key as web_key
+      from photos p
+      join derivatives thumb on thumb.photo_id = p.id and thumb.kind = 'thumb'
+      join derivatives web on web.photo_id = p.id and web.kind = 'web'
+      where p.album_id = ${albumId}
+        and p.moderation_state = 'approved'
+        and p.id = any(${ids}::uuid[])
+    `;
+    return rows.map(mapAlbumPhoto);
+  }
+
+  /** Whether migration 005 could create `face_vectors` (it needs pgvector). Cached like the column probe. */
+  private faceVectorsAvailable(): Promise<boolean> {
+    if (!this.faceVectorsChecked) {
+      this.faceVectorsChecked = this.sql<{ present: boolean }[]>`
+        select to_regclass('public.face_vectors') is not null as present
+      `
+        .then((rows) => rows[0]?.present === true)
+        .catch((error: unknown) => {
+          this.faceVectorsChecked = undefined;
+          throw error;
+        });
+    }
+    return this.faceVectorsChecked;
+  }
+
+  private faceVectorsChecked: Promise<boolean> | undefined;
+
+  async listPhotoTags(photoId: string): Promise<PhotoTagWithNameRow[]> {
+    const rows = await this.sql<(PhotoTagSql & { display_name: string | null })[]>`
+      select pt.photo_id, pt.user_id, pt.tagged_by, pt.state, pt.created_at, u.display_name
+      from photo_tags pt
+      join users u on u.id = pt.user_id
+      where pt.photo_id = ${photoId} and pt.state = 'active'
+      order by pt.created_at asc, pt.user_id asc
+    `;
+    return rows.map((row) => ({ ...mapPhotoTag(row), displayName: row.display_name }));
+  }
+
+  async listAuditForTarget(target: string): Promise<AuditEntryRow[]> {
+    const rows = await this.sql<{
+      id: string;
+      actor_id: string | null;
+      action: string;
+      target: string;
+      meta: unknown;
+      created_at: Date;
+    }[]>`
+      select id, actor_id, action, target, meta, created_at from audit_log
+      where target = ${target}
+      order by created_at asc, id asc
+    `;
+    return rows.map((row) => ({
+      id: row.id,
+      actorId: row.actor_id,
+      action: row.action,
+      target: row.target,
+      // `audit_log.meta` is jsonb, and this driver hands it back as text, so it is parsed
+      // here. An unreadable value becomes `{}` rather than throwing: a malformed audit row
+      // must not break reading the rest of the trail.
+      meta: parseAuditMeta(row.meta),
+      createdAt: row.created_at,
+    }));
+  }
+}
+
+/** Maps the album constraints of migration 009 to their typed errors. */
+function albumError(error: unknown): unknown {
+  if (isUniqueViolation(error)) return new DuplicateKeyError();
+  if (typeof error !== "object" || error === null || !("code" in error)) return error;
+  const code = (error as { code?: unknown }).code;
+  if (code === "ALBRI") return new AlbumRecognitionLockedError();
+  const constraint = (error as { constraint_name?: unknown }).constraint_name;
+  if (code === "23514" && constraint === "crowd_never_recognizes") {
+    return new AlbumRecognitionNotAllowedError();
+  }
+  return error;
 }
 
 /** Escapes `%` and `_` so a filename prefix search does not become a wildcard. */
@@ -1935,9 +3231,7 @@ type EventSql = {
 type PhotoSql = {
   id: string;
   event_id: string;
-  photographer_id: string | null;
-  uploader_id: string | null;
-  collection: PhotoCollection;
+  photographer_id: string;
   sha256: string;
   status: PhotoStatus;
   original_key: string;
@@ -1947,13 +3241,28 @@ type PhotoSql = {
   indexed_at: Date | null;
   error: string | null;
   created_at: Date;
+  album_id: string;
+  moderation_state: ModerationState;
+};
+type AlbumSql = {
+  id: string;
+  event_id: string;
+  slug: string;
+  name: string;
+  kind: AlbumKind;
+  recognition: boolean;
+  moderation: AlbumModeration;
+  visibility: AlbumVisibility;
+  max_photos_per_user: number | null;
+  uploads_open: boolean;
+  retention_days: number | null;
+  first_upload_at: Date | null;
+  created_at: Date;
 };
 type UploadSql = {
   id: string;
   event_id: string;
-  photographer_id: string | null;
-  uploader_id: string | null;
-  collection: PhotoCollection;
+  photographer_id: string;
   s3_upload_id: string | null;
   object_key: string;
   sha256: string;
@@ -1967,6 +3276,7 @@ type UploadSql = {
   filename: string | null;
   tags: string[] | null;
   created_at: Date;
+  album_id: string | null;
 };
 type PhotoAdminSql = PhotoSql & { filename: string | null; tags: string[] | null };
 
@@ -2016,8 +3326,6 @@ function mapPhoto(row: PhotoSql): PhotoRow {
     id: row.id,
     eventId: row.event_id,
     photographerId: row.photographer_id,
-    uploaderId: row.uploader_id,
-    collection: row.collection,
     sha256: row.sha256,
     status: row.status,
     originalKey: row.original_key,
@@ -2027,6 +3335,25 @@ function mapPhoto(row: PhotoSql): PhotoRow {
     indexedAt: row.indexed_at,
     error: row.error,
     createdAt: row.created_at,
+    albumId: row.album_id,
+    moderationState: row.moderation_state,
+  };
+}
+function mapAlbum(row: AlbumSql): AlbumRow {
+  return {
+    id: row.id,
+    eventId: row.event_id,
+    slug: row.slug,
+    name: row.name,
+    kind: row.kind,
+    recognition: row.recognition,
+    moderation: row.moderation,
+    visibility: row.visibility,
+    maxPhotosPerUser: row.max_photos_per_user === null ? null : Number(row.max_photos_per_user),
+    uploadsOpen: row.uploads_open,
+    retentionDays: row.retention_days === null ? null : Number(row.retention_days),
+    firstUploadAt: row.first_upload_at,
+    createdAt: row.created_at,
   };
 }
 function mapUpload(row: UploadSql): UploadSessionRow {
@@ -2034,8 +3361,6 @@ function mapUpload(row: UploadSql): UploadSessionRow {
     id: row.id,
     eventId: row.event_id,
     photographerId: row.photographer_id,
-    uploaderId: row.uploader_id,
-    collection: row.collection,
     s3UploadId: row.s3_upload_id,
     objectKey: row.object_key,
     sha256: row.sha256,
@@ -2050,8 +3375,232 @@ function mapUpload(row: UploadSql): UploadSessionRow {
     filename: row.filename ?? null,
     tags: row.tags ?? [],
     createdAt: row.created_at,
+    albumId: row.album_id,
   };
 }
 function mapPhotoAdmin(row: PhotoAdminSql): PhotoAdminRow {
   return { ...mapPhoto(row), filename: row.filename ?? null, tags: row.tags ?? [] };
+}
+
+// ---- auth v6 (agent B) --------------------------------------------------------------------
+
+type EventCodeSql = {
+  event_id: string;
+  code: string;
+  label: string | null;
+  max_uses: number | null;
+  uses: number;
+  expires_at: Date | null;
+  created_at: Date;
+};
+
+function mapEventCode(row: EventCodeSql): EventCodeRow {
+  return {
+    eventId: row.event_id,
+    code: row.code,
+    label: row.label,
+    maxUses: row.max_uses === null ? null : Number(row.max_uses),
+    uses: Number(row.uses),
+    expiresAt: row.expires_at,
+    createdAt: row.created_at,
+  };
+}
+
+// ---- crowd upload and moderation v6 (agent C) ---------------------------------------------
+
+const REPORT_COLUMNS = "id, photo_id, reporter_id, reason, note, state, created_at";
+
+type ReportSql = {
+  id: string;
+  photo_id: string;
+  reporter_id: string;
+  reason: ReportReason;
+  note: string | null;
+  state: "open" | "closed";
+  created_at: Date;
+};
+
+type ModerationSql = {
+  id: string;
+  album_id: string;
+  event_id: string;
+  photographer_id: string;
+  moderation_state: ModerationState;
+  created_at: Date;
+  open_reports: number;
+  reasons: string[] | null;
+  not_me_reports: number;
+  thumb_key: string | null;
+  web_key: string | null;
+};
+
+type AlbumPhotoSql = {
+  id: string;
+  album_id: string;
+  photographer_id: string;
+  created_at: Date;
+  thumb_key: string;
+  web_key: string;
+};
+
+function mapReport(row: ReportSql): ReportRow {
+  return {
+    id: row.id,
+    photoId: row.photo_id,
+    reporterId: row.reporter_id,
+    reason: row.reason,
+    note: row.note,
+    state: row.state,
+    createdAt: row.created_at,
+  };
+}
+
+// ---- tagging v6 (agent E) -----------------------------------------------------------------
+
+type EventMemberSql = {
+  user_id: string;
+  event_id: string;
+  source: EventMemberSource;
+  taggable: boolean;
+  taggable_consent_version: string | null;
+  taggable_consent_at: Date | null;
+  created_at: Date;
+};
+
+type TagProfileSql = {
+  user_id: string;
+  event_id: string;
+  taggable: boolean;
+  display_name: string | null;
+  taggable_consent_version: string | null;
+  taggable_consent_at: Date | null;
+};
+
+function mapEventMember(row: EventMemberSql): EventMemberRow {
+  return {
+    userId: row.user_id,
+    eventId: row.event_id,
+    source: row.source,
+    taggable: row.taggable,
+    taggableConsentVersion: row.taggable_consent_version,
+    taggableConsentAt: row.taggable_consent_at,
+    createdAt: row.created_at,
+  };
+}
+
+type PhotoTagSql = {
+  photo_id: string;
+  user_id: string;
+  tagged_by: string | null;
+  state: PhotoTagState;
+  created_at: Date;
+};
+
+function mapTagProfile(row: TagProfileSql): TagProfileRow {
+  return {
+    userId: row.user_id,
+    eventId: row.event_id,
+    taggable: row.taggable,
+    displayName: row.display_name,
+    consentTextVersion: row.taggable_consent_version,
+    consentAt: row.taggable_consent_at,
+  };
+}
+
+function mapPhotoTag(row: PhotoTagSql): PhotoTagRow {
+  return {
+    photoId: row.photo_id,
+    userId: row.user_id,
+    taggedBy: row.tagged_by,
+    state: row.state,
+    createdAt: row.created_at,
+  };
+}
+
+function mapModerationItem(row: ModerationSql): ModerationItem {
+  return {
+    photoId: row.id,
+    albumId: row.album_id,
+    eventId: row.event_id,
+    uploaderId: row.photographer_id,
+    moderationState: row.moderation_state,
+    createdAt: row.created_at,
+    openReports: Number(row.open_reports),
+    reasons: (row.reasons ?? []) as ReportReason[],
+    notMeReports: Number(row.not_me_reports),
+    thumbKey: row.thumb_key,
+    webKey: row.web_key,
+  };
+}
+
+function mapAlbumPhoto(row: AlbumPhotoSql): AlbumPhoto {
+  return {
+    id: row.id,
+    albumId: row.album_id,
+    uploaderId: row.photographer_id,
+    createdAt: row.created_at,
+    thumbKey: row.thumb_key,
+    webKey: row.web_key,
+  };
+}
+
+// ---- privacy and retention scheduling v6 (agent G) ----------------------------------------
+
+/** Anchors and `faces.external_id` are text; `face_vectors.external_face_id` is a uuid. */
+const UUID_TEXT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+type RetentionStatusSql = {
+  event_id: string;
+  slug: string;
+  retention_days: number;
+  window_start: Date | null;
+  window_seconds: number | null;
+  claimed_at: Date | null;
+  runs: number;
+  last_outcome: RetentionOutcome | null;
+  last_job_id: string | null;
+  last_error: string | null;
+  job_id: string | null;
+  job_status: "queued" | "running" | "done" | "error" | null;
+  job_error: string | null;
+  job_finished_at: Date | null;
+};
+
+function mapRetentionStatus(row: RetentionStatusSql): RetentionStatusRow {
+  return {
+    eventId: row.event_id,
+    slug: row.slug,
+    retentionDays: Number(row.retention_days),
+    windowStart: row.window_start,
+    windowSeconds: row.window_seconds === null ? null : Number(row.window_seconds),
+    claimedAt: row.claimed_at,
+    runs: Number(row.runs ?? 0),
+    lastOutcome: row.last_outcome,
+    lastJobId: row.last_job_id,
+    lastError: row.last_error,
+    lastJob:
+      row.job_id && row.job_status
+        ? {
+            id: row.job_id,
+            status: row.job_status,
+            error: row.job_error,
+            finishedAt: row.job_finished_at,
+          }
+        : null,
+  };
+}
+
+/** `audit_log.meta` comes back as text from this driver; a non-object is reported as `{}`. */
+function parseAuditMeta(value: unknown): Record<string, unknown> {
+  const parsed = (() => {
+    if (typeof value !== "string") return value;
+    try {
+      return JSON.parse(value) as unknown;
+    } catch {
+      return null;
+    }
+  })();
+  return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+    ? (parsed as Record<string, unknown>)
+    : {};
 }
