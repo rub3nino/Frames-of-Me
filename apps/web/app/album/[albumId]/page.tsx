@@ -203,22 +203,39 @@ function CrowdAlbum({ albumId }: { albumId: string }) {
 
       <ul className="grid">
         {photos.map((photo) => (
-          <li key={photo.id}>
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={photo.thumbUrl} alt="" loading="lazy" />
+          <li className="album-item" key={photo.id}>
+            {/*
+              `webUrl` is the 1600 px derivative, presigned by the api for this reader. A
+              plain link in a new tab is the whole viewer: the browser's own image view
+              pinches, zooms and saves better than anything built here would, and it keeps
+              the feed free of a lightbox nobody has to maintain. The url expires with its
+              signature, which is why it is never stored or shared — it is read from the
+              page that just fetched it.
+            */}
+            <div className="cell">
+              <a className="cell-hit" href={photo.webUrl} target="_blank" rel="noreferrer">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={photo.thumbUrl} alt="Foto dell'album" loading="lazy" />
+              </a>
+            </div>
             {reporting === photo.id ? (
-              <div className="actions">
+              <div className="actions stacked">
                 {CROWD_REPORT_REASONS.map((reason) => (
-                  <button key={reason} type="button" onClick={() => void report(photo.id, reason)}>
+                  <button
+                    key={reason}
+                    type="button"
+                    className="linkish"
+                    onClick={() => void report(photo.id, reason)}
+                  >
                     {REPORT_LABELS[reason]}
                   </button>
                 ))}
-                <button type="button" onClick={() => setReporting(null)}>
+                <button type="button" className="linkish" onClick={() => setReporting(null)}>
                   Annulla
                 </button>
               </div>
             ) : (
-              <button type="button" onClick={() => setReporting(photo.id)}>
+              <button type="button" className="linkish" onClick={() => setReporting(photo.id)}>
                 Segnala
               </button>
             )}
