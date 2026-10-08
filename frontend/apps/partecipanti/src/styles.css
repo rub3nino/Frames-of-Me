@@ -98,3 +98,89 @@ body { background: var(--c-canvas); }
 .danger-zone h3 { color: var(--c-danger-ink); }
 .danger-zone p { color: var(--c-ink-2); }
 .modal .modal-row { display: flex; justify-content: flex-end; gap: var(--s-3); margin-top: var(--s-6); }
+
+/* ============================================================================
+   Accesso — regole di pagina, non del design system
+   Composizione di primitive già definite: .box, .check, .field, .btn,
+   .callout, .cell-sub. Nessun componente nuovo, nessun colore proprio.
+   ============================================================================ */
+
+.accesso {
+  width: 100%;
+  max-width: 400px;              /* una colonna sola: il modulo è una frase */
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);           /* tra i blocchi del modulo */
+  padding: var(--space-6);
+  /* raggio 12: è una «finestra», ed è l'unico posto del prodotto dove si usa */
+  border-radius: var(--radius-lg);
+  background: var(--surface-raised);
+  border: 1px solid var(--line-subtle);
+}
+
+.accesso__testa { display: flex; flex-direction: column; gap: var(--space-2); }
+/* 30 px è la misura dell'accesso, l'unica schermata che la usa */
+.accesso__titolo {
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-semibold);
+  letter-spacing: -0.015em;
+  line-height: var(--leading-tight);
+}
+.accesso__dek {
+  font-size: var(--text-md);
+  line-height: var(--leading-prose);
+  color: var(--text-secondary);
+  max-width: 68ch;
+}
+
+/* Il cancello dell'età. Un `.box` con due righe, non un componente nuovo. */
+.accesso__eta { padding: var(--space-3) var(--space-4); border: 1px solid var(--line-subtle); border-radius: var(--radius-md); }
+.accesso__eta-legenda {
+  padding: 0 0 var(--space-2);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--text-secondary);
+}
+.accesso__opzione {
+  display: flex; align-items: flex-start; gap: var(--space-2);
+  padding: var(--space-2) 0;
+  cursor: pointer;
+}
+.accesso__opzione + .accesso__opzione { border-top: 1px solid var(--line-subtle); }
+.accesso__opzione .check input { margin-top: 2px; }   /* allineato alla prima riga di testo */
+.accesso__opzione-testo { display: flex; flex-direction: column; gap: 2px; font-size: var(--text-base); }
+
+/* Google: un secondario, con il suo marchio a colori. L'icona porta i colori
+   di Google perché è un marchio altrui, non un accento nostro: è l'unica
+   eccezione alla tavolozza, e sta dentro un pulsante bianco. */
+.accesso__google { justify-content: center; }
+.accesso__google .icon { width: 18px; height: 18px; }
+
+.accesso__modulo { display: flex; flex-direction: column; gap: var(--space-4); }
+/* Un filo, non un riquadro dentro un riquadro. */
+.accesso__sep { height: 1px; background: var(--line-subtle); }
+
+.accesso__consenso { align-items: flex-start; gap: var(--space-2); font-size: var(--text-sm); line-height: var(--leading-snug); color: var(--text-secondary); }
+.accesso__consenso input { margin-top: 2px; }
+
+.accesso__alt { font-size: var(--text-sm); color: var(--text-secondary); }
+.accesso__nota {
+  font-size: var(--text-xs);
+  line-height: var(--leading-snug);
+  color: var(--text-tertiary);
+  border-top: 1px solid var(--line-subtle);
+  padding-top: var(--space-4);
+}
+
+/* Sul telefono la finestra diventa la pagina: niente cornice intorno a una
+   cosa che occupa già tutto lo schermo. */
+@media (max-width: 480px) {
+  .accesso {
+    max-width: none;
+    padding: var(--space-5) var(--space-4) var(--space-16);
+    border: 0;
+    border-radius: 0;
+    background: none;
+  }
+}

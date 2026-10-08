@@ -60,10 +60,23 @@ export function createClient(opts = {}) {
     verify: (token) => req("/auth/verify", { method: "POST", json: { token } }),
     logout: () => req("/auth/logout", { method: "POST" }),
 
-    /* ---- Staff login with credentials (admin + photographer) ----------- */
-    // role: "photographer" | "admin". Participants stay magic-link only.
+    /* ---- Login with credentials ---------------------------------------- */
+    // role: "participant" | "photographer" | "admin". Since v6 participants
+    // have passwords too: they self-register behind an event code.
     login: (email, password, role) =>
       req("/auth/login", { method: "POST", json: { email, password, role } }),
+
+    /* ---- Participant self-registration (v6) ----------------------------
+       The event code is the one printed on the badge or the QR. It is the
+       anti-bot gate, and it is why registering sends no e-mail at all:
+       the address is verified lazily, only if a password reset is asked. */
+    register: (email, password, eventCode) =>
+      req("/auth/register", { method: "POST", json: { email, password, eventCode } }),
+
+    /* ---- Google (v6) ---------------------------------------------------
+       A full-page navigation, not a fetch: the endpoint answers 302 and the
+       state + PKCE cookie has to be set on a real document request. */
+    googleStartUrl: () => `${base}/auth/google/start`,
 
     /* ---- Event + participant flow -------------------------------------- */
     getEvent: (slug) => req(`/events/${slug}`),
