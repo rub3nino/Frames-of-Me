@@ -6,6 +6,8 @@
  *   and keep working (section G, hard rule);
  * - `kind = 'crowd'` with `recognition = true` is refused by the `check` constraint;
  * - `recognition` cannot change once `first_upload_at` is set;
+ * - 019 fills `first_upload_at` on an album 009 backfilled over already-existing photos, so
+ *   that lock also holds for them — the INSERT-only trigger never stamped those albums;
  * - dedup is per album: the same bytes land in a second album and are a duplicate only
  *   inside one album;
  * - the album-filtered vector search is served by the album's partial HNSW index.
@@ -254,7 +256,9 @@ describe("migrations 009 + 011 on a v5 database", () => {
     assert.equal(album?.kind, "official");
     assert.equal(album?.recognition, true);
     assert.equal(album?.moderation, "off");
-    assert.ok(album?.firstUploadAt === null, "the backfill does not pretend there was an upload");
+    // 019 derives `first_upload_at` from the photos 009 re-pointed into this album: the
+    // album really does hold uploads, and the lock must see that (see the next test).
+    assert.ok(album?.firstUploadAt instanceof Date, "019 stamps the backfilled album");
     assert.ok(await f.db.findDefaultAlbum(f.otherEventId), "the second event has one too");
     const orphans = await f.sql<{ count: number }[]>`
       select count(*)::int as count from photos p
@@ -269,6 +273,46 @@ describe("migrations 009 + 011 on a v5 database", () => {
     // An event created after the migration gets its album from the trigger.
     const created = await f.db.createEvent({ slug: "post-009", name: "Dopo 009" });
     assert.ok(await f.db.findDefaultAlbum(created.id));
+  });
+
+  it("locks recognition on an album backfilled over photos that already existed (019)", async (t) => {
+    if (skipReason) return t.skip(skipReason);
+    const f = required();
+    // 009 creates the official album and re-points the pre-existing photos at it with an
+    // UPDATE, but `photos_album_first_upload` is `after insert on photos`, so the backfilled
+    // album came out of 009 with `first_upload_at = NULL` — and `albums_recognition_lock`
+    // only raises when it is not null. An admin could therefore have flipped `recognition`
+    // on photos uploaded under a different consent, which decision 3 (frozen) forbids.
+    // 019_first_upload_backfill.sql derives the value from the photos themselves.
+    const album = await f.db.findDefaultAlbum(f.eventId);
+    assert.ok(album, "the backfilled official album");
+    const [earliest] = await f.sql<{ first_upload: Date }[]>`
+      select min(created_at) as first_upload from photos where album_id = ${album.id}
+    `;
+    assert.ok(earliest?.first_upload, "the album holds the pre-009 photos");
+    assert.ok(album.firstUploadAt, "019 filled first_upload_at");
+    assert.equal(
+      album.firstUploadAt?.getTime(),
+      earliest.first_upload.getTime(),
+      "and it is the earliest photo's created_at, not now()",
+    );
+    // Which is the whole point: the lock now fires, in the database and through the app.
+    const direct = await f.sql`
+      update albums set recognition = false where id = ${album.id}
+    `.catch((error: unknown) => error as { code?: string });
+    assert.equal((direct as { code?: string }).code, "ALBRI", "the trigger refuses it");
+    await assert.rejects(
+      f.db.updateAlbum(album.id, { recognition: false }),
+      AlbumRecognitionLockedError,
+    );
+    assert.equal((await f.db.findAlbum(album.id))?.recognition, true, "unchanged");
+    // An album 009 backfilled onto an event with no photos is left alone: nothing was
+    // uploaded into it, so it stays null and stays editable.
+    const empty = await f.db.findDefaultAlbum(f.otherEventId);
+    assert.ok(empty);
+    assert.equal(empty.firstUploadAt, null, "019 does not invent an upload");
+    assert.equal((await f.db.updateAlbum(empty.id, { recognition: false }))?.recognition, false);
+    assert.equal((await f.db.updateAlbum(empty.id, { recognition: true }))?.recognition, true);
   });
 
   it("refuses kind = crowd with recognition = true through the check constraint", async (t) => {
