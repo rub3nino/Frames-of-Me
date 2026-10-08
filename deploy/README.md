@@ -130,7 +130,7 @@ docker compose --env-file .env.production up -d
 docker compose --env-file .env.production ps
 ```
 
-`up -d` ricrea solo i container la cui immagine o configurazione è cambiata. Le migrazioni SQL partono da sole al boot di api/worker (lock advisory, una sola istanza le applica); per applicarle prima del rollout: `scripts/migrate.sh` tra `build` e `up`. Rollback: `git checkout <tag precedente>` e di nuovo build + up (le migrazioni non si annullano da sole: avere un backup appena fatto). Impostare `IMAGE_TAG` allo sha del commit se si vuole tenere le immagini precedenti sul disco.
+`up -d` ricrea solo i container la cui immagine o configurazione è cambiata. **Le migrazioni SQL NON partono da sole**: né api né worker le applicano all'avvio, e in `deploy/compose.yml` non c'è un servizio `migrate`. Vanno lanciate a mano con `deploy/scripts/migrate.sh`, **tra `build` e `up`** — altrimenti i container salgono su uno schema vecchio. (`migrate()` prende un lock advisory, quindi lanciarlo due volte in parallelo è innocuo.) Rollback: `git checkout <tag precedente>` e di nuovo build + up (le migrazioni non si annullano da sole: avere un backup appena fatto). Impostare `IMAGE_TAG` allo sha del commit se si vuole tenere le immagini precedenti sul disco.
 
 ---
 

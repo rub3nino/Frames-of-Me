@@ -56,14 +56,12 @@ the daily `pg_dump` + `mc mirror` sidecar documented in `deploy/README.md` § 6.
 5. Enable object versioning where the account plan supports it and retain a daily backup copy for
    the contractual retention period.
 
-The worker's housekeeping (`runHousekeeping`, `apps/worker/src/loop.ts:90-106`) aborts upload
-sessions left open for more than 24 hours **and their S3 multipart upload**. It does **not** yet
-delete the orphaned object a single-PUT session leaves behind when the browser disappears between
-the PUT and `/complete` (`loop.ts:98` is `if (!upload.s3UploadId) continue;`). That matters more
-here than it looks: the crowd upload path is single-PUT for anything under the multipart
-threshold, and rule 1 above only covers multipart, so those orphans accumulate with nothing to
-clear them. Until the worker does it, the gap has to be closed by hand: reconcile `originals/`
-against `photos.original_key` periodically and delete what nothing points at.
+The worker's housekeeping (`runHousekeeping`, `apps/worker/src/loop.ts`) aborts upload
+sessions left open for more than 24 hours, aborts their S3 multipart upload, and deletes
+the orphaned object a single-PUT session leaves behind when the browser disappears between
+the PUT and `/complete`. That last part matters more than it looks: the crowd upload path is
+single-PUT below the multipart threshold, and lifecycle rule 1 above only covers multipart,
+so without it those orphans would accumulate with nothing to clear them.
 
 ## GDPR operations
 
