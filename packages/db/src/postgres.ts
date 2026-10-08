@@ -3128,6 +3128,24 @@ export class PostgresDatabase implements Database {
     return { items, nextCursor };
   }
 
+  async listAlbumPhotosByIds(albumId: string, ids: string[]): Promise<AlbumPhoto[]> {
+    if (ids.length === 0) return [];
+    // Same three conditions as `listAlbumPhotosPage`: this album, `approved`, both
+    // derivatives. No ordering clause and so no `date_trunc` — an `id = any(...)` lookup is
+    // served by the primary key.
+    const rows = await this.sql<AlbumPhotoSql[]>`
+      select p.id, p.album_id, p.photographer_id, p.created_at,
+             thumb.s3_key as thumb_key, web.s3_key as web_key
+      from photos p
+      join derivatives thumb on thumb.photo_id = p.id and thumb.kind = 'thumb'
+      join derivatives web on web.photo_id = p.id and web.kind = 'web'
+      where p.album_id = ${albumId}
+        and p.moderation_state = 'approved'
+        and p.id = any(${ids}::uuid[])
+    `;
+    return rows.map(mapAlbumPhoto);
+  }
+
   /** Whether migration 005 could create `face_vectors` (it needs pgvector). Cached like the column probe. */
   private faceVectorsAvailable(): Promise<boolean> {
     if (!this.faceVectorsChecked) {

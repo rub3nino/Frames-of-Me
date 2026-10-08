@@ -24,6 +24,7 @@ import { randomUUID } from "node:crypto";
 import type { Hono } from "hono";
 import {
   ALBUM_UPLOAD_RATE_LIMIT,
+  albumDownloadBodySchema,
   albumPhotosQuerySchema,
   albumUploadInitBodySchema,
   moderateBodySchema,
@@ -308,6 +309,46 @@ export function registerCrowdRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       nextCursor: page.nextCursor ? encodeCrowdCursor(page.nextCursor) : null,
       quota: { used, max: album.maxPhotosPerUser },
     });
+  });
+
+  // --- the crowd download, with main's IDOR guard -----------------------------------------
+
+  app.post("/v1/albums/:albumId/photos/download", async (c) => {
+    const user = requireUser(c);
+    requireRole(user, ["participant", "photographer", "admin"]);
+    const album = await loadAlbum(deps, c.req.param("albumId"));
+    // Exactly the gate of `GET /v1/albums/:albumId/photos`: a download must never see more
+    // than the feed it is a download OF.
+    if (user.role === "participant") {
+      if (album.visibility === "staff") throw new ApiError(403, MESSAGES.forbidden);
+      await assertEventMember(deps, album, user.id, user.email);
+    }
+    const body = albumDownloadBodySchema.safeParse(await readJson(c));
+    if (!body.success) throw new ApiError(400, MESSAGES.validation);
+    const photos = await deps.db.listAlbumPhotosByIds(album.id, body.data.photoIds);
+    // Main's IDOR guard (`listPublicPhotosByIds` + this comparison), and the reason it is a
+    // comparison rather than a filter: anything the lookup did not return — an id in the
+    // official album, an id in another event's album, a photo the report threshold withheld,
+    // a photo whose derivatives have not landed — makes the WHOLE batch a 404. Returning the
+    // subset that happened to qualify would turn this route into an oracle for which uuids
+    // exist and which are approved, one id per request.
+    if (photos.length !== new Set(body.data.photoIds).size) {
+      throw new ApiError(404, MESSAGES.notFound);
+    }
+    // Derivatives only: see `crowdDownloadVariantSchema`. `original` is a 400 at the schema.
+    const urls = await Promise.all(
+      photos.map(async (photo) => ({
+        photoId: photo.id,
+        url: await deps.objects.presignGet(photo.webKey),
+      })),
+    );
+    await deps.db.insertAudit({
+      actorId: user.id,
+      action: "album.download",
+      target: `album:${album.id}`,
+      meta: { eventId: album.eventId, photos: urls.length, variant: body.data.variant },
+    });
+    return c.json({ urls });
   });
 
   // --- C2: the report button --------------------------------------------------------------

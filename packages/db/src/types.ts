@@ -668,6 +668,17 @@ export interface Database {
     albumId: string,
     input: { limit: number; cursor?: UploadCursor },
   ): Promise<{ items: AlbumPhoto[]; nextCursor: UploadCursor | null }>;
+  /**
+   * The same rows as {@link listAlbumPhotosPage} but selected by id, for the download route.
+   *
+   * Every clause of that filter is repeated here on purpose rather than resolved from
+   * `photos` by id: the album, `moderation_state = 'approved'` and both derivatives present.
+   * It is what makes the caller's `photos.length !== new Set(ids).size` comparison a real
+   * IDOR guard — an id belonging to the official album, or to a photo the report threshold
+   * withheld, is simply absent from the result and the whole batch is refused. Duplicates in
+   * `ids` collapse, so the caller compares against the distinct count.
+   */
+  listAlbumPhotosByIds(albumId: string, ids: string[]): Promise<AlbumPhoto[]>;
   // ---- privacy and retention scheduling v6 (agent G) -------------------------------------
   /** What the participant sees on "I miei dati", and what an admin sees for them. */
   findConsentState(userId: string, eventId: string): Promise<ConsentState>;

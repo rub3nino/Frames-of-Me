@@ -1251,6 +1251,41 @@ export const albumPhotosResponseSchema = z
   })
   .strict();
 
+/**
+ * Which rendition a crowd-album photo may be downloaded as, and the answer is: a derivative,
+ * never the original.
+ *
+ * Main offered `original` here (its `galleryDownloadBodySchema` is shared with the personal
+ * match gallery, where `original` is the whole point — those are the photographer's own
+ * photos of you, and the download is the product). A crowd album is different in kind: the
+ * photos are other participants' camera originals, carrying full-resolution faces and
+ * whatever EXIF the phone wrote, uploaded by someone who was sharing a moment with the room
+ * and not publishing a master. Handing the original to every other participant is a decision
+ * nobody has taken, so the conservative answer is encoded here rather than assumed.
+ *
+ * It is a one-value enum and not an omitted field on purpose: `{"variant":"original"}` gets a
+ * 400 that says the request was understood and refused, instead of silently receiving the
+ * 1600 px web derivative and believing it is the original. Widening it is a one-line change
+ * IF someone decides the product wants it — and it is a product decision, not a code one.
+ */
+export const crowdDownloadVariantSchema = z.enum(["web"]);
+export type CrowdDownloadVariant = z.infer<typeof crowdDownloadVariantSchema>;
+
+export const albumDownloadBodySchema = z
+  .object({
+    photoIds: z.array(z.string().uuid()).min(1).max(DOWNLOAD_MAX_PHOTOS),
+    variant: crowdDownloadVariantSchema.default("web"),
+  })
+  .strict();
+
+export const albumDownloadResponseSchema = z
+  .object({
+    urls: z.array(
+      z.object({ photoId: z.string().uuid(), url: z.string().min(1) }).strict(),
+    ),
+  })
+  .strict();
+
 export const moderationQuerySchema = z
   .object({
     albumId: z.string().uuid().optional(),

@@ -2787,6 +2787,29 @@ export class MemoryDatabase implements Database {
     return { items, nextCursor };
   }
 
+  async listAlbumPhotosByIds(albumId: string, ids: string[]): Promise<AlbumPhoto[]> {
+    const wanted = new Set(ids);
+    const rows: AlbumPhoto[] = [];
+    for (const photo of this.photos.values()) {
+      // Same three conditions as `listAlbumPhotosPage`, so the caller's count comparison is
+      // a real IDOR guard: this album, `approved`, both derivatives.
+      if (!wanted.has(photo.id)) continue;
+      if (photo.albumId !== albumId || photo.moderationState !== "approved") continue;
+      const thumbKey = this.derivativeKey(photo.id, "thumb");
+      const webKey = this.derivativeKey(photo.id, "web");
+      if (!thumbKey || !webKey) continue;
+      rows.push({
+        id: photo.id,
+        albumId: photo.albumId,
+        uploaderId: photo.photographerId,
+        createdAt: photo.createdAt,
+        thumbKey,
+        webKey,
+      });
+    }
+    return rows;
+  }
+
   /** v6 (agent C): the stored key of one derivative, or null when it is not there yet. */
   private derivativeKey(photoId: string, kind: "thumb" | "web"): string | null {
     const row = this.derivatives.find((item) => item.photoId === photoId && item.kind === kind);

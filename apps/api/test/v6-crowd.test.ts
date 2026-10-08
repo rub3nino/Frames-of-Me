@@ -13,6 +13,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { test } from "node:test";
 import {
+  albumDownloadResponseSchema,
   albumPhotosResponseSchema,
   albumUploadDedupeResponseSchema,
   envSchema,
@@ -1164,6 +1165,117 @@ test("complete refuses bytes stored under a content type the PUT was not signed 
   assert.ok(h.objects.deleted.includes(created.objectKey));
   assert.equal(h.objects.objects.has(created.objectKey), false);
   assert.equal(await h.db.findPhotoByAlbumSha(h.crowd.id, sha256(bytes)), null);
+});
+
+// ---- the download route and its IDOR guard (ported from main) -----------------------------
+
+test("album download presigns crowd photos but 404s on any id outside the album (no IDOR)", async () => {
+  // Main's `public-gallery/download presigns public photos but 404s on any non-public id`,
+  // re-pointed at the album model. The guard is a COUNT comparison, not a filter: one bad id
+  // refuses the whole batch, so the route cannot be used as an oracle for which uuids exist.
+  const h = await harness();
+  const anna = await participant(h, "anna@example.com");
+  const bruno = await participant(h, "bruno@example.com");
+  const mine = await upload(h, h.crowd.id, anna.cookie, "anna-1");
+  assert.equal(mine.status, 201);
+  const annaPhoto = mine.body.photoId as string;
+  await derive(h, annaPhoto);
+  const theirs = await upload(h, h.crowd.id, bruno.cookie, "bruno-1");
+  assert.equal(theirs.status, 201);
+  const brunoPhoto = theirs.body.photoId as string;
+  await derive(h, brunoPhoto);
+
+  const download = (photoIds: string[], cookie: string, variant?: string) =>
+    h.app.request(
+      json(
+        "POST",
+        `/v1/albums/${h.crowd.id}/photos/download`,
+        { photoIds, ...(variant ? { variant } : {}) },
+        cookie,
+      ),
+    );
+
+  // Both photos of the album, including one the caller did not upload: a crowd album is a
+  // shared album and the feed already shows it to them.
+  const ok = await download([annaPhoto, brunoPhoto], anna.cookie);
+  assert.equal(ok.status, 200);
+  const parsed = albumDownloadResponseSchema.parse(await ok.json());
+  assert.deepEqual(
+    parsed.urls.map((row) => row.photoId).sort(),
+    [annaPhoto, brunoPhoto].sort(),
+  );
+  for (const row of parsed.urls) {
+    assert.ok(row.url.includes(objectKeys.web(row.photoId)), "the web derivative, not the original");
+  }
+
+  // A photo of the OFFICIAL album of the same event: the real IDOR, and it 404s.
+  const photographer = await h.db.findUserByEmailRole(
+    "photographer@rephoto.local",
+    "photographer",
+  );
+  assert.ok(photographer);
+  const officialId = randomUUID();
+  await h.db.insertPhoto({
+    id: officialId,
+    eventId: h.event.id,
+    photographerId: photographer.id,
+    sha256: sha256(Buffer.from("official")),
+    originalKey: objectKeys.original(h.event.id, officialId),
+    contentType: "image/jpeg",
+    bytes: 10,
+    albumId: h.official.id,
+  });
+  await derive(h, officialId);
+  assert.equal((await download([officialId], anna.cookie)).status, 404);
+  // And mixing it into an otherwise valid batch refuses the batch, rather than silently
+  // returning the two that qualified.
+  const mixed = await download([annaPhoto, brunoPhoto, officialId], anna.cookie);
+  assert.equal(mixed.status, 404);
+  assert.deepEqual(await mixed.json(), { error: MESSAGES.notFound });
+  // A uuid that is no photo at all: same answer, so the two cases are indistinguishable.
+  assert.equal((await download([randomUUID()], anna.cookie)).status, 404);
+
+  // A photo the report threshold withheld leaves the download too, not just the feed.
+  await h.db.setPhotoModeration({ photoId: brunoPhoto, state: "pending" });
+  assert.equal((await download([brunoPhoto], anna.cookie)).status, 404);
+  assert.equal((await download([annaPhoto], anna.cookie)).status, 200);
+
+  // The original is refused at the schema, so nobody can mistake a web derivative for it.
+  const original = await download([annaPhoto], anna.cookie, "original");
+  assert.equal(original.status, 400);
+  assert.deepEqual(await original.json(), { error: MESSAGES.validation });
+});
+
+test("album download is gated exactly like the feed it is a download of", async () => {
+  const h = await harness();
+  const anna = await participant(h, "anna@example.com");
+  const uploaded = await upload(h, h.crowd.id, anna.cookie, "anna-1");
+  assert.equal(uploaded.status, 201);
+  const photoId = uploaded.body.photoId as string;
+  await derive(h, photoId);
+  const path = `/v1/albums/${h.crowd.id}/photos/download`;
+
+  // Signed out.
+  assert.equal(
+    (await h.app.request(json("POST", path, { photoIds: [photoId] }))).status,
+    401,
+  );
+  // A participant of another event: no `event_members` row here.
+  const stranger = await strangerParticipant(h, "stranger@example.com");
+  const refused = await h.app.request(json("POST", path, { photoIds: [photoId] }, stranger.cookie));
+  assert.equal(refused.status, 403);
+  assert.deepEqual(await refused.json(), { error: MESSAGES.notEventMember });
+  // A staff-only album is not downloadable by a participant either.
+  await h.db.updateAlbum(h.crowd.id, { visibility: "staff" });
+  const staffOnly = await h.app.request(json("POST", path, { photoIds: [photoId] }, anna.cookie));
+  assert.equal(staffOnly.status, 403);
+  assert.deepEqual(await staffOnly.json(), { error: MESSAGES.forbidden });
+  // The admin still can.
+  const adminCookie = await cookieFor(h.db, h.admin.id);
+  assert.equal(
+    (await h.app.request(json("POST", path, { photoIds: [photoId] }, adminCookie))).status,
+    200,
+  );
 });
 
 // ---- the burst gate (ported from main's PUBLIC_UPLOAD_RATE_LIMIT) -------------------------
