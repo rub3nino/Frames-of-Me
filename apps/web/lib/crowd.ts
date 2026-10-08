@@ -9,7 +9,6 @@
  * Italian one and is shown as-is.
  */
 import { ApiError, api } from "@/lib/api";
-import { isAcceptedImage } from "@/lib/polaroid";
 import type {
   AlbumPhotosResponse,
   AlbumUploadDedupeResponse,
@@ -18,7 +17,7 @@ import type {
   ReportResponse,
   UploadInitResponse,
 } from "@/lib/types";
-import { sha256Hex, type ImageType } from "@/lib/upload";
+import { contentTypeOf, sha256Hex } from "@/lib/upload";
 
 export type CrowdUploadOutcome =
   | { status: "uploaded"; photoId: string }
@@ -56,8 +55,11 @@ export async function reportPhoto(
  * Uploads one composited photo into a crowd album: `init`, a single presigned PUT (a
  * composite is always well under the multipart threshold), then `complete`.
  *
- * `blob.type` is checked before anything is sent: video is out of scope for v6 and must be
- * refused by the client too, not only by the api.
+ * The type is resolved with `contentTypeOf`, the same function the photographer path uses,
+ * rather than a strict `image/jpeg | image/png` test: it normalises the `image/jpg` some
+ * iOS pickers report and falls back to the extension when a forwarded file arrives with no
+ * type at all — exactly the population a crowd album is made of. It still refuses video,
+ * which is out of scope for v6 and must be refused by the client too, not only by the api.
  */
 export async function uploadToAlbum(
   albumId: string,
@@ -65,9 +67,12 @@ export async function uploadToAlbum(
   filename: string,
   onProgress?: (fraction: number) => void,
 ): Promise<CrowdUploadOutcome> {
-  if (!isAcceptedImage(blob.type)) throw new Error("Puoi caricare solo foto JPEG o PNG.");
-  const contentType = blob.type.split(";")[0]?.trim() as ImageType;
-  const file = new File([blob], filename, { type: contentType });
+  const named = new File([blob], filename, { type: blob.type });
+  const contentType = contentTypeOf(named);
+  if (!contentType) throw new Error("Puoi caricare solo foto JPEG o PNG.");
+  // Re-wrapped with the resolved type so what is PUT matches what `init` was told.
+  const file =
+    named.type === contentType ? named : new File([blob], filename, { type: contentType });
   const sha256 = await sha256Hex(file);
   onProgress?.(0.1);
   const created = await api<UploadInitResponse | AlbumUploadDedupeResponse>(

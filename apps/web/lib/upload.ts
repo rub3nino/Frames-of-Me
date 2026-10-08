@@ -21,9 +21,23 @@ export const HASH_SLICE_BYTES = 4 * 1024 * 1024;
 /** Per-part XHR timeout. */
 export const PART_TIMEOUT_MS = 120_000;
 
+/**
+ * The content type to send for a chosen file, or `null` if it is not a photo we accept.
+ *
+ * Lenient on purpose, because the browser's `type` is not reliable on the population that
+ * uses this most: iOS reports `image/jpg` for some pickers, and a file forwarded through a
+ * messaging app can arrive with an empty type or `application/octet-stream`. So an
+ * unrecognised type falls back to the filename extension.
+ *
+ * The one thing that is NOT lenient is video: it is out of v6 (decision 4, frozen), and
+ * without this guard the extension fallback would accept a `video/quicktime` file that
+ * happens to be named `.jpg` and hand it to the api as a JPEG.
+ */
 export function contentTypeOf(file: File): ImageType | null {
-  if (file.type === "image/jpeg" || file.type === "image/png") return file.type;
-  if (file.type === "image/jpg") return "image/jpeg";
+  const reported = file.type.split(";")[0]?.trim().toLowerCase() ?? "";
+  if (reported === "image/jpeg" || reported === "image/png") return reported;
+  if (reported === "image/jpg") return "image/jpeg";
+  if (reported.startsWith("video/")) return null;
   const name = file.name.toLowerCase();
   if (name.endsWith(".jpg") || name.endsWith(".jpeg")) return "image/jpeg";
   if (name.endsWith(".png")) return "image/png";
