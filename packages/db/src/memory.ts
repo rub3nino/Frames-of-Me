@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { JobType, PhotoCollection, PhotoStatus, Role } from "@rephoto/contracts";
+import type { JobType, LivenessAction, PhotoCollection, PhotoStatus, Role } from "@rephoto/contracts";
 import {
   JOB_MAX_ATTEMPTS,
   JOB_PRIORITY,
@@ -20,6 +20,7 @@ import type {
   GalleryItemSource,
   GalleryPage,
   ImageContentType,
+  LivenessChallengeRow,
   Metrics,
   OriginalStatus,
   PhotoRow,
@@ -120,6 +121,7 @@ export class MemoryDatabase implements Database {
   private readonly links: MagicLink[] = [];
   private readonly sessions = new Map<string, { userId: string; expiresAt: Date }>();
   private readonly consents: Consent[] = [];
+  private readonly livenessChallenges = new Map<string, LivenessChallengeRow>();
   private readonly photos = new Map<string, PhotoRow>();
   private readonly uploads = new Map<string, UploadSessionRow>();
   private readonly derivatives: Array<{ photoId: string; kind: "thumb" | "web"; s3Key: string }> = [];
@@ -308,6 +310,36 @@ export class MemoryDatabase implements Database {
     return this.consents.some(
       (row) => row.userId === userId && row.eventId === eventId && !row.withdrawnAt,
     );
+  }
+
+  async insertLivenessChallenge(input: {
+    userId: string;
+    eventId: string;
+    actions: LivenessAction[];
+    expiresAt: Date;
+  }): Promise<{ id: string }> {
+    const id = randomUUID();
+    this.livenessChallenges.set(id, {
+      id,
+      userId: input.userId,
+      eventId: input.eventId,
+      actions: [...input.actions],
+      expiresAt: input.expiresAt,
+      consumedAt: null,
+    });
+    return { id };
+  }
+
+  async findLivenessChallenge(id: string): Promise<LivenessChallengeRow | null> {
+    const row = this.livenessChallenges.get(id);
+    return row ? { ...row, actions: [...row.actions] } : null;
+  }
+
+  async consumeLivenessChallenge(id: string): Promise<boolean> {
+    const row = this.livenessChallenges.get(id);
+    if (!row || row.consumedAt) return false;
+    row.consumedAt = new Date();
+    return true;
   }
 
   async countMatchJobsSince(userId: string, since: Date): Promise<number> {

@@ -14,6 +14,26 @@ export const SELFIE_FIELD_NAME = "selfie";
 export const SELFIE_LIVENESS_FIELD = "liveness";
 export const selfieLivenessSchema = z.enum(["challenge", "file"]);
 export type SelfieLiveness = z.infer<typeof selfieLivenessSchema>;
+
+/**
+ * Server-verified challenge-response liveness (v4 report F05). The server issues an ordered
+ * list of actions; the client performs them live and uploads one frame per action (field
+ * `frame0`, `frame1`, …) plus the challenge id (field `challengeId`). `left`/`right` are head
+ * turns, `front` is the final frontal capture used for the match.
+ */
+export const livenessActionSchema = z.enum(["left", "right", "front"]);
+export type LivenessAction = z.infer<typeof livenessActionSchema>;
+export const SELFIE_CHALLENGE_FIELD = "challengeId";
+/** Multipart file fields of the challenge frames are `${SELFIE_FRAME_PREFIX}${i}`, i from 0. */
+export const SELFIE_FRAME_PREFIX = "frame";
+export const selfieChallengeResponseSchema = z
+  .object({
+    challengeId: z.string().uuid(),
+    actions: z.array(livenessActionSchema).min(2).max(6),
+    expiresAt: z.string().datetime(),
+  })
+  .strict();
+export type SelfieChallengeResponse = z.infer<typeof selfieChallengeResponseSchema>;
 export const SELFIE_RATE_LIMIT = { max: 5, windowSeconds: 60 * 60 } as const;
 export const PUBLIC_UPLOAD_RATE_LIMIT = { max: 20, windowSeconds: 60 * 60 } as const;
 /** 10 MiB: the largest body the api accepts (selfie multipart of 8 MiB plus overhead). */

@@ -45,6 +45,9 @@ export interface SelfieFace {
   score: number; // 0..1 detector confidence
   quality: number; // 0..1
   embedding: number[];
+  /** Head yaw in [-1, 1] from the face service (positive = nose towards image right);
+   * null when the engine gives no landmarks. Used by challenge-response liveness (F05). */
+  yaw?: number | null;
 }
 
 export interface EmbedSelfieResult {

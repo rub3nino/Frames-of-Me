@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { JobType, PhotoCollection, PhotoStatus, Role } from "@rephoto/contracts";
+import type { JobType, LivenessAction, PhotoCollection, PhotoStatus, Role } from "@rephoto/contracts";
 import {
   JOB_MAX_ATTEMPTS,
   JOB_PRIORITY,
@@ -21,6 +21,7 @@ import type {
   GalleryItemSource,
   GalleryPage,
   ImageContentType,
+  LivenessChallengeRow,
   Metrics,
   OriginalStatus,
   PhotoRow,
@@ -281,6 +282,50 @@ export class PostgresDatabase implements Database {
     const rows = await this.sql<{ ok: number }[]>`
       select 1 as ok from consents
       where user_id = ${userId} and event_id = ${eventId} and withdrawn_at is null
+    `;
+    return rows.length > 0;
+  }
+
+  async insertLivenessChallenge(input: {
+    userId: string;
+    eventId: string;
+    actions: LivenessAction[];
+    expiresAt: Date;
+  }): Promise<{ id: string }> {
+    const rows = await this.sql<{ id: string }[]>`
+      insert into liveness_challenges (user_id, event_id, actions, expires_at)
+      values (${input.userId}, ${input.eventId}, ${input.actions as unknown as string[]}, ${input.expiresAt})
+      returning id
+    `;
+    const row = rows[0];
+    if (!row) throw new Error("Liveness challenge insert failed");
+    return { id: row.id };
+  }
+
+  async findLivenessChallenge(id: string): Promise<LivenessChallengeRow | null> {
+    const rows = await this.sql<
+      { id: string; user_id: string; event_id: string; actions: string[]; expires_at: Date; consumed_at: Date | null }[]
+    >`
+      select id, user_id, event_id, actions, expires_at, consumed_at
+      from liveness_challenges where id = ${id}
+    `;
+    const row = rows[0];
+    if (!row) return null;
+    return {
+      id: row.id,
+      userId: row.user_id,
+      eventId: row.event_id,
+      actions: row.actions as LivenessAction[],
+      expiresAt: row.expires_at,
+      consumedAt: row.consumed_at,
+    };
+  }
+
+  async consumeLivenessChallenge(id: string): Promise<boolean> {
+    const rows = await this.sql<{ id: string }[]>`
+      update liveness_challenges set consumed_at = now()
+      where id = ${id} and consumed_at is null
+      returning id
     `;
     return rows.length > 0;
   }

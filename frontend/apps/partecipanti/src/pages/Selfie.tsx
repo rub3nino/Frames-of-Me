@@ -3,8 +3,9 @@ import { Link } from "react-router-dom";
 import { Screen, CheckIcon } from "../ui";
 import { api, EVENT_SLUG } from "../lib/api";
 import {
-  CHALLENGE_STEPS, LivenessError, STEP_LABELS, cameraSupported,
-  loadLandmarker, openCamera, runChallenge, stopStream, type ChallengeStep,
+  CHALLENGE_STEPS, LivenessError, SERVER_ACTION_LABELS, STEP_LABELS, cameraSupported,
+  loadLandmarker, openCamera, runChallenge, runServerChallenge, stopStream,
+  type ServerAction,
 } from "../lib/liveness";
 import type { FaceLandmarker } from "@mediapipe/tasks-vision";
 
@@ -23,6 +24,9 @@ export default function Selfie() {
   const [err, setErr] = useState<string | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [liveness, setLiveness] = useState<Liveness>("file");
+  // Server-verified challenge (v4 report F05): set when the server dictated and the client
+  // completed a challenge. Its frames are uploaded instead of a single selfie.
+  const [challenge, setChallenge] = useState<{ id: string; frames: Blob[] } | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [mode, setMode] = useState<"camera" | "file">("camera");
   const [attempt, setAttempt] = useState(0);
@@ -44,9 +48,22 @@ export default function Selfie() {
 
   function choose(next: File | null, source: Liveness) {
     if (preview) URL.revokeObjectURL(preview);
+    setChallenge(null);
     if (!next) { setFile(null); setPreview(null); return; }
     if (!isImage(next)) { setErr("Usa un jpeg o un png."); return; }
     setErr(null); setFile(next); setLiveness(source); setPreview(URL.createObjectURL(next));
+  }
+
+  // A completed server challenge: keep its frames, and show the frontal frame as the preview.
+  function chooseChallenge(id: string, frames: Blob[]) {
+    if (preview) URL.revokeObjectURL(preview);
+    const frontal = frames[frames.length - 1]!;
+    const frontalFile = new File([frontal], "selfie.jpg", { type: frontal.type || "image/jpeg" });
+    setErr(null);
+    setChallenge({ id, frames });
+    setLiveness("challenge");
+    setFile(frontalFile);
+    setPreview(URL.createObjectURL(frontal));
   }
 
   async function send(e: React.FormEvent) {
@@ -54,7 +71,8 @@ export default function Selfie() {
     if (!file || busy) return;
     setBusy(true); setErr(null);
     try {
-      await api.sendSelfie(EVENT_SLUG, file, liveness, file.name); // POST .../selfie
+      if (challenge) await api.sendSelfieChallenge(EVENT_SLUG, challenge.id, challenge.frames);
+      else await api.sendSelfie(EVENT_SLUG, file, liveness, file.name); // POST .../selfie
       setPhase("result");
     } catch (e: any) {
       if (e?.status === 429) setErr("Hai già cercato più volte. Riprova più tardi.");
@@ -101,6 +119,7 @@ export default function Selfie() {
             onChange={(e) => choose(e.target.files?.[0] ?? null, "file")} />
           {challenging && (
             <CameraChallenge key={attempt}
+              onChallenge={chooseChallenge}
               onCaptured={(blob) => choose(new File([blob], "selfie.jpg", { type: "image/jpeg" }), "challenge")}
               onFallback={() => { setMode("file"); choose(null, "file"); }} />
           )}
@@ -122,15 +141,25 @@ export default function Selfie() {
   return <SearchResult />;
 }
 
-function CameraChallenge({ onCaptured, onFallback }: { onCaptured: (b: Blob) => void; onFallback: () => void }) {
+function CameraChallenge({
+  onChallenge,
+  onCaptured,
+  onFallback,
+}: {
+  onChallenge: (id: string, frames: Blob[]) => void;
+  onCaptured: (b: Blob) => void;
+  onFallback: () => void;
+}) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const lmRef = useRef<FaceLandmarker | null>(null);
   const [status, setStatus] = useState<"loading" | "running" | "timeout">("loading");
-  const [step, setStep] = useState<ChallengeStep>("look");
+  // Progress is generic: the legacy flow has fixed steps, the server flow a dictated action list.
+  const [instruction, setInstruction] = useState<string>("");
+  const [progress, setProgress] = useState<{ index: number; total: number }>({ index: 0, total: CHALLENGE_STEPS.length });
   const [round, setRound] = useState(0);
-  const latest = useRef({ onCaptured, onFallback });
-  latest.current = { onCaptured, onFallback };
+  const latest = useRef({ onChallenge, onCaptured, onFallback });
+  latest.current = { onChallenge, onCaptured, onFallback };
 
   useEffect(() => {
     const el = videoRef.current; if (!el) return;
@@ -149,9 +178,49 @@ function CameraChallenge({ onCaptured, onFallback }: { onCaptured: (b: Blob) => 
           video.srcObject = cam.value; await video.play();
         }
         if (signal.aborted) return;
+
+        // v4 report F05: ask the server for a challenge. When it answers, run the dictated
+        // sequence and upload every frame. A 404 means the server runs the legacy flow.
+        let serverActions: ServerAction[] | null = null;
+        let challengeId = "";
+        try {
+          const challenge = await api.getSelfieChallenge(EVENT_SLUG);
+          serverActions = challenge.actions as ServerAction[];
+          challengeId = challenge.challengeId;
+        } catch (cause) {
+          // 404 = the server runs the legacy single-selfie flow; anything else is a real error.
+          const status = (cause as { status?: number } | null)?.status;
+          if (status !== 404) throw cause;
+        }
+        if (signal.aborted) return;
         setStatus("running");
-        const blob = await runChallenge({ video, landmarker: lmRef.current, onStep: setStep, signal });
-        latest.current.onCaptured(blob);
+
+        if (serverActions) {
+          setProgress({ index: 0, total: serverActions.length });
+          const frames = await runServerChallenge({
+            video,
+            landmarker: lmRef.current,
+            actions: serverActions,
+            onAction: (action, index) => {
+              setInstruction(SERVER_ACTION_LABELS[action]);
+              setProgress({ index, total: serverActions!.length });
+            },
+            signal,
+          });
+          latest.current.onChallenge(challengeId, frames);
+        } else {
+          setProgress({ index: 0, total: CHALLENGE_STEPS.length });
+          const blob = await runChallenge({
+            video,
+            landmarker: lmRef.current,
+            onStep: (step) => {
+              setInstruction(STEP_LABELS[step]);
+              setProgress({ index: CHALLENGE_STEPS.indexOf(step), total: CHALLENGE_STEPS.length });
+            },
+            signal,
+          });
+          latest.current.onCaptured(blob);
+        }
       } catch (cause) {
         if (signal.aborted) return;
         if (cause instanceof LivenessError && cause.code === "timeout") { setStatus("timeout"); return; }
@@ -163,7 +232,6 @@ function CameraChallenge({ onCaptured, onFallback }: { onCaptured: (b: Blob) => 
 
   useEffect(() => () => { stopStream(streamRef.current); streamRef.current = null; lmRef.current?.close(); lmRef.current = null; }, []);
 
-  const active = CHALLENGE_STEPS.indexOf(step);
   return (
     <div className="live">
       <div className="live-frame">
@@ -171,12 +239,12 @@ function CameraChallenge({ onCaptured, onFallback }: { onCaptured: (b: Blob) => 
         <div className="live-guide" aria-hidden="true" />
       </div>
       <ol className="live-steps" aria-hidden="true">
-        {CHALLENGE_STEPS.map((name, i) => (
-          <li key={name} data-state={status !== "running" ? undefined : i < active ? "done" : i === active ? "active" : undefined} />
+        {Array.from({ length: progress.total }, (_, i) => (
+          <li key={i} data-state={status !== "running" ? undefined : i < progress.index ? "done" : i === progress.index ? "active" : undefined} />
         ))}
       </ol>
       <p className="live-step" role="status" aria-live="polite">
-        {status === "loading" ? "Apro la camera…" : status === "timeout" ? "Tempo scaduto. Riprova." : STEP_LABELS[step]}
+        {status === "loading" ? "Apro la camera…" : status === "timeout" ? "Tempo scaduto. Riprova." : instruction}
       </p>
       {status === "timeout"
         ? <button className="btn btn-primary" type="button" onClick={() => setRound((n) => n + 1)} data-press>Riprova</button>

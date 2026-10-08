@@ -2347,3 +2347,100 @@ test("public uploads are rate limited per participant per event", async () => {
   assert.equal(blocked.status, 429);
   assert.deepEqual(await blocked.json(), { error: MESSAGES.rateLimited });
 });
+
+test("challenge issue returns a server-dictated action sequence (v4 report F05)", async () => {
+  const h = await harness({ env: { ...env, LIVENESS_CHALLENGE: true } });
+  const participant = await h.db.createUser({ email: "chal@example.com", role: "participant" });
+  const cookie = await sessionCookie(h.db, participant.id);
+  await h.db.insertConsent({
+    userId: participant.id,
+    eventId: h.event.id,
+    textVersion: CONSENT_TEXT_VERSION,
+    ip: "127.0.0.1",
+    userAgent: "t",
+  });
+  const res = await h.app.request(
+    new Request(`http://api.local/v1/events/${h.event.slug}/selfie/challenge`, {
+      method: "POST",
+      headers: { cookie },
+    }),
+  );
+  assert.equal(res.status, 201);
+  const body = (await res.json()) as { challengeId: string; actions: string[]; expiresAt: string };
+  assert.match(body.challengeId, /^[0-9a-f-]{36}$/);
+  assert.equal(body.actions.at(-1), "front", "the last action is the frontal capture");
+  assert.ok(body.actions.length >= 2);
+  assert.ok(body.actions.slice(0, -1).every((a) => a === "left" || a === "right"));
+});
+
+test("challenge issue is hidden when challenge mode is off (v4 report F05)", async () => {
+  const h = await harness();
+  const participant = await h.db.createUser({ email: "choff@example.com", role: "participant" });
+  const cookie = await sessionCookie(h.db, participant.id);
+  const res = await h.app.request(
+    new Request(`http://api.local/v1/events/${h.event.slug}/selfie/challenge`, {
+      method: "POST",
+      headers: { cookie },
+    }),
+  );
+  assert.equal(res.status, 404);
+});
+
+test("selfie without a challenge is refused when challenge mode is on (v4 report F05)", async () => {
+  const h = await harness({ env: { ...env, LIVENESS_CHALLENGE: true } });
+  const participant = await h.db.createUser({ email: "noch@example.com", role: "participant" });
+  const cookie = await sessionCookie(h.db, participant.id);
+  await h.db.insertConsent({
+    userId: participant.id,
+    eventId: h.event.id,
+    textVersion: CONSENT_TEXT_VERSION,
+    ip: "127.0.0.1",
+    userAgent: "t",
+  });
+  const form = new FormData();
+  form.set("selfie", new File([Buffer.from("not a challenge")], "s.jpg", { type: "image/jpeg" }));
+  const res = await h.app.request(
+    new Request(`http://api.local/v1/events/${h.event.slug}/selfie`, {
+      method: "POST",
+      headers: { cookie },
+      body: form,
+    }),
+  );
+  assert.equal(res.status, 400);
+  assert.deepEqual(await res.json(), { error: MESSAGES.challengeRequired });
+});
+
+test("selfie with challenge frames queues a match (v4 report F05)", async () => {
+  const h = await harness({ env: { ...env, LIVENESS_CHALLENGE: true } });
+  const participant = await h.db.createUser({ email: "frames@example.com", role: "participant" });
+  const cookie = await sessionCookie(h.db, participant.id);
+  await h.db.insertConsent({
+    userId: participant.id,
+    eventId: h.event.id,
+    textVersion: CONSENT_TEXT_VERSION,
+    ip: "127.0.0.1",
+    userAgent: "t",
+  });
+  const issued = await h.app.request(
+    new Request(`http://api.local/v1/events/${h.event.slug}/selfie/challenge`, {
+      method: "POST",
+      headers: { cookie },
+    }),
+  );
+  const { challengeId, actions } = (await issued.json()) as { challengeId: string; actions: string[] };
+  const form = new FormData();
+  form.set("challengeId", challengeId);
+  actions.forEach((_, i) => {
+    form.set(`frame${i}`, new File([Buffer.from(`frame-${i}`)], `f${i}.jpg`, { type: "image/jpeg" }));
+  });
+  const res = await h.app.request(
+    new Request(`http://api.local/v1/events/${h.event.slug}/selfie`, {
+      method: "POST",
+      headers: { cookie },
+      body: form,
+    }),
+  );
+  assert.equal(res.status, 202);
+  assert.deepEqual(await res.json(), { status: "queued" });
+  assert.equal(await h.db.countMatchJobsSince(participant.id, new Date(Date.now() - 60_000)), 1);
+});

@@ -1,6 +1,16 @@
-import type { JobType, PhotoCollection, PhotoStatus, Role } from "@rephoto/contracts";
+import type { JobType, LivenessAction, PhotoCollection, PhotoStatus, Role } from "@rephoto/contracts";
 
 export type ImageContentType = "image/jpeg" | "image/png";
+
+/** A server-issued liveness challenge (v4 report F05). `consumedAt` is set once used. */
+export interface LivenessChallengeRow {
+  id: string;
+  userId: string;
+  eventId: string;
+  actions: LivenessAction[];
+  expiresAt: Date;
+  consumedAt: Date | null;
+}
 
 export class DuplicateKeyError extends Error {
   constructor() {
@@ -203,6 +213,16 @@ export interface Database {
     userAgent: string;
   }): Promise<{ id: string; grantedAt: Date }>;
   hasActiveConsent(userId: string, eventId: string): Promise<boolean>;
+  /** Issues a one-time liveness challenge (v4 report F05); returns its id. */
+  insertLivenessChallenge(input: {
+    userId: string;
+    eventId: string;
+    actions: LivenessAction[];
+    expiresAt: Date;
+  }): Promise<{ id: string }>;
+  findLivenessChallenge(id: string): Promise<LivenessChallengeRow | null>;
+  /** Marks the challenge consumed; returns false when it was already consumed (atomic one-shot). */
+  consumeLivenessChallenge(id: string): Promise<boolean>;
   countMatchJobsSince(userId: string, since: Date): Promise<number>;
   countUploadsSince(userId: string, eventId: string, since: Date): Promise<number>;
   findPhotoBySha(eventId: string, sha256: string): Promise<PhotoRow | null>;

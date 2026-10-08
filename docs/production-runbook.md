@@ -43,22 +43,34 @@ first three are hard gates — do not open an event until each is green.
 
 ### 1. F05 — liveness must be enforced (CRITICAL, privacy)
 
-A selfie match hands the requester every photo of the matched person, so it has to
-be gated on a liveness verdict the server actually produced. The code now fails
-closed when `LIVENESS_REQUIRED=true` (a missing model, an unavailable service or a
-non-live verdict all reject), but that only works if the model is present:
+A selfie match hands the requester every photo of the matched person, so it has to be
+gated on a liveness proof the server actually produced. Two server-verified mechanisms
+exist; use **challenge-response** for real events.
 
-- [ ] Set `LIVENESS_CHECK=true` and `LIVENESS_REQUIRED=true`.
-- [ ] Install the anti-spoofing model weights in the `face-service` container and
-      confirm `POST /v1/liveness` returns a `method` other than `"none"`. With
-      `LIVENESS_REQUIRED` on and no model, **every** match is (correctly) refused.
-- [ ] Smoke test: a selfie that is a photo-of-a-photo must get an empty gallery
-      (reason `liveness`), a live selfie must return matches.
+**Preferred — challenge-response (`LIVENESS_CHALLENGE=true`).** The server issues a one-time,
+random left/right turn sequence; the client uploads one frame per step; the worker verifies via
+the face service that the frames show the dictated motion (random order defeats a replayed
+recording) and are all the same identity (defeats splicing the victim's photo), before any
+search.
 
-Residual risk, accepted and tracked: this is **passive** anti-spoofing. A motivated
-attacker presenting the victim's photo to a camera with a weak model can still pass.
-The real fix is challenge-response liveness (server-issued nonce + verified
-motion/blink); until it ships, keep `LIVENESS_REQUIRED=true` and a good model.
+- [ ] Set `LIVENESS_CHALLENGE=true` (it supersedes the passive check — no anti-spoofing model
+      needed). Tune `LIVENESS_CHALLENGE_TURNS` / `LIVENESS_TURN_MIN_YAW` / `LIVENESS_FRONT_MAX_YAW`
+      / `LIVENESS_IDENTITY_MIN_COSINE` only against real captures.
+- [ ] Confirm `POST /v1/embed` on the face service returns a numeric `yaw` per face (buffalo_l does).
+- [ ] Smoke test on a phone: completing the turns returns matches; submitting a still photo of
+      someone else returns an empty gallery (reason `liveness`).
+
+**Fallback — passive anti-spoofing (`LIVENESS_REQUIRED=true`).** Fails closed: a missing model,
+an unavailable service or a non-live verdict all reject. Weaker (a motivated attacker holding the
+victim's photo to a camera can pass), so use it only where the challenge UI cannot run.
+
+- [ ] If used without the challenge, set `LIVENESS_CHECK=true` + `LIVENESS_REQUIRED=true` and
+      install the anti-spoofing model weights in `face-service` (`/v1/liveness` `method` must be
+      other than `"none"`, else every match is correctly refused).
+
+Residual risk, tracked: the challenge raises the bar to live video of the victim performing
+server-chosen movements (a real-time deepfake), far beyond "a photo". Lengthen the sequence
+(`LIVENESS_CHALLENGE_TURNS`) for a stronger deterrent.
 
 ### 2. Schema / migrations — closes B1 (web-first upload 500)
 

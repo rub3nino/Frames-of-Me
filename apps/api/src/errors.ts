@@ -7,6 +7,8 @@ export const MESSAGES = {
   notOnList: "La tua email non è nell'elenco dei partecipanti di questo evento.",
   sizeMismatch: "La dimensione del file caricato non corrisponde a quella dichiarata.",
   consentRequired: "È necessario il consenso prima di inviare il selfie.",
+  challengeRequired: "Verifica di autenticità richiesta: avvia la verifica prima di inviare.",
+  challengeInvalid: "Verifica di autenticità non valida o scaduta: riprova.",
   notFound: "Risorsa non trovata.",
   conflict: "Operazione in conflitto con lo stato attuale.",
   rateLimited: "Troppe richieste. Riprova più tardi.",

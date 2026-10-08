@@ -8,6 +8,7 @@ import {
   type EmailPayload,
   type Env,
   type JobType,
+  type LivenessAction,
   type MatchPayload,
   type ResetPayload,
   type RetentionPayload,
@@ -465,16 +466,6 @@ async function matchSelfie(
   const event = await deps.db.findEventById(job.eventId);
   if (!event) throw new Error("Event missing");
   const context: MatchContext = { job, event, selfieSha256: sha256Hex(selfie.body), liveness: null };
-  // v4 report F05: a match is the only thing standing between a stranger with a
-  // victim's photo and the victim's whole gallery, so the liveness decision fails
-  // closed when LIVENESS_REQUIRED is set. "Required" means we deliver a gallery ONLY
-  // on a genuine positive verdict: a missing model (method "none"), an unavailable
-  // service, or a non-live verdict all reject, instead of the lenient fall-through
-  // that let the reported attack succeed. LIVENESS_CHECK alone keeps the old lenient
-  // behaviour (reject only an explicit live===false), for non-production deploys.
-  const required = deps.env.LIVENESS_REQUIRED;
-  const liveness =
-    deps.env.LIVENESS_CHECK || required ? deps.faces.checkLiveness?.bind(deps.faces) : undefined;
   const rejectLiveness = async (): Promise<JobNote> => {
     context.liveness = "rejected";
     await emptyGallery(context, deps, "liveness", null, previousSelfieKey);
@@ -487,6 +478,28 @@ async function matchSelfie(
     } satisfies EmailPayload);
     return { liveness: "rejected" };
   };
+
+  // v4 report F05: when challenge-response is on and this job carries a challenge, the
+  // challenge IS the liveness proof — the worker verifies the server-dictated head-turn
+  // sequence and that every frame is the same person before any search. Anything off rejects.
+  const challengeMode =
+    deps.env.LIVENESS_CHALLENGE && !!job.challengeId && !!job.frameKeys && job.frameKeys.length > 0;
+  let challengeFrontal: EmbedSelfieResult | null = null;
+  if (challengeMode) {
+    const outcome = await verifyChallenge(job, deps);
+    if (!outcome.ok) return rejectLiveness();
+    challengeFrontal = outcome.frontal;
+  }
+
+  // Passive anti-spoofing (legacy / defense in depth). Skipped in challenge mode: the
+  // challenge already proves liveness, so a missing passive model must not block a match.
+  // Fails closed when LIVENESS_REQUIRED is set: a missing model (method "none"), an
+  // unavailable service or a non-live verdict all reject, instead of a lenient fall-through.
+  const required = deps.env.LIVENESS_REQUIRED && !challengeMode;
+  const liveness =
+    !challengeMode && (deps.env.LIVENESS_CHECK || required)
+      ? deps.faces.checkLiveness?.bind(deps.faces)
+      : undefined;
   if (required && !liveness) {
     // Required but the engine cannot judge liveness at all: never serve the gallery.
     return rejectLiveness();
@@ -506,7 +519,8 @@ async function matchSelfie(
   let queryEmbedding: number[] | null = null;
   let selfieFaces: number | null = null;
   if (embedSelfie && searchByVector) {
-    const embedded = await embedSelfie({ imageBytes, contentType: "image/jpeg" });
+    // Reuse the frontal frame already embedded during challenge verification.
+    const embedded = challengeFrontal ?? (await embedSelfie({ imageBytes, contentType: "image/jpeg" }));
     selfieFaces = embedded.faces.length;
     const reason = selfieRejectReason(embedded, deps.env);
     if (reason) {
@@ -599,6 +613,104 @@ async function matchSelfie(
     kind: "ready",
   } satisfies EmailPayload);
   return { hits: ranked.length };
+}
+
+type ChallengeOutcome = { ok: true; frontal: EmbedSelfieResult } | { ok: false };
+
+/**
+ * Verifies a challenge-response submission (v4 report F05). The challenge is consumed once
+ * (atomic), then every frame must hold exactly one face whose yaw matches the server-dictated
+ * action, and every frame must be the same identity as the frontal frame. Returns the frontal
+ * embedding for the match on success. The non-frontal frames are always deleted here; the
+ * frontal frame is `job.selfieKey`, left for the normal selfie bookkeeping.
+ */
+async function verifyChallenge(
+  job: { type: "match" } & MatchPayload,
+  deps: WorkerDeps,
+): Promise<ChallengeOutcome> {
+  const embedSelfie = deps.faces.embedSelfie?.bind(deps.faces);
+  const frameKeys = job.frameKeys ?? [];
+  const turnKeys = frameKeys.slice(0, -1); // all but the frontal (frontal = job.selfieKey)
+  const cleanup = async (): Promise<void> => {
+    for (const key of turnKeys) await deps.objects.delete(key);
+  };
+  const fail = async (): Promise<ChallengeOutcome> => {
+    await cleanup();
+    return { ok: false };
+  };
+  if (!embedSelfie || !job.challengeId || frameKeys.length === 0) return fail();
+  const challenge = await deps.db.findLivenessChallenge(job.challengeId);
+  if (
+    !challenge ||
+    challenge.userId !== job.userId ||
+    challenge.eventId !== job.eventId ||
+    challenge.expiresAt.getTime() <= Date.now() ||
+    challenge.actions.length !== frameKeys.length
+  ) {
+    return fail();
+  }
+  // One-shot: a lost race (already consumed) or a reused challenge fails closed.
+  if (!(await deps.db.consumeLivenessChallenge(job.challengeId))) return fail();
+
+  const frames: { action: LivenessAction; embedding: number[] }[] = [];
+  let frontal: EmbedSelfieResult | null = null;
+  let frontalEmbedding: number[] | null = null;
+  for (let i = 0; i < frameKeys.length; i += 1) {
+    const action = challenge.actions[i]!;
+    const obj = await deps.objects.get(frameKeys[i]!);
+    if (!obj) return fail();
+    // Original bytes: the face service reads yaw from the frame as captured, and the frames
+    // are already size-capped at upload (SELFIE_MAX_BYTES), so no re-encode is needed.
+    const contentType = obj.contentType === "image/png" ? "image/png" : "image/jpeg";
+    const embedded = await embedSelfie({ imageBytes: obj.body, contentType });
+    if (embedded.faces.length !== 1) return fail(); // exactly one live face per frame
+    const face = largestFace(embedded.faces);
+    if (!face || !yawMatchesAction(action, face.yaw ?? null, deps.env)) return fail();
+    frames.push({ action, embedding: face.embedding });
+    if (action === "front") {
+      frontal = embedded;
+      frontalEmbedding = face.embedding;
+    }
+  }
+  if (!frontal || !frontalEmbedding) return fail();
+  // Identity consistency: no spliced victim photo — every turn frame is the frontal's person.
+  for (const frame of frames) {
+    if (frame.embedding === frontalEmbedding) continue;
+    if (cosineSimilarity(frame.embedding, frontalEmbedding) < deps.env.LIVENESS_IDENTITY_MIN_COSINE) {
+      return fail();
+    }
+  }
+  await cleanup();
+  return { ok: true, frontal };
+}
+
+/** Face-service yaw ([-1,1], positive = subject's own left) satisfies the dictated action. */
+function yawMatchesAction(action: LivenessAction, yaw: number | null, env: Env): boolean {
+  if (yaw === null || !Number.isFinite(yaw)) return false;
+  switch (action) {
+    case "left":
+      return yaw >= env.LIVENESS_TURN_MIN_YAW;
+    case "right":
+      return yaw <= -env.LIVENESS_TURN_MIN_YAW;
+    case "front":
+      return Math.abs(yaw) <= env.LIVENESS_FRONT_MAX_YAW;
+  }
+}
+
+function cosineSimilarity(a: number[], b: number[]): number {
+  const n = Math.min(a.length, b.length);
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  for (let i = 0; i < n; i += 1) {
+    const x = a[i]!;
+    const y = b[i]!;
+    dot += x * y;
+    na += x * x;
+    nb += y * y;
+  }
+  if (na === 0 || nb === 0) return 0;
+  return dot / Math.sqrt(na * nb);
 }
 
 /** Empty gallery + reason; the selfie is deleted unless KEEP_SELFIES keeps it for inspection. */
