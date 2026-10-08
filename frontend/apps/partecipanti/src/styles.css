@@ -75,12 +75,17 @@ body { background: var(--surface-page); }
 .riga--fine { justify-content: flex-end; }
 .mascherata { font-family: var(--font-mono); }
 .num { font-variant-numeric: tabular-nums; }
+.tenue { color: var(--text-tertiary); }
+/* Lo scheletro di una riga breve: un'etichetta, non un paragrafo. */
+.skel--corto { width: 40%; }
 
 /* --- Dichiarazioni da spuntare ----------------------------------------------
    Una casella per frase, dentro un `.box`, divise da una linea. Non sono
    interruttori: non accendono una modalità, restano nella frase, e il segno
    è blu perché il significato sta nelle parole accanto. */
-.dichiara { padding: var(--space-2) var(--space-4); }
+/* `min-width: 0` perché un `<fieldset>` ha `min-inline-size: min-content` di
+   default e una frase lunga lo farebbe uscire dalla colonna del telefono. */
+.dichiara { padding: var(--space-2) var(--space-4); min-width: 0; }
 .dichiara__voce {
   display: flex; align-items: flex-start; gap: var(--space-2);
   padding: var(--space-3) 0; cursor: pointer;
@@ -228,7 +233,7 @@ body { background: var(--surface-page); }
    Numeri tabellari, formato italiano, e un dato assente è un trattino. */
 .elenco-dati { list-style: none; padding: 0; display: grid; gap: var(--space-1); font-size: var(--text-sm); }
 .elenco-dati li { display: flex; justify-content: space-between; gap: var(--space-4); }
-.elenco-dati dt, .elenco-dati .v { font-variant-numeric: tabular-nums; }
+.elenco-dati .v { font-variant-numeric: tabular-nums; }
 .elenco-dati .k { color: var(--text-secondary); }
 
 /* --- I toast ----------------------------------------------------------------
