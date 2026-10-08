@@ -155,6 +155,27 @@ function putPart(
   });
 }
 
+/**
+ * One presigned PUT of a whole object: the single-part transfer, with everything the
+ * multipart path gets around the request itself — the MinIO proxy rewrite, the
+ * {@link PART_TIMEOUT_MS} timeout, byte-level progress and abort.
+ *
+ * Exported for the crowd album, which is deliberately single-PUT only (see
+ * `lib/crowd.ts`): it needs those four properties without needing parts. Resolves when the
+ * object is stored; the ETag is dropped because a single-part `complete` sends no parts.
+ */
+export async function putWholeObject(
+  url: string,
+  blob: Blob,
+  contentType: string | null,
+  onProgress?: Progress,
+  signal?: AbortSignal,
+): Promise<void> {
+  throwIfAborted(signal);
+  await putPart(url, blob, contentType, (loaded) => onProgress?.(loaded, blob.size), signal);
+  onProgress?.(blob.size, blob.size);
+}
+
 /** `api()` with abort support: the fetch is cancelled and rejects with an AbortError. */
 function post<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
   throwIfAborted(signal);
