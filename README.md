@@ -1,3 +1,26 @@
+> [!IMPORTANT]
+> ## Questo repo è stato diviso in sei, il 9 ottobre 2026
+>
+> Lo sviluppo continua nell'organizzazione **[Frames-of-Me](https://github.com/Frames-of-Me)**:
+>
+> | Repo | Cosa contiene |
+> |---|---|
+> | [platform](https://github.com/Frames-of-Me/platform) | stack docker, deploy, documentazione, ADR, `bootstrap.sh` — **si parte da qui** |
+> | [core](https://github.com/Frames-of-Me/core) | contratti, schema, migration, motore di riconoscimento |
+> | [backend](https://github.com/Frames-of-Me/backend) | api, worker, face-service |
+> | [frontend](https://github.com/Frames-of-Me/frontend) | Angular 22 |
+> | [admin](https://github.com/Frames-of-Me/admin) | console di staff (be, fe, setup) |
+> | [legacy](https://github.com/Frames-of-Me/legacy) | l'app Next e le quattro app Vite, archivio |
+>
+> La storia è conservata in ciascuno: `git blame` e `git log --follow` funzionano.
+>
+> **Questo repo non è archiviato e non va cancellato**: la produzione su Coolify builda ancora
+> da qui, e lo spostamento del deploy è una decisione ancora aperta
+> ([ADR 0005](https://github.com/Frames-of-Me/platform/blob/main/docs/adr/0005-deploy-ancora-dal-monorepo.md)).
+> Conserva anche le issue, le pull request e i tag `archive/*` e `ref/quadra-jet-pre-merge`.
+>
+> Per lavorare: `git clone https://github.com/Frames-of-Me/platform.git && cd platform && ./bootstrap.sh`
+
 <div align="center">
 
 <img src="docs/assets/logo.svg" alt="Frames of Me" width="220" />
