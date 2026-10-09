@@ -38,5 +38,13 @@ jobs:
       # Reproducible production build of the three Node images from the Coolify compose.
       # (face-service is an unchanged Python image, built on the server only when
       # FACE_ENGINE=insightface.)
+      #
+      # compose interpolates the whole file before it builds anything, so the one
+      # variable the file declares as required (`S3_APP_SECRET_KEY`, v6 hardening H3)
+      # has to have a value here or the step dies before the first layer. It is a
+      # placeholder on purpose: it is read at run time by api/worker/minio-init, never
+      # at build time, so nothing of it reaches the images.
       - name: Build images
+        env:
+          S3_APP_SECRET_KEY: ci-build-placeholder-not-a-credential
         run: docker compose -f docker-compose.coolify.yml build api worker web

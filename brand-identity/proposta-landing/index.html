@@ -1,7 +1,31 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="color-scheme" content="light" />
+  <meta name="theme-color" content="#FFFFFF" />
+  <title>Frames of Me, le tue foto ti ritrovano</title>
+  <meta name="description" content="Scansiona il QR dell'evento, fai un selfie e ricevi la galleria degli scatti in cui compari. Il selfie si cancella subito." />
+  <link rel="icon" type="image/svg+xml" href="../pecorella/logo/mark.svg" />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..800&family=Plus+Jakarta+Sans:wght@400..700&display=swap" rel="stylesheet" />
+
+  <link rel="stylesheet" href="../pecorella/mascot/pecorella.css" />
+  <link rel="stylesheet" href="style.css" />
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js" defer></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/ScrollTrigger.min.js" defer></script>
+  <script src="main.js" defer></script>
+</head>
+<body>
+
 <header class="nav">
   <div class="container nav-inner">
-    <a routerLink="/" class="nav-logo" aria-label="Frames of Me, torna all'inizio">
-      <img src="assets/logo/logo.svg" alt="frames of me" height="34" />
+    <a href="#inizio" class="nav-logo" aria-label="Frames of Me, torna all'inizio">
+      <img src="../pecorella/logo/logo.svg" alt="frames of me" height="34" />
     </a>
     <nav class="nav-links" aria-label="Sezioni della pagina">
       <a href="#come-funziona">Come funziona</a>
@@ -9,13 +33,14 @@
       <a href="#numeri">I numeri</a>
       <a href="#privacy">Privacy</a>
     </nav>
-    <a routerLink="/accedi" class="btn btn-line nav-cta">Accedi</a>
+    <a href="#trova" class="btn btn-line nav-cta">Accedi</a>
   </div>
 </header>
 
-<main>
+<main id="inizio">
+
   <!-- ============ HERO: il momento del match ============ -->
-  <section class="hero" #hero>
+  <section class="hero" id="hero">
     <div class="container hero-grid">
       <div class="hero-copy">
         <h1 class="display hero-title">Le tue foto ti <em class="hero-em">ritrovano</em>.</h1>
@@ -24,7 +49,7 @@
           degli scatti in cui compari. Il selfie si cancella subito.
         </p>
         <div class="hero-ctas">
-          <a routerLink="/accedi" class="btn btn-action btn-lg">Trova le mie foto</a>
+          <a href="#trova" class="btn btn-action btn-lg">Trova le mie foto</a>
           <a href="#come-funziona" class="btn btn-line btn-lg">Guarda come funziona</a>
         </div>
         <p class="hero-note">
@@ -37,7 +62,7 @@
            si aggancia a un volto, e le foto volano nella pila personale. -->
       <div class="stage" aria-hidden="true">
         <figure class="stage-photo frame">
-          <img src="assets/photos/event-01.jpg" alt="" loading="eager" decoding="async" />
+          <img src="../photos/event-01.jpg" alt="" loading="eager" decoding="async" />
 
           <!-- mirino: 4 tacche, due livelli (cielo in viaggio, azione all'aggancio) -->
           <div class="vf">
@@ -54,10 +79,10 @@
 
         <!-- la pila personale: gli scatti che il match ha trovato -->
         <div class="stack">
-          <figure class="mini mini-1"><img src="assets/photos/event-11.jpg" alt="" loading="eager" decoding="async" /></figure>
-          <figure class="mini mini-2"><img src="assets/photos/event-02.jpg" alt="" loading="eager" decoding="async" /></figure>
-          <figure class="mini mini-3"><img src="assets/photos/event-06.jpg" alt="" loading="eager" decoding="async" /></figure>
-          <figure class="mini mini-4"><img src="assets/photos/portrait-01.jpg" alt="" loading="eager" decoding="async" /></figure>
+          <figure class="mini mini-1"><img src="../photos/event-11.jpg" alt="" loading="eager" decoding="async" /></figure>
+          <figure class="mini mini-2"><img src="../photos/event-02.jpg" alt="" loading="eager" decoding="async" /></figure>
+          <figure class="mini mini-3"><img src="../photos/event-06.jpg" alt="" loading="eager" decoding="async" /></figure>
+          <figure class="mini mini-4"><img src="../photos/portrait-01.jpg" alt="" loading="eager" decoding="async" /></figure>
           <span class="stack-chip num">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
             47 foto con te
@@ -72,14 +97,24 @@
     <p class="sponsor-label">Gli eventi su Frames of Me sono sostenuti da</p>
     <div class="marquee">
       <div class="marquee-track">
-        @for (s of sponsors; track s.name) {
-          <img class="sponsor-logo" [src]="s.src" [alt]="s.name" height="28" />
-        }
+        <svg class="sponsor-logo" viewBox="0 0 220 48" role="img" aria-label="Lumen Eventi"><rect x="30" y="15" width="18" height="18" rx="4" fill="none" stroke="#8A93A1" stroke-width="3"/><text x="58" y="31" font-family="system-ui, sans-serif" font-size="21" font-weight="640" fill="#8A93A1">Lumen Eventi</text></svg>
+        <svg class="sponsor-logo" viewBox="0 0 220 48" role="img" aria-label="Caffè Aurora"><text x="110" y="32" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="24" font-style="italic" font-weight="600" fill="#8A93A1">Caffè Aurora</text></svg>
+        <svg class="sponsor-logo" viewBox="0 0 220 48" role="img" aria-label="Birrificio Ponte"><text x="110" y="23" text-anchor="middle" font-family="Georgia, serif" font-size="17" font-weight="700" letter-spacing="2" fill="#8A93A1">BIRRIFICIO</text><text x="110" y="41" text-anchor="middle" font-family="Georgia, serif" font-size="15" letter-spacing="8" fill="#8A93A1">PONTE</text></svg>
+        <svg class="sponsor-logo" viewBox="0 0 220 48" role="img" aria-label="Fioralba"><text x="110" y="33" text-anchor="middle" font-family="'Snell Roundhand', 'Brush Script MT', cursive" font-size="27" fill="#8A93A1">Fioralba</text></svg>
+        <svg class="sponsor-logo" viewBox="0 0 220 48" role="img" aria-label="Hotel Miramonti"><path d="M 92 14 l 7 -8 l 7 8 M 106 14 l 8 -10 l 8 10" fill="none" stroke="#8A93A1" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><text x="110" y="36" text-anchor="middle" font-family="system-ui, sans-serif" font-size="17" font-weight="400" letter-spacing="5" fill="#8A93A1">MIRAMONTI</text></svg>
+        <svg class="sponsor-logo" viewBox="0 0 220 48" role="img" aria-label="Nordwind"><text x="110" y="31" text-anchor="middle" font-family="system-ui, sans-serif" font-size="21" font-weight="700" letter-spacing="6" fill="#8A93A1">NORDWIND</text></svg>
+        <svg class="sponsor-logo" viewBox="0 0 220 48" role="img" aria-label="StudioLuce"><circle cx="38" cy="24" r="9" fill="none" stroke="#8A93A1" stroke-width="3"/><text x="56" y="31" font-family="system-ui, sans-serif" font-size="22" font-weight="800" letter-spacing="-0.5" fill="#8A93A1">StudioLuce</text></svg>
+        <svg class="sponsor-logo" viewBox="0 0 220 48" role="img" aria-label="Velotta"><text x="110" y="32" text-anchor="middle" font-family="ui-monospace, Menlo, monospace" font-size="22" font-weight="600" letter-spacing="3" fill="#8A93A1">velotta_</text></svg>
       </div>
       <div class="marquee-track" aria-hidden="true">
-        @for (s of sponsors; track s.name) {
-          <img class="sponsor-logo" [src]="s.src" alt="" height="28" />
-        }
+        <svg class="sponsor-logo" viewBox="0 0 220 48"><rect x="30" y="15" width="18" height="18" rx="4" fill="none" stroke="#8A93A1" stroke-width="3"/><text x="58" y="31" font-family="system-ui, sans-serif" font-size="21" font-weight="640" fill="#8A93A1">Lumen Eventi</text></svg>
+        <svg class="sponsor-logo" viewBox="0 0 220 48"><text x="110" y="32" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="24" font-style="italic" font-weight="600" fill="#8A93A1">Caffè Aurora</text></svg>
+        <svg class="sponsor-logo" viewBox="0 0 220 48"><text x="110" y="23" text-anchor="middle" font-family="Georgia, serif" font-size="17" font-weight="700" letter-spacing="2" fill="#8A93A1">BIRRIFICIO</text><text x="110" y="41" text-anchor="middle" font-family="Georgia, serif" font-size="15" letter-spacing="8" fill="#8A93A1">PONTE</text></svg>
+        <svg class="sponsor-logo" viewBox="0 0 220 48"><text x="110" y="33" text-anchor="middle" font-family="'Snell Roundhand', 'Brush Script MT', cursive" font-size="27" fill="#8A93A1">Fioralba</text></svg>
+        <svg class="sponsor-logo" viewBox="0 0 220 48"><path d="M 92 14 l 7 -8 l 7 8 M 106 14 l 8 -10 l 8 10" fill="none" stroke="#8A93A1" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><text x="110" y="36" text-anchor="middle" font-family="system-ui, sans-serif" font-size="17" font-weight="400" letter-spacing="5" fill="#8A93A1">MIRAMONTI</text></svg>
+        <svg class="sponsor-logo" viewBox="0 0 220 48"><text x="110" y="31" text-anchor="middle" font-family="system-ui, sans-serif" font-size="21" font-weight="700" letter-spacing="6" fill="#8A93A1">NORDWIND</text></svg>
+        <svg class="sponsor-logo" viewBox="0 0 220 48"><circle cx="38" cy="24" r="9" fill="none" stroke="#8A93A1" stroke-width="3"/><text x="56" y="31" font-family="system-ui, sans-serif" font-size="22" font-weight="800" letter-spacing="-0.5" fill="#8A93A1">StudioLuce</text></svg>
+        <svg class="sponsor-logo" viewBox="0 0 220 48"><text x="110" y="32" text-anchor="middle" font-family="ui-monospace, Menlo, monospace" font-size="22" font-weight="600" letter-spacing="3" fill="#8A93A1">velotta_</text></svg>
       </div>
     </div>
   </section>
@@ -87,7 +122,7 @@
   <!-- ============ TRE GESTI: il filo si disegna e il pallino viaggia ============ -->
   <section class="section" id="come-funziona">
     <div class="container">
-      <h2 class="display section-title" appReveal>Tre gesti e sei nelle tue foto</h2>
+      <h2 class="display section-title" data-reveal>Tre gesti e sei nelle tue foto</h2>
       <div class="steps">
         <svg class="thread thread-h" viewBox="0 0 1000 110" preserveAspectRatio="none" aria-hidden="true" focusable="false">
           <path class="thread-line" d="M 12 55 C 110 10, 230 96, 346 55 C 462 15, 572 94, 679 55 C 786 17, 896 90, 988 55"
@@ -100,19 +135,19 @@
 
         <article class="step" data-step>
           <span class="step-num num" aria-hidden="true">1</span>
-          <img class="step-photo" src="assets/photos/event-10.jpg" alt="Invitati seduti ai tavoli di un matrimonio all'aperto" loading="lazy" decoding="async" />
+          <img class="step-photo" src="../photos/event-10.jpg" alt="Invitati seduti ai tavoli di un matrimonio all'aperto" loading="lazy" decoding="async" />
           <h3>Scansiona il QR</h3>
           <p>Lo trovi all'ingresso o sul tavolo. Niente app da installare: si apre nel browser.</p>
         </article>
         <article class="step" data-step>
           <span class="step-num num" aria-hidden="true">2</span>
-          <img class="step-photo" src="assets/photos/portrait-11.jpg" alt="Una ragazza si fa un selfie" loading="lazy" decoding="async" />
+          <img class="step-photo" src="../photos/portrait-11.jpg" alt="Una ragazza si fa un selfie" loading="lazy" decoding="async" />
           <h3>Fai un selfie</h3>
           <p>Il selfie si cancella subito: resta solo una firma numerica del volto, mai l'immagine.</p>
         </article>
         <article class="step" data-step>
           <span class="step-num num" aria-hidden="true">3</span>
-          <img class="step-photo" src="assets/photos/portrait-03.jpg" alt="Una partecipante sorride guardando la galleria sul telefono" loading="lazy" decoding="async" />
+          <img class="step-photo" src="../photos/portrait-03.jpg" alt="Una partecipante sorride guardando la galleria sul telefono" loading="lazy" decoding="async" />
           <h3>Ricevi la tua galleria</h3>
           <p>«Trovate 47 foto con te.» Scarichi, condividi, o chiedi di sparire con un tocco.</p>
         </article>
@@ -123,12 +158,12 @@
   <!-- ============ DUE GALLERIE ============ -->
   <section class="section section-tight" id="gallerie">
     <div class="container">
-      <h2 class="display section-title" appReveal>Due gallerie, una festa sola</h2>
-      <div class="galleries" appReveal>
+      <h2 class="display section-title" data-reveal>Due gallerie, una festa sola</h2>
+      <div class="galleries" data-reveal>
         <article class="gallery card-tilt">
           <div class="gallery-photos">
-            <img src="assets/photos/event-09.jpg" alt="Scatto ufficiale dal palco" loading="lazy" decoding="async" />
-            <img src="assets/photos/portrait-06.jpg" alt="Ritratto ufficiale di un'invitata" loading="lazy" decoding="async" />
+            <img src="../photos/event-09.jpg" alt="Scatto ufficiale dal palco" loading="lazy" decoding="async" />
+            <img src="../photos/portrait-06.jpg" alt="Ritratto ufficiale di un'invitata" loading="lazy" decoding="async" />
           </div>
           <h3>La galleria dei fotografi</h3>
           <p class="gallery-lead">
@@ -153,12 +188,12 @@
         <article class="gallery card-tilt">
           <div class="gallery-photos gallery-photos-circle">
             <figure class="polaroid">
-              <img src="assets/photos/event-11.jpg" alt="Brindisi ripreso da un ospite, con la cornice ufficiale dell'evento" loading="lazy" decoding="async" />
+              <img src="../photos/event-11.jpg" alt="Brindisi ripreso da un ospite, con la cornice ufficiale dell'evento" loading="lazy" decoding="async" />
               <figcaption class="polaroid-caption num">Giulia &amp; Marco · 14 giugno</figcaption>
             </figure>
             <div class="gallery-thumbs">
-              <img src="assets/photos/event-12.jpg" alt="Foto scattata dagli invitati in pista" loading="lazy" decoding="async" />
-              <img src="assets/photos/event-03.jpg" alt="Brindisi tra amici caricato da un'invitata" loading="lazy" decoding="async" />
+              <img src="../photos/event-12.jpg" alt="Foto scattata dagli invitati in pista" loading="lazy" decoding="async" />
+              <img src="../photos/event-03.jpg" alt="Brindisi tra amici caricato da un'invitata" loading="lazy" decoding="async" />
             </div>
           </div>
           <h3>Photo Circle</h3>
@@ -188,8 +223,8 @@
   <!-- ============ NUMERI ============ -->
   <section class="band" id="numeri">
     <div class="container">
-      <h2 class="display section-title band-title" appReveal>Ogni weekend, qualcuno si ritrova</h2>
-      <dl class="stats" appReveal>
+      <h2 class="display section-title band-title" data-reveal>Ogni weekend, qualcuno si ritrova</h2>
+      <dl class="stats" data-reveal>
         <div class="stat">
           <dt>scatti consegnati</dt>
           <dd class="num" data-count="150000">150.000</dd>
@@ -212,7 +247,7 @@
 
   <!-- ============ FIDUCIA / GDPR ============ -->
   <section class="section" id="privacy">
-    <div class="container trust" appReveal>
+    <div class="container trust" data-reveal>
       <h2 class="display trust-title">I tuoi dati restano tuoi</h2>
       <div class="trust-rows">
         <div class="trust-row">
@@ -259,15 +294,15 @@
 
   <!-- ============ CTA FINALE ============ -->
   <section class="cta" id="trova">
-    <div class="container cta-inner" appReveal>
+    <div class="container cta-inner" data-reveal>
       <h2 class="display cta-title">La prossima festa ti <em class="hero-em">aspetta</em>.</h2>
       <p class="cta-sub">Un QR, un selfie, e i tuoi ricordi tornano a casa.</p>
       <div class="cta-magnet">
-        <a routerLink="/accedi" class="btn btn-action btn-lg btn-magnet">Trova le mie foto</a>
+        <a href="../frames-of-me.html" class="btn btn-action btn-lg btn-magnet">Trova le mie foto</a>
       </div>
       <p class="cta-photographers">
         Sei un fotografo?
-        <a class="link-action" routerLink="/accedi">Carica gli scatti del tuo evento
+        <a class="link-action" href="../frames-of-me.html">Carica gli scatti del tuo evento
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>
         </a>
       </p>
@@ -279,7 +314,7 @@
 <footer class="footer">
   <div class="container footer-inner">
     <div class="footer-brand">
-      <img src="assets/logo/logo-inverse.svg" alt="frames of me" height="32" />
+      <img src="../pecorella/logo/logo-inverse.svg" alt="frames of me" height="32" />
       <p class="footer-tagline">La pecorella ritrova il suo gregge. Tu ritrovi le tue foto.</p>
     </div>
     <nav class="footer-links" aria-label="Collegamenti del footer">
@@ -291,9 +326,12 @@
   </div>
   <!-- il prato notturno: la pecorella attraversa camminando -->
   <div class="footer-meadow" aria-hidden="true">
-    <app-pecorella mode="attraversa" [size]="92" />
+    <div class="pecorella pecorella--cammina pecorella--attraversa" id="pecorella-footer"></div>
   </div>
   <div class="container footer-bottom">
     <p>© 2026 Frames of Me · Dati trattati in Unione Europea</p>
   </div>
 </footer>
+
+</body>
+</html>
