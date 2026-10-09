@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 340" role="img" aria-label="Pecorella Frames of Me">
+  <!--
+    Pecorella — mascotte Frames of Me.
+    Ricreazione fedele dell'illustrazione di riferimento (flat, senza outline).
+    Gruppi separati per l'animazione: #coda, #zampe (x4), #corpo, #testa (con orecchie, occhi, sorriso).
+    Palette: lana #F7F0E2 · macchie #EFE6D4 · muso/zampe #AC9F8E · scuro #9C8F7E · occhi #2A241E · zoccoli #241E18
+  -->
+  <defs>
+    <g id="riccio"><circle r="30" fill="#F7F0E2" /></g>
+  </defs>
+
+  <!-- ===== ZAMPE (dietro il corpo) ===== -->
+  <g id="zampe">
+    <g id="zampa-pd-pos" transform="translate(-6.1 -4.9) translate(298 264) rotate(-3.5) scale(1) translate(-298 -264)"><g id="zampa-pd" class="zampa"><!-- posteriore destra (più lontana, più scura) -->
+      <rect x="288" y="230" width="20" height="66" rx="10" fill="#9C8F7E" />
+      <path d="M 288 280 h 20 v 8 a 10 10 0 0 1 -10 10 a 10 10 0 0 1 -10 -10 z" fill="#241E18" />
+    </g>
+    </g><g id="zampa-ad-pos" transform="translate(-6.3 4.9) translate(210 264) rotate(0) scale(1) translate(-210 -264)"><g id="zampa-ad" class="zampa"><!-- anteriore destra (più lontana) -->
+      <rect x="200" y="232" width="20" height="64" rx="10" fill="#9C8F7E" />
+      <path d="M 200 278 h 20 v 8 a 10 10 0 0 1 -10 10 a 10 10 0 0 1 -10 -10 z" fill="#241E18" />
+    </g>
+    </g><g id="zampa-ps-pos" transform="translate(-4 0) translate(266.5 266.00001525878906) rotate(0) scale(1) translate(-266.5 -266.00001525878906)"><g id="zampa-ps" class="zampa"><!-- posteriore sinistra -->
+      <rect x="256" y="234" width="21" height="64" rx="10" fill="#AC9F8E" />
+      <path d="M 256 280 h 21 v 8 a 10.5 10.5 0 0 1 -10.5 10 a 10.5 10.5 0 0 1 -10.5 -10 z" fill="#241E18" />
+    </g>
+    </g><g id="zampa-as-pos" transform="translate(-8 -5) translate(178.5 266.00001525878906) rotate(6) scale(1) translate(-178.5 -266.00001525878906)"><g id="zampa-as" class="zampa"><!-- anteriore sinistra -->
+      <rect x="168" y="234" width="21" height="64" rx="10" fill="#AC9F8E" />
+      <path d="M 168 280 h 21 v 8 a 10.5 10.5 0 0 1 -10.5 10 a 10.5 10.5 0 0 1 -10.5 -10 z" fill="#241E18" />
+    </g>
+  </g></g>
+
+  <!-- ===== CORPO: nuvola di lana ===== -->
+  <g id="corpo-pos" transform="translate(-0.1 0) translate(233 189) rotate(0) scale(0.87) translate(-233 -189)"><g id="corpo">
+    <circle cx="166" cy="196" r="44" fill="#F7F0E2" />
+    <circle cx="196" cy="158" r="46" fill="#F7F0E2" />
+    <circle cx="243" cy="146" r="48" fill="#F7F0E2" />
+    <circle cx="288" cy="164" r="44" fill="#F7F0E2" />
+    <circle cx="306" cy="200" r="38" fill="#F7F0E2" />
+    <circle cx="282" cy="228" r="40" fill="#F7F0E2" />
+    <circle cx="232" cy="238" r="42" fill="#F7F0E2" />
+    <circle cx="184" cy="228" r="38" fill="#F7F0E2" />
+    <circle cx="234" cy="192" r="66" fill="#F7F0E2" />
+    <!-- macchie chiare sulla groppa -->
+    <g id="macchie">
+      <circle cx="300" cy="182" r="7" fill="#EFE6D4" />
+      <circle cx="314" cy="198" r="5.5" fill="#EFE6D4" />
+      <circle cx="301" cy="206" r="4.5" fill="#EFE6D4" />
+    </g>
+  </g>
+
+  </g><!-- ===== TESTA ===== -->
+  <g id="testa">
+    <!-- orecchio sinistro, dritto in alto a sinistra, dietro il ciuffo -->
+    <g id="orecchio-sx-pos" transform="translate(-11.9 49) translate(106 78) rotate(-8) scale(1) translate(-106 -78)"><g id="orecchio-sx">
+      <ellipse cx="106" cy="78" rx="17" ry="30" fill="#AC9F8E" transform="rotate(42 106 78)" />
+    </g>
+    </g><!-- muso -->
+    <g id="muso-pos" transform="translate(0.2 1.3) translate(152 142) rotate(0) scale(1) translate(-152 -142)"><ellipse id="muso" cx="152" cy="142" rx="43" ry="54" fill="#AC9F8E" transform="rotate(-8 152 142)" />
+    </g><!-- orecchio destro: pende dal lato destro della testa, sotto il ciuffo -->
+    <g id="orecchio-dx-pos" transform="translate(-10.6 3.9) translate(222 148) rotate(-30.5) scale(1) translate(-222 -148)"><g id="orecchio-dx">
+      <ellipse cx="222" cy="148" rx="16" ry="30" fill="#AC9F8E" transform="rotate(22 222 148)" />
+      <ellipse cx="224" cy="152" rx="9.5" ry="21" fill="#9C8F7E" transform="rotate(22 224 152)" />
+    </g>
+    </g><!-- ciuffo di lana sopra la testa (copre fronte e attacco delle orecchie) -->
+    <g id="ciuffo">
+      <circle cx="122" cy="108" r="23" fill="#F7F0E2" />
+      <circle cx="150" cy="96" r="27" fill="#F7F0E2" />
+      <circle cx="182" cy="102" r="25" fill="#F7F0E2" />
+      <circle cx="206" cy="120" r="22" fill="#F7F0E2" />
+    </g>
+    <!-- occhi -->
+    <g id="occhi">
+      <g id="occhio-sx">
+        <ellipse cx="131" cy="138" rx="13" ry="15" fill="#2A241E" />
+        <circle cx="126.5" cy="132" r="4.6" fill="#FFFFFF" />
+        <circle cx="135" cy="144" r="2" fill="#FFFFFF" />
+      </g>
+      <g id="occhio-dx">
+        <ellipse cx="173" cy="146" rx="13" ry="15" fill="#2A241E" />
+        <circle cx="168.5" cy="140" r="4.6" fill="#FFFFFF" />
+        <circle cx="177" cy="152" r="2" fill="#FFFFFF" />
+      </g>
+    </g>
+    <!-- sorriso -->
+    <g id="sorriso-pos" transform="translate(-45.5 -3.9) translate(191.5 174.13333129882812) rotate(0) scale(1) translate(-191.5 -174.13333129882812)"><path id="sorriso" d="M 182 172 q 9 8 19 1" fill="none" stroke="#2A241E" stroke-width="3.4" stroke-linecap="round" />
+  </g></g>
+</svg>

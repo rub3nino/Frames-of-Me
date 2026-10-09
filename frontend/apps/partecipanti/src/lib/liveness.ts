@@ -190,6 +190,127 @@ export function captureFrame(video: HTMLVideoElement): Promise<Blob> {
   });
 }
 
+/* ---- Server-verified challenge (v4 report F05) ----------------------------
+ * The server dictates the action order and verifies the uploaded frames, so the client
+ * follows `actions` and captures one frame per action (frontal last). `left`/`right` use the
+ * same turn thresholds as the legacy challenge; `front` is the centred frontal capture. */
+export type ServerAction = "left" | "right" | "front";
+
+export const SERVER_ACTION_LABELS: Record<ServerAction, string> = {
+  left: "Gira la testa a sinistra",
+  right: "Gira la testa a destra",
+  front: "Guarda la camera",
+};
+
+function actionSatisfied(action: ServerAction, reading: FaceReading): boolean {
+  switch (action) {
+    case "left":
+      return reading.turn >= TURNED;
+    case "right":
+      return reading.turn <= -TURNED;
+    case "front":
+      return reading.centred && Math.abs(reading.turn) <= FRONTAL && reading.eyesOpen;
+  }
+}
+
+export type ServerChallengeOptions = {
+  video: HTMLVideoElement;
+  landmarker: FaceLandmarker;
+  actions: readonly ServerAction[];
+  onAction: (action: ServerAction, index: number) => void;
+  signal?: AbortSignal;
+  stepTimeoutMs?: number;
+};
+
+/**
+ * Runs the server-dictated challenge and resolves with one JPEG per action, in order.
+ * Rejects with LivenessError("timeout", …) when an action is not completed in time, or
+ * "aborted" when `signal` fires. One detection per animation frame.
+ */
+export function runServerChallenge({
+  video,
+  landmarker,
+  actions,
+  onAction,
+  signal,
+  stepTimeoutMs = STEP_TIMEOUT_MS,
+}: ServerChallengeOptions): Promise<Blob[]> {
+  return new Promise<Blob[]>((resolve, reject) => {
+    const frames: Blob[] = [];
+    let index = 0;
+    let stepStartedAt = performance.now();
+    let stable = 0;
+    let lastTimestamp = 0;
+    let frame = 0;
+    let settled = false;
+    let capturing = false;
+
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      cancelAnimationFrame(frame);
+      signal?.removeEventListener("abort", onAbort);
+      fn();
+    };
+    const onAbort = () => finish(() => reject(new LivenessError("aborted", "Annullato.")));
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+
+    if (actions.length === 0) {
+      finish(() => resolve(frames));
+      return;
+    }
+    onAction(actions[0]!, 0);
+
+    const tick = () => {
+      if (settled || capturing) {
+        if (!settled) frame = requestAnimationFrame(tick);
+        return;
+      }
+      const action = actions[index]!;
+      const now = performance.now();
+      if (now - stepStartedAt > stepTimeoutMs) {
+        finish(() => reject(new LivenessError("timeout", "Tempo scaduto.")));
+        return;
+      }
+      if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth > 0) {
+        const timestamp = now > lastTimestamp ? now : lastTimestamp + 1;
+        lastTimestamp = timestamp;
+        let reading: FaceReading | null = null;
+        try {
+          reading = readFace(landmarker.detectForVideo(video, timestamp));
+        } catch {
+          reading = null;
+        }
+        stable = reading && actionSatisfied(action, reading) ? stable + 1 : 0;
+        if (stable >= STABLE_FRAMES) {
+          capturing = true;
+          captureFrame(video).then(
+            (blob) => {
+              frames.push(blob);
+              capturing = false;
+              index += 1;
+              if (index >= actions.length) {
+                finish(() => resolve(frames));
+                return;
+              }
+              stable = 0;
+              stepStartedAt = performance.now();
+              onAction(actions[index]!, index);
+            },
+            (cause: unknown) => finish(() => reject(cause)),
+          );
+        }
+      }
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+  });
+}
+
 export type ChallengeOptions = {
   video: HTMLVideoElement;
   landmarker: FaceLandmarker;

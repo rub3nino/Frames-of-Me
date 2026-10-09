@@ -1,0 +1,231 @@
+:host { display: block; }
+
+.shell {
+  max-width: var(--app-max);
+  margin-inline: auto;
+  padding: var(--space-5) var(--space-5) 140px;
+  min-height: 100dvh;
+}
+
+/* ======= Header ======= */
+.top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.avatar {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+  box-shadow: var(--shadow-raised);
+  transition: transform var(--dur-press) var(--ease-out);
+}
+
+.avatar:active { transform: scale(0.97); }
+
+.avatar img { width: 100%; height: 100%; object-fit: cover; }
+
+.top-actions { display: flex; gap: var(--space-3); }
+
+.icon-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-raised);
+  display: grid;
+  place-items: center;
+  color: var(--text-primary);
+  transition: transform var(--dur-press) var(--ease-out),
+              background-color var(--dur-fast) var(--ease-out);
+}
+
+.icon-btn:active { transform: scale(0.97); }
+
+@media (hover: hover) and (pointer: fine) {
+  .icon-btn:hover { background: var(--surface-hover); }
+}
+
+.icon-btn svg { width: 20px; height: 20px; }
+
+/* ======= Titolo e chip ======= */
+.page-title {
+  margin-top: var(--space-6);
+  font-size: var(--text-xl);
+}
+
+.chips {
+  margin-top: var(--space-4);
+  display: flex;
+  gap: var(--space-2);
+}
+
+.chip {
+  height: 40px;
+  padding: 0 var(--space-5);
+  border-radius: var(--radius-pill);
+  background: var(--surface-raised);
+  border: 1px solid var(--line-subtle);
+  color: var(--text-secondary);
+  font-weight: var(--weight-medium);
+  transition: background-color var(--dur-fast) var(--ease-out),
+              color var(--dur-fast) var(--ease-out),
+              transform var(--dur-press) var(--ease-out);
+}
+
+.chip:active { transform: scale(0.97); }
+
+.chip.is-active {
+  background: var(--surface-pressed);
+  border-color: var(--surface-pressed);
+  color: var(--text-primary);
+  font-weight: var(--weight-semibold);
+}
+
+/* ======= Album (cornice tratteggiata "ritaglio") ======= */
+.albums {
+  margin-top: var(--space-6);
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-5) var(--space-4);
+}
+
+.album-card { min-width: 0; }
+
+.album-frame {
+  border: 1.5px dashed var(--line-strong);
+  border-radius: var(--radius-lg);
+  padding: var(--space-2);
+  background: var(--surface-raised);
+}
+
+.album-collage {
+  display: grid;
+  grid-template-columns: 1.6fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  gap: var(--space-1);
+  aspect-ratio: 1 / 0.96;
+}
+
+.album-collage img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.album-collage .big {
+  grid-row: 1 / span 2;
+  border-radius: var(--radius-sm) 4px 4px var(--radius-sm);
+}
+
+.album-collage .small { border-radius: 4px; }
+.album-collage .small:first-of-type { border-top-right-radius: var(--radius-sm); }
+.album-collage .small:last-of-type { border-bottom-right-radius: var(--radius-sm); }
+
+.album-title {
+  margin-top: var(--space-3);
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+  line-height: var(--leading-snug);
+}
+
+.album-meta {
+  margin-top: 2px;
+  font-size: var(--text-sm);
+  color: var(--text-tertiary);
+}
+
+/* ======= Postcards (pile ruotate) ======= */
+.piles {
+  margin-top: var(--space-8);
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-8) var(--space-4);
+}
+
+.pile { min-width: 0; }
+
+.pile-stack {
+  position: relative;
+  aspect-ratio: 4 / 3.4;
+}
+
+.pile-card {
+  position: absolute;
+  inset: 0;
+  width: 92%;
+  height: 92%;
+  margin: auto;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+  border: 4px solid var(--surface-raised);
+  box-shadow: var(--shadow-card);
+}
+
+.pile-card.c2 { transform: rotate(-5deg) translateY(2%); }
+.pile-card.c1 { transform: rotate(4deg) translateX(2%); }
+.pile-card.c0 { transform: rotate(-1.5deg); }
+
+/* ======= FAB ======= */
+.fab {
+  position: fixed;
+  right: max(var(--space-5), calc(50% - var(--app-max) / 2 + var(--space-5)));
+  bottom: 104px;
+  width: 56px;
+  height: 56px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  color: var(--surface-raised);
+  display: grid;
+  place-items: center;
+  box-shadow: var(--shadow-card);
+  transition: transform var(--dur-press) var(--ease-out),
+              background-color var(--dur-fast) var(--ease-out);
+  z-index: 5;
+}
+
+.fab:active { transform: scale(0.94); }
+
+@media (hover: hover) and (pointer: fine) {
+  .fab:hover { background: var(--accent-hover); }
+}
+
+.fab svg { width: 24px; height: 24px; }
+
+/* ======= Tab bar flottante ======= */
+.tabbar {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: max(var(--space-5), env(safe-area-inset-bottom));
+  display: flex;
+  gap: var(--space-2);
+  background: var(--surface-raised);
+  border-radius: var(--radius-pill);
+  padding: var(--space-2);
+  box-shadow: var(--shadow-float);
+  z-index: 6;
+}
+
+.tab {
+  width: 52px;
+  height: 48px;
+  border-radius: var(--radius-pill);
+  display: grid;
+  place-items: center;
+  color: var(--text-tertiary);
+  transition: background-color var(--dur-fast) var(--ease-out),
+              color var(--dur-fast) var(--ease-out),
+              transform var(--dur-press) var(--ease-out);
+}
+
+.tab:active { transform: scale(0.95); }
+
+.tab.is-active {
+  background: var(--surface-pressed);
+  color: var(--text-primary);
+}
+
+.tab svg { width: 22px; height: 22px; }

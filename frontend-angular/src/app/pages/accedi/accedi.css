@@ -1,0 +1,165 @@
+/* /accedi — stesso tema chiaro "Cielo" della landing (token condivisi). */
+@import "../../shared/tema-chiaro.css";
+
+.login-page {
+  min-height: 100dvh;
+  padding: var(--space-5) var(--space-5) var(--space-16);
+}
+
+.back {
+  display: inline-flex;
+  border-radius: var(--radius-xs);
+}
+.back img { height: 32px; width: auto; }
+
+.login-col {
+  max-width: 360px;
+  margin: var(--space-8) auto 0;
+  display: grid;
+  justify-items: center;
+  text-align: center;
+  /* stacking context: i puntini (z -1) restano sopra il fondo della pagina */
+  isolation: isolate;
+}
+
+/* la pecorella poggia sulla sua nuvola azzurrissima, sopra un cielo di puntini */
+.login-sheep {
+  position: relative;
+  margin-bottom: var(--space-4);
+  background: var(--ld-soft);
+  border: 1px solid var(--ld-soft-line);
+  border-radius: 999px 999px 999px 24px;
+  padding: 10px 14px 0;
+}
+
+.login-sheep::before {
+  content: "";
+  position: absolute;
+  inset: -36px -72px -20px;
+  background-image: radial-gradient(circle, var(--ld-dot) 1px, transparent 1px);
+  background-size: 22px 22px;
+  mask-image: radial-gradient(ellipse 65% 60% at 50% 50%, #000 40%, transparent 80%);
+  -webkit-mask-image: radial-gradient(ellipse 65% 60% at 50% 50%, #000 40%, transparent 80%);
+  pointer-events: none;
+  z-index: -1;
+}
+
+.login-title {
+  font-size: var(--text-xl);
+  text-wrap: balance;
+}
+
+.login-sub {
+  margin-top: var(--space-2);
+  color: var(--ld-ink-2);
+  max-width: 34ch;
+}
+
+/* --- segmented alla Notion: contenitore bordato, voce attiva bianca --- */
+.segmented {
+  margin-top: var(--space-6);
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  width: 100%;
+  background: var(--ld-sunken);
+  border: 1px solid var(--ld-line);
+  border-radius: 12px;
+  padding: 3px;
+  gap: 3px;
+}
+
+.segmented button {
+  height: 38px;
+  border-radius: 9px;
+  border: 1px solid transparent;
+  font-weight: var(--weight-medium);
+  color: var(--ld-ink-2);
+  transition: background-color 150ms ease,
+              color 150ms ease,
+              border-color 150ms ease,
+              transform var(--dur-press) var(--ld-ease-out);
+}
+
+.segmented button:active { transform: scale(0.97); }
+
+@media (hover: hover) and (pointer: fine) {
+  .segmented button:not(.is-active):hover { color: var(--ld-ink); }
+}
+
+.segmented button.is-active {
+  background: var(--ld-canvas);
+  border-color: var(--ld-line-strong);
+  color: var(--ld-ink);
+  font-weight: var(--weight-semibold);
+}
+
+/* --- form --- */
+.login-form {
+  margin-top: var(--space-6);
+  width: 100%;
+  display: grid;
+  gap: var(--space-4);
+}
+
+.field { display: grid; gap: 6px; text-align: left; }
+
+.field-label {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--ld-ink-2);
+  padding-left: 2px;
+}
+
+.login-submit { width: 100%; }
+
+/* --- divider --- */
+.divider {
+  width: 100%;
+  margin-block: var(--space-6);
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: var(--space-3);
+  color: var(--ld-ink-3);
+  font-size: var(--text-sm);
+}
+
+.divider::before,
+.divider::after {
+  content: "";
+  height: 1px;
+  background: var(--ld-line);
+}
+
+/* --- alternative --- */
+.alt-actions {
+  width: 100%;
+  display: grid;
+  gap: var(--space-3);
+}
+
+.alt-actions .btn { width: 100%; }
+
+.google[disabled] svg { opacity: 0.7; }
+
+.soon {
+  font-size: var(--text-xs);
+  color: var(--ld-ink-3);
+  margin-top: calc(-1 * var(--space-1));
+}
+
+.register {
+  margin-top: var(--space-8);
+  color: var(--ld-ink-2);
+  font-size: var(--text-base);
+}
+
+.register a {
+  color: var(--ld-action);
+  font-weight: var(--weight-semibold);
+  text-decoration: none;
+  cursor: not-allowed;
+  opacity: 0.8;
+}
+
+.soon-inline { color: var(--ld-ink-3); font-size: var(--text-sm); }

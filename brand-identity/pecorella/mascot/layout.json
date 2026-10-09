@@ -1,0 +1,87 @@
+{
+  "savedAt": "2026-10-08T21:31:54.083Z",
+  "viewBox": "0 0 420 340",
+  "parts": {
+    "muso": {
+      "tx": 0.2,
+      "ty": 1.3,
+      "rot": 0,
+      "scale": 1,
+      "cx": 152,
+      "cy": 142,
+      "transform": "translate(0.2 1.3) translate(152 142) rotate(0) scale(1) translate(-152 -142)"
+    },
+    "orecchio-sx": {
+      "tx": -11.9,
+      "ty": 49,
+      "rot": -8,
+      "scale": 1,
+      "cx": 106,
+      "cy": 78,
+      "transform": "translate(-11.9 49) translate(106 78) rotate(-8) scale(1) translate(-106 -78)"
+    },
+    "orecchio-dx": {
+      "tx": -10.6,
+      "ty": 3.9,
+      "rot": -30.5,
+      "scale": 1,
+      "cx": 222,
+      "cy": 148,
+      "transform": "translate(-10.6 3.9) translate(222 148) rotate(-30.5) scale(1) translate(-222 -148)"
+    },
+    "sorriso": {
+      "tx": -45.5,
+      "ty": -3.9,
+      "rot": 0,
+      "scale": 1,
+      "cx": 191.5,
+      "cy": 174.13,
+      "transform": "translate(-45.5 -3.9) translate(191.5 174.13333129882812) rotate(0) scale(1) translate(-191.5 -174.13333129882812)"
+    },
+    "corpo": {
+      "tx": -0.1,
+      "ty": 0,
+      "rot": 0,
+      "scale": 0.87,
+      "cx": 233,
+      "cy": 189,
+      "transform": "translate(-0.1 0) translate(233 189) rotate(0) scale(0.87) translate(-233 -189)"
+    },
+    "zampa-as": {
+      "tx": -8,
+      "ty": -5,
+      "rot": 6,
+      "scale": 1,
+      "cx": 178.5,
+      "cy": 266,
+      "transform": "translate(-8 -5) translate(178.5 266.00001525878906) rotate(6) scale(1) translate(-178.5 -266.00001525878906)"
+    },
+    "zampa-ad": {
+      "tx": -6.3,
+      "ty": 4.9,
+      "rot": 0,
+      "scale": 1,
+      "cx": 210,
+      "cy": 264,
+      "transform": "translate(-6.3 4.9) translate(210 264) rotate(0) scale(1) translate(-210 -264)"
+    },
+    "zampa-ps": {
+      "tx": -4,
+      "ty": 0,
+      "rot": 0,
+      "scale": 1,
+      "cx": 266.5,
+      "cy": 266,
+      "transform": "translate(-4 0) translate(266.5 266.00001525878906) rotate(0) scale(1) translate(-266.5 -266.00001525878906)"
+    },
+    "zampa-pd": {
+      "tx": -6.1,
+      "ty": -4.9,
+      "rot": -3.5,
+      "scale": 1,
+      "cx": 298,
+      "cy": 264,
+      "transform": "translate(-6.1 -4.9) translate(298 264) rotate(-3.5) scale(1) translate(-298 -264)"
+    }
+  }
+}

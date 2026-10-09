@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { JobType, PhotoStatus, Role } from "@rephoto/contracts";
+import type { JobType, LivenessAction, PhotoStatus, Role } from "@rephoto/contracts";
 import {
   JOB_MAX_ATTEMPTS,
   JOB_PRIORITY,
@@ -32,6 +32,7 @@ import type {
   GalleryItemSource,
   GalleryPage,
   ImageContentType,
+  LivenessChallengeRow,
   Metrics,
   OriginalStatus,
   PhotoRow,
@@ -327,12 +328,24 @@ export class PostgresDatabase implements Database {
     ip: string;
     userAgent: string;
   }): Promise<{ id: string; grantedAt: Date }> {
+    // Idempotent under the consents_active_unique partial index (migration 013):
+    // a second concurrent POST (v4 report S4) conflicts and inserts nothing, so we
+    // fall back to returning the existing active consent instead of a duplicate row.
     const rows = await this.sql<{ id: string; granted_at: Date }[]>`
       insert into consents (user_id, event_id, text_version, ip, user_agent)
       values (${input.userId}, ${input.eventId}, ${input.textVersion}, ${input.ip}, ${input.userAgent})
+      on conflict (user_id, event_id) where withdrawn_at is null do nothing
       returning id, granted_at
     `;
-    const row = rows[0];
+    const inserted = rows[0];
+    if (inserted) return { id: inserted.id, grantedAt: inserted.granted_at };
+    const existing = await this.sql<{ id: string; granted_at: Date }[]>`
+      select id, granted_at from consents
+      where user_id = ${input.userId} and event_id = ${input.eventId} and withdrawn_at is null
+      order by granted_at asc, id asc
+      limit 1
+    `;
+    const row = existing[0];
     if (!row) throw new Error("Consent insert failed");
     return { id: row.id, grantedAt: row.granted_at };
   }
@@ -341,6 +354,50 @@ export class PostgresDatabase implements Database {
     const rows = await this.sql<{ ok: number }[]>`
       select 1 as ok from consents
       where user_id = ${userId} and event_id = ${eventId} and withdrawn_at is null
+    `;
+    return rows.length > 0;
+  }
+
+  async insertLivenessChallenge(input: {
+    userId: string;
+    eventId: string;
+    actions: LivenessAction[];
+    expiresAt: Date;
+  }): Promise<{ id: string }> {
+    const rows = await this.sql<{ id: string }[]>`
+      insert into liveness_challenges (user_id, event_id, actions, expires_at)
+      values (${input.userId}, ${input.eventId}, ${input.actions as unknown as string[]}, ${input.expiresAt})
+      returning id
+    `;
+    const row = rows[0];
+    if (!row) throw new Error("Liveness challenge insert failed");
+    return { id: row.id };
+  }
+
+  async findLivenessChallenge(id: string): Promise<LivenessChallengeRow | null> {
+    const rows = await this.sql<
+      { id: string; user_id: string; event_id: string; actions: string[]; expires_at: Date; consumed_at: Date | null }[]
+    >`
+      select id, user_id, event_id, actions, expires_at, consumed_at
+      from liveness_challenges where id = ${id}
+    `;
+    const row = rows[0];
+    if (!row) return null;
+    return {
+      id: row.id,
+      userId: row.user_id,
+      eventId: row.event_id,
+      actions: row.actions as LivenessAction[],
+      expiresAt: row.expires_at,
+      consumedAt: row.consumed_at,
+    };
+  }
+
+  async consumeLivenessChallenge(id: string): Promise<boolean> {
+    const rows = await this.sql<{ id: string }[]>`
+      update liveness_challenges set consumed_at = now()
+      where id = ${id} and consumed_at is null
+      returning id
     `;
     return rows.length > 0;
   }

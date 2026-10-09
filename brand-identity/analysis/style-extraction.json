@@ -1,0 +1,127 @@
+{
+  "$schema": "style-extraction/v1",
+  "progetto": "Frames of Me",
+  "data": "2026-10-08",
+  "nota": "Analisi delle 4 immagini di riferimento fornite dal cliente. Ogni voce è una style guide autonoma; la sintesi finale (brand Frames of Me) è in ../pecorella/BRAND-IDENTITY.md.",
+  "immagini": [
+    {
+      "id": "01-app-gallery",
+      "ruolo_nel_progetto": "Riferimento per la home del PARTECIPANTE dopo il login: due gallerie (Albums / Postcards), upload foto, filtri, ricerca col proprio volto nella repository ufficiale.",
+      "palette": {
+        "sfondo": "#F2F2F4",
+        "superficie": "#FFFFFF",
+        "testo_primario": "#111113",
+        "testo_secondario": "#9A9AA0",
+        "accento_primario": "#0A84FF",
+        "accenti_fotografici": ["#E8B4B8 (postcard rosa)", "#F3D9C8 (postcard pesca)", "#EFE3CE (postcard avorio)"],
+        "bordo_tratteggiato": "#D8D8DC"
+      },
+      "tipografia": {
+        "famiglia": "SF Pro / Inter (grottesca di sistema, tonda e neutra)",
+        "pesi": { "titolo_pagina": 700, "titolo_card": 600, "meta": 400 },
+        "gerarchia": "Titolo pagina ~28px bold → titolo card ~16px semibold → data ~13px grigio. Due soli livelli sotto il titolo: nome e data."
+      },
+      "forme": {
+        "raggio_card": "16-20px",
+        "raggio_foto_interna": "12px",
+        "chip_e_fab": "pill 999px / cerchio",
+        "dettaglio": "Le card album hanno cornice tratteggiata tipo 'ritaglio/francobollo'; le postcards sono impilate con rotazioni ±3-6° tipo pila di cartoline vere."
+      },
+      "ombre": "Quasi assenti: elevazione data dal bianco su grigio; ombra morbida leggera solo sulle pile di cartoline e sul FAB.",
+      "spaziature_densita": "Griglia 2 colonne, gutter ~16px, padding pagina ~20px, molto respiro verticale; densità bassa, max 4-6 oggetti per schermata.",
+      "iconografia": "Icone outline sottili (lente, campanella, casa, fotocamera, edificio) dentro cerchi/pill bianchi; avatar memoji in cerchio scuro.",
+      "atmosfera": "Un rullino personale, ordinato e affettuoso: l'interfaccia sparisce e restano le foto.",
+      "aggettivi": ["pulito", "giocoso", "arioso", "personale", "tattile"]
+    },
+    {
+      "id": "02-landing-aeline",
+      "ruolo_nel_progetto": "Riferimento di STRUTTURA per la landing page pubblica: hero grande con mondo visivo, strip sponsor/loghi in scorrimento, sezione about con card-statistiche miste (bianche, scure, accento).",
+      "palette": {
+        "hero": "#4FA8E8 → #BEE3F8 (cielo fotografico con nuvole)",
+        "sfondo_sezioni": "#FFFFFF / #F4F4F2",
+        "card_scura": "#101114",
+        "accento": "#CDFB51 (lime elettrico: CTA e card dato chiave)",
+        "testo": "#17181C",
+        "testo_secondario": "#73757C",
+        "loghi_strip": "#9A9CA3 (monocromi, desaturati)"
+      },
+      "tipografia": {
+        "famiglia": "grottesca contemporanea (tipo Space Grotesk / General Sans) + nav in maiuscoletto mono-spaziato",
+        "pesi": { "display": 500, "nav": 500, "dato_numerico": 600 },
+        "gerarchia": "Display enorme ~56-72px con una parola in colore/peso diverso → sottotitolo 16px grigio max ~50ch → label sezione in UPPERCASE 11px con pallino."
+      },
+      "forme": {
+        "raggio_card": "16-24px",
+        "bottoni": "pill, coppia 'ghost scuro + accento lime'",
+        "dettaglio": "Screenshot di prodotto che fluttuano nel cielo in prospettiva; le card statistiche alternano bianco/scuro/accento in una griglia asimmetrica."
+      },
+      "ombre": "Morbide e larghe solo sotto gli screenshot fluttuanti; card piatte col bordo.",
+      "spaziature_densita": "Sezioni molto alte (~120-160px di stacco), strip loghi a scorrimento orizzontale infinito, griglia 12 colonne con card 4/4/4.",
+      "iconografia": "Loghi sponsor monocromi, piccole icone dentro chip; rating a stelle.",
+      "atmosfera": "Ottimismo tecnologico: un cielo aperto dove il prodotto galleggia; fiducia costruita con numeri e loghi.",
+      "aggettivi": ["luminoso", "fiducioso", "dinamico", "ordinato", "aspirazionale"]
+    },
+    {
+      "id": "03-pecorella-mascotte",
+      "ruolo_nel_progetto": "LA MASCOTTE. Va ricreata identica come componente vettoriale animabile (idle, scuotersi, muovere testa, camminare) e, in miniatura, diventa il logo di Frames of Me.",
+      "palette": {
+        "sfondo_scena": "#3B332B",
+        "lana": "#F7F0E2",
+        "lana_ombra_macchie": "#EFE6D4",
+        "muso_zampe_orecchie": "#AC9F8E",
+        "orecchio_interno_ombra": "#9C8F7E",
+        "occhi": "#2A241E",
+        "riflesso_occhi": "#FFFFFF",
+        "zoccoli": "#241E18"
+      },
+      "tipografia": { "famiglia": "n/a (illustrazione)", "pesi": {}, "gerarchia": "n/a" },
+      "forme": {
+        "costruzione": "Flat vector senza outline. Corpo = nuvola di 8-10 cerchi sovrapposti (ricci di lana smerlati); ciuffo di lana sopra la testa a 3 lobi; muso a goccia arrotondata inclinato; occhi = due ovali neri grandi con doppio riflesso bianco (grande in alto a sx + piccolo); sorriso = arco sottile; orecchie = due petali arrotondati (uno dritto in alto-sinistra, uno pendente a destra); 4 zampe = rettangoli arrotondati con zoccolo scuro a pillola; coda = ricciolo di lana dietro; 3 pallini chiari sulla groppa.",
+        "proporzioni": "Testa ~45% dell'altezza; occhi enormi (~25% del muso); zampe corte (~20%)."
+      },
+      "ombre": "Nessuna: piatto puro, profondità solo per sovrapposizione di forme e 2 toni di lana.",
+      "spaziature_densita": "Soggetto singolo centrato su fondo pieno scuro caldo, ampio margine (~25%).",
+      "iconografia": "Stile kawaii/flat alla 'children book', curve morbidissime, nessuno spigolo.",
+      "atmosfera": "Tenerezza immediata: guarda in camera e sorride, trasmette fiducia e calma.",
+      "aggettivi": ["morbida", "tenera", "minimale", "calda", "amichevole"]
+    },
+    {
+      "id": "04-login-coaching",
+      "ruolo_nel_progetto": "Riferimento di STRUTTURA per le pagine di accesso: onboarding con illustrazione (qui ci andrà la pecorella), poi login con email+password, 'Continua con Google', e link registrazione. Due livelli: partecipante e fotografo; admin su pagina separata.",
+      "palette": {
+        "sfondo": "#EDECE6 (avorio con pattern di linee circolari sottili)",
+        "card_schermo": "#FFFFFF",
+        "testo_titolo": "#273617 (verde foresta scurissimo)",
+        "bottone_primario": "#1F2D10",
+        "accento": "#B2E388 (verde chiaro: bottone evidenziato)",
+        "bottone_neutro": "#F1F3EC",
+        "bordo_input": "#DDDDD4",
+        "testo_secondario": "#6F6F66"
+      },
+      "tipografia": {
+        "famiglia": "grottesca tonda amichevole (tipo Plus Jakarta / Nunito Sans)",
+        "pesi": { "titolo": 700, "bottoni": 600, "corpo": 400 },
+        "gerarchia": "Titolo centrato 26-32px verde scuro → sottotitolo 14px grigio → bottoni tutti della stessa altezza impilati."
+      },
+      "forme": {
+        "raggio": "input e bottoni pill 999px; progress bar a 3 segmenti pill",
+        "dettaglio": "Illustrazione line-art centrata sopra il titolo; social login impilati con icona a sinistra; un solo bottone 'acceso' (accento) nella pila."
+      },
+      "ombre": "Nessuna: tutto piatto, gerarchia data da pieno/vuoto (bottone scuro pieno vs outline).",
+      "spaziature_densita": "Colonna singola centrata max ~320px, gap 12px tra i bottoni, grandi margini verticali.",
+      "iconografia": "Logo Google a colori, mela piena, icona guest; illustrazione umana monoline nera.",
+      "atmosfera": "Calma da studio di benessere: l'accesso come momento rassicurante, zero attrito percepito.",
+      "aggettivi": ["rassicurante", "naturale", "essenziale", "accogliente", "accessibile"]
+    }
+  ],
+  "sintesi_per_frames_of_me": {
+    "descrizione": "Le quattro immagini raccontano un'unica direzione possibile: un prodotto mobile-first dove le fotografie vere sono il colore dell'interfaccia (img 1), presentato al pubblico con l'ottimismo strutturato di una landing moderna con sponsor (img 2), reso memorabile da una mascotte di lana che diventa logo e guida emotiva (img 3), e con un accesso morbido, verde e senza attrito (img 4). La brand identity Frames of Me nasce dall'incrocio: neutre calde di lana (crema/talpa/cacao della pecorella) come base, un solo accento 'prato' derivato dal login verde, pill e raggi generosi ovunque, fotografia reale al posto della decorazione, e la pecorella — 'ti aiuta a ritrovare il tuo gregge di ricordi' — come filo narrativo di logo, empty state, caricamenti e momenti di festa.",
+    "token_condivisi_estratti": {
+      "raggio_dominante": "pill (999) per controlli, 16-24px per card",
+      "ombra_dominante": "quasi-flat: elevazione per contrasto di superficie, non per ombra",
+      "densita": "bassa, mobile-first, max 2 colonne",
+      "accento_unico": "sì in tutte e 4 (blu, lime, —, verde): la regola 'un solo accento' è confermata",
+      "palette_ponte": ["#F7F0E2 lana", "#AC9F8E talpa", "#2A241E cacao", "#3B332B cacao profondo", "verde prato da definire nei token"]
+    }
+  }
+}

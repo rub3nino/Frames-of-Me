@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 120" role="img" aria-label="frames of me">
+  <!-- Lockup orizzontale: mark + wordmark. Wordmark in Bricolage Grotesque (fallback di sistema);
+       per la stampa/consegna finale vettorializzare il testo in path. -->
+  <g transform="translate(6,6) scale(0.72)">
+    <circle cx="58" cy="122" r="22" fill="#F7F0E2"/>
+    <circle cx="92" cy="128" r="24" fill="#F7F0E2"/>
+    <circle cx="124" cy="116" r="20" fill="#F7F0E2"/>
+    <ellipse cx="22" cy="74" rx="15" ry="26" fill="#AC9F8E" transform="rotate(34 22 74)"/>
+    <ellipse cx="76" cy="88" rx="40" ry="50" fill="#AC9F8E" transform="rotate(-8 76 88)"/>
+    <ellipse cx="131" cy="97" rx="14" ry="26" fill="#AC9F8E" transform="rotate(-8.5 131 97)"/>
+    <ellipse cx="133" cy="100.5" rx="8.5" ry="18" fill="#9C8F7E" transform="rotate(-8.5 133 100.5)"/>
+    <circle cx="46" cy="54" r="20" fill="#F7F0E2"/>
+    <circle cx="72" cy="42" r="24" fill="#F7F0E2"/>
+    <circle cx="101" cy="47" r="22" fill="#F7F0E2"/>
+    <circle cx="123" cy="64" r="19" fill="#F7F0E2"/>
+    <ellipse cx="57" cy="86" rx="12" ry="14" fill="#2A241E"/>
+    <circle cx="52.8" cy="80.5" r="4.2" fill="#FFFFFF"/>
+    <circle cx="60.6" cy="91.5" r="1.8" fill="#FFFFFF"/>
+    <ellipse cx="96" cy="93" rx="12" ry="14" fill="#2A241E"/>
+    <circle cx="91.8" cy="87.5" r="4.2" fill="#FFFFFF"/>
+    <circle cx="99.6" cy="98.5" r="1.8" fill="#FFFFFF"/>
+    <path d="M 61.5 112.5 q 8.5 7.5 17.5 1" fill="none" stroke="#2A241E" stroke-width="3.2" stroke-linecap="round"/>
+  </g>
+  <text x="152" y="78" font-family="'Bricolage Grotesque','Plus Jakarta Sans',system-ui,sans-serif"
+        font-size="52" font-weight="640" letter-spacing="-0.5" fill="#2A241E">frames of me</text>
+</svg>

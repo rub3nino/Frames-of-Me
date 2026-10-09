@@ -909,6 +909,24 @@ test("selfie is refused when the event is list-based and the email is not on it"
   assert.equal(allowed.status, 202);
 });
 
+test("concurrent consent POSTs are idempotent (v4 report S4)", async () => {
+  const h = await harness();
+  const participant = await h.db.createUser({ email: "race@example.com", role: "participant" });
+  const cookie = await sessionCookie(h.db, participant.id);
+  const post = () =>
+    h.app.request(
+      json("POST", `/v1/events/${h.event.slug}/consent`, { textVersion: CONSENT_TEXT_VERSION, accepted: true }, { cookie }),
+    );
+  const responses = await Promise.all(Array.from({ length: 8 }, post));
+  for (const res of responses) assert.equal(res.status, 201);
+  const ids = await Promise.all(
+    responses.map(async (res) => ((await res.json()) as { id: string }).id),
+  );
+  // One active consent: every concurrent request resolves to the same row.
+  assert.equal(new Set(ids).size, 1, "8 parallel consents must collapse to a single active row");
+  assert.equal(await h.db.hasActiveConsent(participant.id, h.event.id), true);
+});
+
 test("every participant route of a list-based event refuses an email that is not on the list", async () => {
   // Ported from main's `requireParticipantAccess` (commit 8d80c59). On v6 the allowlist was
   // checked in `POST /v1/events/:slug/selfie` and nowhere else, so consent, the gallery, its
@@ -1203,6 +1221,11 @@ test("web stage creates a pending photo with its web derivative and queues deriv
   assert.equal(metrics.originalsPending, 1);
   assert.equal(metrics.photosByStatus.uploaded, 1);
 });
+
+// Il vecchio test B1 "public web-first upload" (collection `public` su /v1/uploads/init) è
+// stato ritirato col modello album della v6: quella rotta è solo-fotografi per design e il
+// percorso partecipante (403 incluso, moderazione, photographer nullo) è coperto da
+// apps/api/test/v6-crowd.test.ts.
 
 test("web stage complete with a byte mismatch aborts the session and drops the object", async () => {
   const h = await harness();
@@ -2541,4 +2564,101 @@ test("rematch refuses without an active consent, even with KEEP_SELFIES and a st
   );
   assert.equal(withdrawn.status, 409);
   assert.deepEqual(await withdrawn.json(), { error: MESSAGES.consentRequired });
+});
+
+test("challenge issue returns a server-dictated action sequence (v4 report F05)", async () => {
+  const h = await harness({ env: { ...env, LIVENESS_CHALLENGE: true } });
+  const participant = await h.db.createUser({ email: "chal@example.com", role: "participant" });
+  const cookie = await sessionCookie(h.db, participant.id);
+  await h.db.insertConsent({
+    userId: participant.id,
+    eventId: h.event.id,
+    textVersion: CONSENT_TEXT_VERSION,
+    ip: "127.0.0.1",
+    userAgent: "t",
+  });
+  const res = await h.app.request(
+    new Request(`http://api.local/v1/events/${h.event.slug}/selfie/challenge`, {
+      method: "POST",
+      headers: { cookie },
+    }),
+  );
+  assert.equal(res.status, 201);
+  const body = (await res.json()) as { challengeId: string; actions: string[]; expiresAt: string };
+  assert.match(body.challengeId, /^[0-9a-f-]{36}$/);
+  assert.equal(body.actions.at(-1), "front", "the last action is the frontal capture");
+  assert.ok(body.actions.length >= 2);
+  assert.ok(body.actions.slice(0, -1).every((a) => a === "left" || a === "right"));
+});
+
+test("challenge issue is hidden when challenge mode is off (v4 report F05)", async () => {
+  const h = await harness();
+  const participant = await h.db.createUser({ email: "choff@example.com", role: "participant" });
+  const cookie = await sessionCookie(h.db, participant.id);
+  const res = await h.app.request(
+    new Request(`http://api.local/v1/events/${h.event.slug}/selfie/challenge`, {
+      method: "POST",
+      headers: { cookie },
+    }),
+  );
+  assert.equal(res.status, 404);
+});
+
+test("selfie without a challenge is refused when challenge mode is on (v4 report F05)", async () => {
+  const h = await harness({ env: { ...env, LIVENESS_CHALLENGE: true } });
+  const participant = await h.db.createUser({ email: "noch@example.com", role: "participant" });
+  const cookie = await sessionCookie(h.db, participant.id);
+  await h.db.insertConsent({
+    userId: participant.id,
+    eventId: h.event.id,
+    textVersion: CONSENT_TEXT_VERSION,
+    ip: "127.0.0.1",
+    userAgent: "t",
+  });
+  const form = new FormData();
+  form.set("selfie", new File([Buffer.from("not a challenge")], "s.jpg", { type: "image/jpeg" }));
+  const res = await h.app.request(
+    new Request(`http://api.local/v1/events/${h.event.slug}/selfie`, {
+      method: "POST",
+      headers: { cookie },
+      body: form,
+    }),
+  );
+  assert.equal(res.status, 400);
+  assert.deepEqual(await res.json(), { error: MESSAGES.challengeRequired });
+});
+
+test("selfie with challenge frames queues a match (v4 report F05)", async () => {
+  const h = await harness({ env: { ...env, LIVENESS_CHALLENGE: true } });
+  const participant = await h.db.createUser({ email: "frames@example.com", role: "participant" });
+  const cookie = await sessionCookie(h.db, participant.id);
+  await h.db.insertConsent({
+    userId: participant.id,
+    eventId: h.event.id,
+    textVersion: CONSENT_TEXT_VERSION,
+    ip: "127.0.0.1",
+    userAgent: "t",
+  });
+  const issued = await h.app.request(
+    new Request(`http://api.local/v1/events/${h.event.slug}/selfie/challenge`, {
+      method: "POST",
+      headers: { cookie },
+    }),
+  );
+  const { challengeId, actions } = (await issued.json()) as { challengeId: string; actions: string[] };
+  const form = new FormData();
+  form.set("challengeId", challengeId);
+  actions.forEach((_, i) => {
+    form.set(`frame${i}`, new File([Buffer.from(`frame-${i}`)], `f${i}.jpg`, { type: "image/jpeg" }));
+  });
+  const res = await h.app.request(
+    new Request(`http://api.local/v1/events/${h.event.slug}/selfie`, {
+      method: "POST",
+      headers: { cookie },
+      body: form,
+    }),
+  );
+  assert.equal(res.status, 202);
+  assert.deepEqual(await res.json(), { status: "queued" });
+  assert.equal(await h.db.countMatchJobsSince(participant.id, new Date(Date.now() - 60_000)), 1);
 });

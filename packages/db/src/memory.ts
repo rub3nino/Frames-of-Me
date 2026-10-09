@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { JobType, PhotoStatus, Role } from "@rephoto/contracts";
+import type { JobType, LivenessAction, PhotoStatus, Role } from "@rephoto/contracts";
 import {
   JOB_MAX_ATTEMPTS,
   JOB_PRIORITY,
@@ -31,6 +31,7 @@ import type {
   GalleryItemSource,
   GalleryPage,
   ImageContentType,
+  LivenessChallengeRow,
   Metrics,
   OriginalStatus,
   PhotoRow,
@@ -114,6 +115,8 @@ type MagicLink = {
 };
 
 type Consent = {
+  // v4 report S4: id stabile per l'idempotenza (un solo consenso attivo per user+event).
+  id: string;
   userId: string;
   eventId: string;
   withdrawnAt: Date | null;
@@ -227,6 +230,7 @@ export class MemoryDatabase implements Database {
   private readonly links: MagicLink[] = [];
   private readonly sessions = new Map<string, { userId: string; expiresAt: Date }>();
   private readonly consents: Consent[] = [];
+  private readonly livenessChallenges = new Map<string, LivenessChallengeRow>();
   private readonly photos = new Map<string, PhotoRow>();
   private readonly uploads = new Map<string, UploadSessionRow>();
   private readonly derivatives: Array<{ photoId: string; kind: "thumb" | "web"; s3Key: string }> = [];
@@ -439,21 +443,59 @@ export class MemoryDatabase implements Database {
   }): Promise<{ id: string; grantedAt: Date }> {
     void input.ip;
     void input.userAgent;
-    const grantedAt = new Date();
-    this.consents.push({
+    // Mirror the postgres partial-unique behaviour (migration 013, v4 report S4):
+    // one active consent per (user, event); a repeat returns the existing row.
+    const active = this.consents
+      .filter((row) => row.userId === input.userId && row.eventId === input.eventId && !row.withdrawnAt)
+      .sort((a, b) => a.grantedAt.getTime() - b.grantedAt.getTime() || compareText(a.id, b.id))[0];
+    if (active) return { id: active.id, grantedAt: active.grantedAt };
+    const consent = {
+      id: randomUUID(),
       userId: input.userId,
       eventId: input.eventId,
+      grantedAt: new Date(),
       withdrawnAt: null,
-      grantedAt,
+      // v6 (agent G): read back by findConsentState / the privacy page.
       textVersion: input.textVersion,
-    });
-    return { id: randomUUID(), grantedAt };
+    };
+    this.consents.push(consent);
+    return { id: consent.id, grantedAt: consent.grantedAt };
   }
 
   async hasActiveConsent(userId: string, eventId: string): Promise<boolean> {
     return this.consents.some(
       (row) => row.userId === userId && row.eventId === eventId && !row.withdrawnAt,
     );
+  }
+
+  async insertLivenessChallenge(input: {
+    userId: string;
+    eventId: string;
+    actions: LivenessAction[];
+    expiresAt: Date;
+  }): Promise<{ id: string }> {
+    const id = randomUUID();
+    this.livenessChallenges.set(id, {
+      id,
+      userId: input.userId,
+      eventId: input.eventId,
+      actions: [...input.actions],
+      expiresAt: input.expiresAt,
+      consumedAt: null,
+    });
+    return { id };
+  }
+
+  async findLivenessChallenge(id: string): Promise<LivenessChallengeRow | null> {
+    const row = this.livenessChallenges.get(id);
+    return row ? { ...row, actions: [...row.actions] } : null;
+  }
+
+  async consumeLivenessChallenge(id: string): Promise<boolean> {
+    const row = this.livenessChallenges.get(id);
+    if (!row || row.consumedAt) return false;
+    row.consumedAt = new Date();
+    return true;
   }
 
   async countMatchJobsSince(userId: string, since: Date): Promise<number> {

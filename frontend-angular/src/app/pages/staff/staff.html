@@ -1,0 +1,21 @@
+<main class="staff-page">
+  <div class="staff-col">
+    <img class="staff-mark" src="assets/logo/mark.svg" alt="Frames of Me" width="48" height="44" />
+    <h1 class="staff-title">Area staff</h1>
+    <p class="staff-sub">Accesso riservato a organizzatori e amministratori.</p>
+
+    <form class="staff-form" (submit)="$event.preventDefault()">
+      <div class="field">
+        <label class="field-label" for="staff-email">Email</label>
+        <input class="input-line" id="staff-email" type="email" name="email" autocomplete="email" placeholder="nome@organizzazione.it" />
+      </div>
+      <div class="field">
+        <label class="field-label" for="staff-password">Password</label>
+        <input class="input-line" id="staff-password" type="password" name="password" autocomplete="current-password" placeholder="La tua password" />
+      </div>
+      <button class="btn btn-action btn-lg staff-submit" type="submit">Accedi</button>
+    </form>
+
+    <a routerLink="/" class="staff-back">Torna al sito</a>
+  </div>
+</main>

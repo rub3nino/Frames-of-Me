@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pecorella animata — QA</title>
+<link rel="stylesheet" href="pecorella.css">
+<style>
+  /* Solo chrome della demo: le animazioni vivono in pecorella.css. */
+  :root {
+    --night: #3B332B;
+    --wool: #F7F0E2;
+    --accent: #3F7D2C;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 36px;
+    background: var(--night);
+    font-family: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
+    padding: 24px 16px;
+  }
+  h1 {
+    margin: 0;
+    color: var(--wool);
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    opacity: 0.85;
+  }
+  /* Il palco: contenitore della traversata (100cqw) */
+  .palco {
+    container-type: inline-size;
+    position: relative;
+    width: min(880px, 100%);
+    height: 320px;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    overflow: hidden;
+    border-radius: 32px;
+    background: rgb(255 255 255 / 0.03);
+    box-shadow: inset 0 0 0 1px rgb(247 240 226 / 0.08);
+  }
+  .palco--attraversa { justify-content: flex-start; }
+  .pecorella { width: 240px; margin-bottom: 8px; }
+
+  .controlli {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 10px;
+  }
+  .pill {
+    appearance: none;
+    border: 1px solid rgb(247 240 226 / 0.25);
+    background: transparent;
+    color: var(--wool);
+    font: inherit;
+    font-size: 15px;
+    font-weight: 540;
+    padding: 10px 22px;
+    border-radius: 999px;
+    cursor: pointer;
+    transition: background-color 160ms cubic-bezier(0.23, 1, 0.32, 1),
+                border-color 160ms cubic-bezier(0.23, 1, 0.32, 1),
+                transform 120ms cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .pill:hover { background: rgb(247 240 226 / 0.08); }
+  }
+  .pill:active { transform: scale(0.97); }
+  .pill[aria-pressed="true"] {
+    background: var(--wool);
+    border-color: var(--wool);
+    color: #2A241E;
+  }
+  .pill:focus-visible { outline: 2px solid #4C9636; outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) {
+    .pill { transition: none; }
+  }
+</style>
+</head>
+<body>
+
+<h1>Pecorella — stati di animazione</h1>
+
+<div class="palco" id="palco">
+  <div class="pecorella" id="pecorella">
+    <!-- stesso markup di pecorella.svg: non modificare forme/colori -->
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 340" role="img" aria-label="Pecorella Frames of Me">
+      <!-- ===== ZAMPE (dietro il corpo) ===== -->
+      <g id="zampe">
+        <g id="zampa-pd" class="zampa">
+          <rect x="288" y="230" width="20" height="66" rx="10" fill="#9C8F7E"/>
+          <path d="M 288 280 h 20 v 8 a 10 10 0 0 1 -10 10 a 10 10 0 0 1 -10 -10 z" fill="#241E18"/>
+        </g>
+        <g id="zampa-ad" class="zampa">
+          <rect x="200" y="232" width="20" height="64" rx="10" fill="#9C8F7E"/>
+          <path d="M 200 278 h 20 v 8 a 10 10 0 0 1 -10 10 a 10 10 0 0 1 -10 -10 z" fill="#241E18"/>
+        </g>
+        <g id="zampa-ps" class="zampa">
+          <rect x="256" y="234" width="21" height="64" rx="10" fill="#AC9F8E"/>
+          <path d="M 256 280 h 21 v 8 a 10.5 10.5 0 0 1 -10.5 10 a 10.5 10.5 0 0 1 -10.5 -10 z" fill="#241E18"/>
+        </g>
+        <g id="zampa-as" class="zampa">
+          <rect x="168" y="234" width="21" height="64" rx="10" fill="#AC9F8E"/>
+          <path d="M 168 280 h 21 v 8 a 10.5 10.5 0 0 1 -10.5 10 a 10.5 10.5 0 0 1 -10.5 -10 z" fill="#241E18"/>
+        </g>
+      </g>
+      <!-- ===== CORPO ===== -->
+      <g id="corpo">
+        <circle cx="166" cy="196" r="44" fill="#F7F0E2"/>
+        <circle cx="196" cy="158" r="46" fill="#F7F0E2"/>
+        <circle cx="243" cy="146" r="48" fill="#F7F0E2"/>
+        <circle cx="288" cy="164" r="44" fill="#F7F0E2"/>
+        <circle cx="306" cy="200" r="38" fill="#F7F0E2"/>
+        <circle cx="282" cy="228" r="40" fill="#F7F0E2"/>
+        <circle cx="232" cy="238" r="42" fill="#F7F0E2"/>
+        <circle cx="184" cy="228" r="38" fill="#F7F0E2"/>
+        <circle cx="234" cy="192" r="66" fill="#F7F0E2"/>
+        <g id="macchie">
+          <circle cx="300" cy="182" r="7" fill="#EFE6D4"/>
+          <circle cx="314" cy="198" r="5.5" fill="#EFE6D4"/>
+          <circle cx="301" cy="206" r="4.5" fill="#EFE6D4"/>
+        </g>
+      </g>
+      <!-- ===== TESTA ===== -->
+      <g id="testa">
+        <g id="orecchio-sx">
+          <ellipse cx="106" cy="78" rx="17" ry="30" fill="#AC9F8E" transform="rotate(42 106 78)"/>
+        </g>
+        <ellipse id="muso" cx="152" cy="142" rx="43" ry="54" fill="#AC9F8E" transform="rotate(-8 152 142)"/>
+        <g id="orecchio-dx">
+          <ellipse cx="222" cy="148" rx="16" ry="30" fill="#AC9F8E" transform="rotate(22 222 148)"/>
+          <ellipse cx="224" cy="152" rx="9.5" ry="21" fill="#9C8F7E" transform="rotate(22 224 152)"/>
+        </g>
+        <g id="ciuffo">
+          <circle cx="122" cy="108" r="23" fill="#F7F0E2"/>
+          <circle cx="150" cy="96" r="27" fill="#F7F0E2"/>
+          <circle cx="182" cy="102" r="25" fill="#F7F0E2"/>
+          <circle cx="206" cy="120" r="22" fill="#F7F0E2"/>
+        </g>
+        <g id="occhi">
+          <g id="occhio-sx">
+            <ellipse cx="131" cy="138" rx="13" ry="15" fill="#2A241E"/>
+            <circle cx="126.5" cy="132" r="4.6" fill="#FFFFFF"/>
+            <circle cx="135" cy="144" r="2" fill="#FFFFFF"/>
+          </g>
+          <g id="occhio-dx">
+            <ellipse cx="173" cy="146" rx="13" ry="15" fill="#2A241E"/>
+            <circle cx="168.5" cy="140" r="4.6" fill="#FFFFFF"/>
+            <circle cx="177" cy="152" r="2" fill="#FFFFFF"/>
+          </g>
+        </g>
+        <path id="sorriso" d="M 182 172 q 9 8 19 1" fill="none" stroke="#2A241E" stroke-width="3.4" stroke-linecap="round"/>
+      </g>
+    </svg>
+  </div>
+</div>
+
+<div class="controlli" role="group" aria-label="Azioni della pecorella">
+  <button class="pill" data-azione="idle" aria-pressed="true">Idle</button>
+  <button class="pill" data-azione="cammina" aria-pressed="false">Cammina</button>
+  <button class="pill" data-azione="attraversa" aria-pressed="false">Attraversa</button>
+  <button class="pill" data-azione="scuoti" aria-pressed="false">Scuoti</button>
+  <button class="pill" data-azione="testa" aria-pressed="false">Testa</button>
+  <button class="pill" data-azione="triste" aria-pressed="false">Triste</button>
+</div>
+
+<script>
+  var CLASSI = {
+    idle: '',
+    cammina: 'pecorella--cammina',
+    attraversa: 'pecorella--cammina pecorella--attraversa',
+    scuoti: 'pecorella--scuoti',
+    testa: 'pecorella--testa',
+    triste: 'pecorella--triste'
+  };
+
+  var pecorella = document.getElementById('pecorella');
+  var palco = document.getElementById('palco');
+  var bottoni = Array.prototype.slice.call(document.querySelectorAll('.pill[data-azione]'));
+
+  function setAzione(azione) {
+    pecorella.className = ('pecorella ' + (CLASSI[azione] || '')).trim();
+    palco.classList.toggle('palco--attraversa', azione === 'attraversa');
+    bottoni.forEach(function (b) {
+      b.setAttribute('aria-pressed', String(b.dataset.azione === azione));
+    });
+  }
+
+  bottoni.forEach(function (b) {
+    b.addEventListener('click', function () {
+      var azione = b.dataset.azione;
+      if (azione === 'scuoti') {
+        // riarma anche se gia' in scuoti: reset + reflow + riapplica
+        pecorella.className = 'pecorella';
+        void pecorella.offsetWidth;
+      }
+      setAzione(azione);
+    });
+  });
+
+  // "scuoti" non e' un loop: finito lo shake del corpo si torna a idle
+  pecorella.addEventListener('animationend', function (e) {
+    if (e.animationName === 'pecorella-scuoti-corpo') setAzione('idle');
+  });
+</script>
+</body>
+</html>

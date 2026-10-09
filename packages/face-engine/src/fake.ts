@@ -340,7 +340,9 @@ export class FakeFaceEngine implements FaceEngine {
       }));
   }
 
-  /** One full-frame face per image (none for an empty image), with the colour-key embedding. */
+  /** One full-frame face per image (none for an empty image), with the colour-key embedding.
+   * `yaw` is decoded from the PNG width (see `fakeYaw`) so a test can vary head pose
+   * independently of colour (the fake identity); real images give `yaw: null`. */
   async embedSelfie(input: EmbedSelfieInput): Promise<EmbedSelfieResult> {
     const color = readQuantizedColor(input.imageBytes, input.contentType);
     if (!color) return { faces: [], width: FAKE_SELFIE_FRAME, height: FAKE_SELFIE_FRAME };
@@ -353,6 +355,7 @@ export class FakeFaceEngine implements FaceEngine {
           score: 0.99,
           quality: 1,
           embedding: fakeEmbedding(color.r, color.g, color.b),
+          yaw: fakeYaw(input.imageBytes, input.contentType),
         },
       ],
     };
@@ -533,6 +536,22 @@ function readQuantizedColor(
     g: quantChannel(sum.sumG / sum.count),
     b: quantChannel(sum.sumB / sum.count),
   };
+}
+
+/**
+ * Test-only head-yaw convention: a PNG whose pixel width is within ±100 of YAW_WIDTH_BASE
+ * encodes a yaw of (width - YAW_WIDTH_BASE) / 100, in [-1, 1]. This lets a challenge test fix
+ * identity with colour and pose with width, independently. Any other image gives `null`, like a
+ * real detector that returned no landmarks. JPEGs always give `null`.
+ */
+const YAW_WIDTH_BASE = 1100;
+export function fakeYaw(bytes: Uint8Array, contentType: ImageContentType): number | null {
+  if (contentType !== "image/png") return null;
+  if (bytes.length < 24 || !PNG_SIGNATURE.every((byte, index) => bytes[index] === byte)) return null;
+  // IHDR width is the first field of the first chunk: 8 (sig) + 4 (len) + 4 ("IHDR") = offset 16.
+  const width = readU32(bytes, 16);
+  if (width < YAW_WIDTH_BASE - 100 || width > YAW_WIDTH_BASE + 100) return null;
+  return (width - YAW_WIDTH_BASE) / 100;
 }
 
 function quantChannel(average: number): number {

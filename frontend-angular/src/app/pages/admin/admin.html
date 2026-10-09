@@ -1,0 +1,91 @@
+<div class="admin">
+  <!-- ======= Sidebar ======= -->
+  <aside class="sidebar">
+    <a class="side-logo" href="/admin" aria-label="Gestionale Frames of Me">
+      <img src="assets/logo/mark.svg" alt="" width="34" height="31" />
+      <span>Gestionale</span>
+    </a>
+    <nav class="side-nav" aria-label="Sezioni del gestionale">
+      @for (item of navItems; track item.label) {
+        <button
+          type="button"
+          class="side-item"
+          [class.is-active]="item.label === active"
+          [attr.aria-current]="item.label === active ? 'page' : null"
+        >
+          {{ item.label }}
+        </button>
+      }
+    </nav>
+  </aside>
+
+  <!-- ======= Contenuto ======= -->
+  <div class="content">
+    <header class="topbar">
+      <h1 class="topbar-title">Foto</h1>
+      <input
+        class="input topbar-search"
+        type="search"
+        placeholder="Cerca per evento, fotografo o ID"
+        aria-label="Cerca tra le foto"
+      />
+      <img class="topbar-avatar" src="assets/photos/portrait-03.jpg" alt="Il tuo profilo" width="36" height="36" />
+    </header>
+
+    <!-- Metriche -->
+    <section class="metrics" aria-label="Metriche principali">
+      @for (m of metrics; track m.label) {
+        <div class="metric">
+          <p class="metric-value num">{{ m.value }}</p>
+          <p class="metric-label">{{ m.label }}</p>
+        </div>
+      }
+    </section>
+
+    <!-- Tabella foto -->
+    <section class="panel" aria-label="Elenco foto">
+      <table class="table">
+        <thead>
+          <tr>
+            <th scope="col">Foto</th>
+            <th scope="col">ID</th>
+            <th scope="col" class="col-wide">Evento</th>
+            <th scope="col" class="col-wide">Fotografo</th>
+            <th scope="col">Stato</th>
+            <th scope="col" class="col-right">Caricata</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (photo of photos; track photo.id) {
+            <tr>
+              <td><img class="thumb" [src]="photo.thumb" [alt]="'Anteprima ' + photo.id" width="32" height="32" /></td>
+              <td class="mono">{{ photo.id }}</td>
+              <td class="col-wide">{{ photo.event }}</td>
+              <td class="col-wide muted">{{ photo.photographer }}</td>
+              <td>
+                <span class="state" [class]="'state state-' + photo.state">
+                  @switch (photo.state) {
+                    @case ('published') {
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+                    }
+                    @case ('pending') {
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+                    }
+                    @case ('rejected') {
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                    }
+                    @case ('queued') {
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M5 12h14"/><path d="M5 6h14"/><path d="M5 18h9"/></svg>
+                    }
+                  }
+                  {{ stateLabel(photo.state) }}
+                </span>
+              </td>
+              <td class="col-right muted num">{{ photo.uploadedAt }}</td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    </section>
+  </div>
+</div>

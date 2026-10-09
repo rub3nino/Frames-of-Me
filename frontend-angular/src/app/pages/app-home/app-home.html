@@ -1,0 +1,101 @@
+<div class="shell">
+  <!-- ======= Header ======= -->
+  <header class="top">
+    <button class="avatar" type="button" aria-label="Il tuo profilo">
+      <img src="assets/photos/portrait-06.jpg" alt="" width="44" height="44" />
+    </button>
+    <div class="top-actions">
+      <button class="icon-btn" type="button" aria-label="Cerca nelle tue foto">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+      </button>
+      <button class="icon-btn" type="button" aria-label="Notifiche">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <h1 class="page-title display">La tua galleria</h1>
+
+  <!-- ======= Chip Album / Postcards ======= -->
+  <div class="chips" role="tablist" aria-label="Vista della galleria">
+    <button
+      type="button"
+      role="tab"
+      class="chip"
+      [attr.aria-selected]="view() === 'album'"
+      [class.is-active]="view() === 'album'"
+      (click)="setView('album')"
+    >
+      Album
+    </button>
+    <button
+      type="button"
+      role="tab"
+      class="chip"
+      [attr.aria-selected]="view() === 'postcards'"
+      [class.is-active]="view() === 'postcards'"
+      (click)="setView('postcards')"
+    >
+      Postcards
+    </button>
+  </div>
+
+  <!-- ======= Vista Album ======= -->
+  @if (view() === 'album') {
+    <section class="albums" aria-label="I tuoi album">
+      @for (album of albums; track album.id) {
+        <article class="album-card">
+          <div class="album-frame">
+            <div class="album-collage">
+              <img class="big" [src]="album.cover" [alt]="'Copertina album ' + album.title" />
+              <img class="small" [src]="album.small[0]" alt="" />
+              <img class="small" [src]="album.small[1]" alt="" />
+            </div>
+          </div>
+          <h2 class="album-title">{{ album.title }}</h2>
+          <p class="album-meta"><span class="num">{{ album.photoCount }}</span> foto · {{ album.date }}</p>
+        </article>
+      }
+    </section>
+  } @else {
+    <!-- ======= Vista Postcards ======= -->
+    <section class="piles" aria-label="Le tue postcards">
+      @for (pile of postcards; track pile.id) {
+        <article class="pile">
+          <div class="pile-stack">
+            @for (card of pile.cards; track card; let i = $index) {
+              <img
+                class="pile-card"
+                [class.c0]="i === 0"
+                [class.c1]="i === 1"
+                [class.c2]="i === 2"
+                [src]="card"
+                [alt]="i === 0 ? 'Postcard di ' + pile.event : ''"
+              />
+            }
+          </div>
+          <h2 class="album-title">{{ pile.event }}</h2>
+          <p class="album-meta">{{ pile.date }}</p>
+        </article>
+      }
+    </section>
+  }
+
+  <!-- ======= FAB ======= -->
+  <button class="fab" type="button" aria-label="Carica una foto">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+  </button>
+
+  <!-- ======= Tab bar ======= -->
+  <nav class="tabbar" aria-label="Navigazione principale">
+    <button class="tab is-active" type="button" aria-label="Galleria" aria-current="page">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="4"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/></svg>
+    </button>
+    <button class="tab" type="button" aria-label="Fai un selfie">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
+    </button>
+    <button class="tab" type="button" aria-label="Photo Circle">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+    </button>
+  </nav>
+</div>

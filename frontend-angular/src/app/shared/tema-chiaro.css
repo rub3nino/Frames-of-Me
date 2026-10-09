@@ -1,0 +1,118 @@
+/* ============================================================
+   Tema "Cielo" — palette chiara bianco + azzurro, condivisa dalle
+   pagine pubbliche (landing, /accedi, /staff). Si importa nel CSS
+   del componente: i token restano scopati al suo :host, quindi
+   /app e /admin continuano a usare la palette lana di tokens.css.
+
+   Direzione (impeccable/colorize): l'azzurro è il cielo che si
+   dirada — chiarezza e fiducia, il selfie che ti ritrova.
+   Grammatica Notion: fondo bianco, bordi 1px al posto delle ombre,
+   aria, hover che alzano il bordo di tono. UN solo colore d'azione.
+
+   Ruoli (contrasti verificati WCAG AA):
+   - ink su bianco 15.5:1 · ink-2 6.0:1 · ink-3 5.0:1
+   - action #2C78B3 su bianco 4.7:1 (testo e bottone)
+   - action-deep #25628F su soft #EAF4FB 5.8:1
+   - ink-faint #8A93A1 3.1:1 → SOLO decorativo (loghi sponsor)
+   - night-ink su night 11:1 · night-ink-2 5.9:1
+   ============================================================ */
+:host {
+  /* superfici */
+  --ld-canvas: #FFFFFF;
+  --ld-sunken: #F7F9FB;
+  --ld-line: #E7EAEE;
+  --ld-line-strong: #DDE3EA;
+  --ld-line-hover: #C7D1DC;      /* hover: il bordo sale di tono */
+
+  /* inchiostri (quasi-neri tinti blu, mai #000) */
+  --ld-ink: #1F2430;
+  --ld-ink-2: #5A6472;
+  --ld-ink-3: #64707F;
+  --ld-ink-faint: #8A93A1;       /* decorativo: loghi sponsor */
+
+  /* azzurro: un solo colore d'azione */
+  --ld-action: #2C78B3;
+  --ld-action-hover: #25628F;
+  --ld-action-deep: #25628F;     /* testo accento su superfici soft */
+  --ld-sky: #4FA8E8;             /* decorativo grande, mai testo */
+  --ld-soft: #EAF4FB;
+  --ld-soft-line: #CFE4F4;
+
+  /* blu notte (footer landing) */
+  --ld-night: #1C3A52;
+  --ld-night-ink: #F2F7FB;
+  --ld-night-ink-2: #A9BFD3;
+  --ld-night-line: rgba(242, 247, 251, 0.16);
+
+  /* selezione testo (superficie del browser, tinta dal cielo) */
+  --ld-selection: #CFE7F9;
+
+  /* dot grid alla Notion: atmosfera, quasi impercettibile, mai sotto testo lungo */
+  --ld-dot: #D7DEE6;          /* puntino su bianco */
+  --ld-dot-sunken: #E3EAF1;   /* puntino su sezioni azzurrine */
+
+  /* motion (emil: ease-out deciso, UI < 300ms, reveal 480ms una volta) */
+  --ld-ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+
+  /* ganci per gli stili globali condivisi (focus ring) */
+  --focus-ring: var(--ld-action);
+
+  display: block;
+  background: var(--ld-canvas);
+  color: var(--ld-ink);
+  /* mobile-native: niente flash grigio al tocco, gli stati :active restano visibili */
+  -webkit-tap-highlight-color: transparent;
+}
+
+::selection { background: var(--ld-selection); color: #16324A; }
+
+.visually-hidden {
+  position: absolute;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ---------- Bottoni (rettangoli morbidi alla Notion, sopra .btn globale) ---------- */
+.btn-action {
+  background: var(--ld-action);
+  color: #FFFFFF;
+  border-radius: 10px;
+}
+@media (hover: hover) and (pointer: fine) {
+  .btn-action:hover { background: var(--ld-action-hover); }
+}
+
+.btn-line {
+  background: var(--ld-canvas);
+  color: var(--ld-ink);
+  border: 1px solid var(--ld-line-strong);
+  border-radius: 10px;
+}
+@media (hover: hover) and (pointer: fine) {
+  .btn-line:hover { border-color: var(--ld-line-hover); background: var(--ld-sunken); }
+}
+
+/* ---------- Input alla Notion (bordo 1px, raggio 10, ring azzurro) ---------- */
+.input-line {
+  height: var(--control-h);
+  width: 100%;
+  padding: 0 var(--space-4);
+  border-radius: 10px;
+  border: 1px solid var(--ld-line-strong);
+  background: var(--ld-canvas);
+  color: var(--ld-ink);
+  /* ≥16px: iOS non zooma al focus */
+  font-size: max(1rem, var(--text-base));
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+
+.input-line::placeholder { color: var(--ld-ink-3); }
+
+.input-line:focus {
+  outline: none;
+  border-color: var(--ld-action);
+  box-shadow: 0 0 0 3px var(--ld-soft);
+}

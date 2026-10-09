@@ -20,3 +20,6 @@ __pycache__/
 # Non entra mai nel repo.
 .env.demo
 .env.local
+
+# Knowledge graph generato (si ricrea con `graphify update .`)
+graphify-out/

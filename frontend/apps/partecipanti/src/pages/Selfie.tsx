@@ -3,8 +3,9 @@ import { Link, useNavigate } from "react-router-dom";
 import { Screen, Callout, GlifoMotivo, motivoSelfie } from "../ui";
 import { api, EVENT_SLUG } from "../lib/api";
 import {
-  CHALLENGE_STEPS, LivenessError, STEP_LABELS, cameraSupported,
-  loadLandmarker, openCamera, runChallenge, stopStream, type ChallengeStep,
+  CHALLENGE_STEPS, LivenessError, SERVER_ACTION_LABELS, STEP_LABELS, cameraSupported,
+  loadLandmarker, openCamera, runChallenge, runServerChallenge, stopStream,
+  type ServerAction,
 } from "../lib/liveness";
 import type { FaceLandmarker } from "@mediapipe/tasks-vision";
 
@@ -58,6 +59,11 @@ export default function Selfie() {
   const [errore, setErrore] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [provenienza, setProvenienza] = useState<Provenienza>("file");
+  /* La sfida verificata dal server (F05): piena quando il server ha dettato la
+     sequenza e il client l'ha completata. In quel caso si caricano i suoi
+     fotogrammi, non un selfie singolo — è questo che la rende non aggirabile
+     dal client, a differenza delle indicazioni locali. */
+  const [sfida, setSfida] = useState<{ id: string; frames: Blob[] } | null>(null);
   const [anteprima, setAnteprima] = useState<string | null>(null);
   const [modo, setModo] = useState<"camera" | "file">(cameraSupported() ? "camera" : "file");
   const [motivoCamera, setMotivoCamera] = useState("");
@@ -101,6 +107,7 @@ export default function Selfie() {
 
   function scegli(prossimo: File | null, da: Provenienza) {
     if (anteprima) URL.revokeObjectURL(anteprima);
+    setSfida(null);
     if (!prossimo) { setFile(null); setAnteprima(null); return; }
     if (!isImage(prossimo)) {
       setErrore("Questo file non è una foto: serve un jpeg o un png. Se l'hai scaricata da una chat, riscattala con la camera.");
@@ -113,13 +120,27 @@ export default function Selfie() {
     setAnteprima(URL.createObjectURL(prossimo));
   }
 
+  /* Una sfida del server completata: i fotogrammi restano da caricare, e
+     quello frontale — l'ultimo — fa da anteprima. */
+  function scegliSfida(id: string, frames: Blob[]) {
+    if (anteprima) URL.revokeObjectURL(anteprima);
+    const frontale = frames[frames.length - 1]!;
+    setErrore("");
+    setMotivoPrec(null);
+    setSfida({ id, frames });
+    setProvenienza("challenge");
+    setFile(new File([frontale], "selfie.jpg", { type: frontale.type || "image/jpeg" }));
+    setAnteprima(URL.createObjectURL(frontale));
+  }
+
   async function invia(e: React.FormEvent) {
     e.preventDefault();
     if (!file || inCorso) return;
     setInCorso(true);
     setErrore("");
     try {
-      await api.sendSelfie(EVENT_SLUG, file, provenienza, file.name);
+      if (sfida) await api.sendSelfieChallenge(EVENT_SLUG, sfida.id, sfida.frames);
+      else await api.sendSelfie(EVENT_SLUG, file, provenienza, file.name);
       nav("/attesa");
     } catch (err: any) {
       const stato = err?.status;
@@ -242,6 +263,7 @@ export default function Selfie() {
         {inSfida && (
           <Sfida
             key={tentativo}
+            onSfida={scegliSfida}
             onScatto={(blob) => scegli(new File([blob], "selfie.jpg", { type: "image/jpeg" }), "challenge")}
             onRinuncia={(perche) => { setModo("file"); setMotivoCamera(perche); scegli(null, "file"); }}
           />
@@ -317,17 +339,25 @@ export default function Selfie() {
  * resta leggibile senza distinguere i colori.
  */
 function Sfida({
+  onSfida,
   onScatto,
   onRinuncia,
-}: { onScatto: (b: Blob) => void; onRinuncia: (perche: string) => void }) {
+}: {
+  onSfida: (id: string, frames: Blob[]) => void;
+  onScatto: (b: Blob) => void;
+  onRinuncia: (perche: string) => void;
+}) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const lmRef = useRef<FaceLandmarker | null>(null);
   const [stato, setStato] = useState<"apro" | "corso" | "scaduto">("apro");
-  const [passo, setPasso] = useState<ChallengeStep>("look");
+  /* Una parola e un numero di tacche, non un passo di un elenco fisso: il
+     flusso locale ha tappe fisse, quello del server una lista dettata. */
+  const [istruzione, setIstruzione] = useState("");
+  const [avanzamento, setAvanzamento] = useState({ indice: 0, totale: CHALLENGE_STEPS.length });
   const [giro, setGiro] = useState(0);
-  const ultimo = useRef({ onScatto, onRinuncia });
-  ultimo.current = { onScatto, onRinuncia };
+  const ultimo = useRef({ onSfida, onScatto, onRinuncia });
+  ultimo.current = { onSfida, onScatto, onRinuncia };
 
   useEffect(() => {
     const el = videoRef.current;
@@ -350,9 +380,49 @@ function Sfida({
           await video.play();
         }
         if (signal.aborted) return;
+
+        /* Si chiede al server la sequenza da eseguire. Un 404 vuol dire che
+           questo server fa ancora il flusso locale: è l'unico errore che non
+           ferma la ripresa. */
+        let azioni: ServerAction[] | null = null;
+        let idSfida = "";
+        try {
+          const dettata = await api.getSelfieChallenge(EVENT_SLUG);
+          azioni = dettata.actions as ServerAction[];
+          idSfida = dettata.challengeId;
+        } catch (cause) {
+          if ((cause as { status?: number } | null)?.status !== 404) throw cause;
+        }
+        if (signal.aborted) return;
         setStato("corso");
-        const blob = await runChallenge({ video, landmarker: lmRef.current, onStep: setPasso, signal });
-        ultimo.current.onScatto(blob);
+
+        if (azioni) {
+          const lista = azioni;
+          setAvanzamento({ indice: 0, totale: lista.length });
+          const frames = await runServerChallenge({
+            video,
+            landmarker: lmRef.current,
+            actions: lista,
+            onAction: (azione, indice) => {
+              setIstruzione(SERVER_ACTION_LABELS[azione]);
+              setAvanzamento({ indice, totale: lista.length });
+            },
+            signal,
+          });
+          ultimo.current.onSfida(idSfida, frames);
+        } else {
+          setAvanzamento({ indice: 0, totale: CHALLENGE_STEPS.length });
+          const blob = await runChallenge({
+            video,
+            landmarker: lmRef.current,
+            onStep: (passo) => {
+              setIstruzione(STEP_LABELS[passo]);
+              setAvanzamento({ indice: CHALLENGE_STEPS.indexOf(passo), totale: CHALLENGE_STEPS.length });
+            },
+            signal,
+          });
+          ultimo.current.onScatto(blob);
+        }
       } catch (cause) {
         if (signal.aborted) return;
         if (cause instanceof LivenessError && cause.code === "timeout") { setStato("scaduto"); return; }
@@ -380,7 +450,6 @@ function Sfida({
     [],
   );
 
-  const attivo = CHALLENGE_STEPS.indexOf(passo);
   return (
     <div className="ripresa">
       <div className="ripresa__quadro">
@@ -398,10 +467,12 @@ function Sfida({
       </div>
 
       <div className="mini-tappe" aria-hidden="true">
-        {CHALLENGE_STEPS.map((nome, i) => (
+        {Array.from({ length: avanzamento.totale }, (_, i) => (
           <i
-            key={nome}
-            className={stato !== "corso" ? "" : i < attivo ? "done" : i === attivo ? "now" : ""}
+            key={i}
+            className={
+              stato !== "corso" ? "" : i < avanzamento.indice ? "done" : i === avanzamento.indice ? "now" : ""
+            }
           />
         ))}
       </div>
@@ -411,7 +482,7 @@ function Sfida({
           ? "Apro la camera…"
           : stato === "scaduto"
           ? "Tempo scaduto: non siamo riusciti a seguirti"
-          : STEP_LABELS[passo]}
+          : istruzione}
       </p>
 
       {stato === "scaduto" ? (
