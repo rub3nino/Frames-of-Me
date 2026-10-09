@@ -1977,6 +1977,8 @@ async function readSelfieFrame(
     throw new ApiError(400, MESSAGES.validation);
   }
   return { bytes, contentType };
+}
+
 // ---- auth v6 (agent B) helpers ---------------------------------------------------------------
 
 /**
