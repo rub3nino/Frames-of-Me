@@ -12,6 +12,11 @@ export interface IndexPhotoInput {
   photoId: string;
   imageBytes: Uint8Array;
   contentType: ImageContentType;
+  /**
+   * v6: the album the photo belongs to, stored on every vector so searches can be
+   * restricted to it. When absent the engine reads it from the photo row.
+   */
+  albumId?: string;
 }
 
 export interface IndexedFace {
@@ -24,6 +29,12 @@ export interface SearchInput {
   eventId: string;
   imageBytes: Uint8Array;
   contentType: ImageContentType;
+  /**
+   * v6: restrict the search to these albums (one indexed query per album, so the album
+   * filter is served by an index instead of applied after it). Absent = the whole event,
+   * the v5 behaviour; an empty array means "no album to search" and returns nothing.
+   */
+  albumIds?: readonly string[];
 }
 
 export interface SearchHit {
@@ -64,6 +75,8 @@ export interface SearchByVectorInput {
   minCosine?: number;
   /** Row limit; the engine's own maximum when absent. */
   maxFaces?: number;
+  /** v6: see {@link SearchInput.albumIds}. */
+  albumIds?: readonly string[];
 }
 
 export type VectorHit = SearchHit & { cosine: number };
@@ -71,6 +84,11 @@ export type VectorHit = SearchHit & { cosine: number };
 export interface SearchFacesInput {
   eventId: string;
   externalFaceId: string;
+  /**
+   * v6: see {@link SearchInput.albumIds}. Absent means the album of the stored face
+   * itself, which is what `attach` needs: a face is only ever compared inside its album.
+   */
+  albumIds?: readonly string[];
 }
 
 export interface LivenessInput {

@@ -54,7 +54,7 @@ Internet ──443──▶ caddy ──┬── /v1/*          ──▶ api:8
 | --- | --- | --- | --- | --- |
 | `caddy` | `caddy:2-alpine` | 80, 443 (tcp+udp) | `caddy_data` (certificati), `caddy_config`, `caddy_logs` | `Caddyfile` montato in sola lettura |
 | `postgres` | `pgvector/pgvector:pg16` | — | `postgres_data` | `shm_size: 1g`, parametri da env |
-| `minio` + `minio-init` | `cgr.dev/chainguard/minio` | — | `MINIO_DATA_DIR` (volume o percorso sul disco grande) | `minio-init` crea il bucket e termina |
+| `minio` + `minio-init` | `cgr.dev/chainguard/minio` | — | `MINIO_DATA_DIR` (volume o percorso sul disco grande) | `minio-init` crea bucket, policy e utente applicativo, poi termina (§ 6 bis) |
 | `face-service` | build `apps/face-service` | — | — | limiti CPU/RAM da env; il modello è nell'immagine |
 | `api` ×2 | build `apps/api` | — | — | `/health` |
 | `worker` ×2 | build `apps/worker` | — | — | nessuna porta |
@@ -68,7 +68,7 @@ Tutti i servizi hanno `restart: unless-stopped`, healthcheck e log `json-file` (
 
 **Immagine web e `NEXT_PUBLIC_*`.** Next.js inlina `NEXT_PUBLIC_EVENT_SLUG`, `NEXT_PUBLIC_MEDIA_ORIGINS` (`https://media.DOMAIN`, finisce nella CSP `img-src`/`connect-src`) e `NEXT_PUBLIC_WEB_ORIGIN` **al build**: `compose.yml` li passa come `build.args` da `.env.production`. Cambiare `DOMAIN` o `EVENT_SLUG` significa `docker compose build web && docker compose up -d web`; riavviare non basta.
 
-**Variabili che arrivano ad api e worker** (tutte da `compose.yml`, `x-app-env`): `NODE_ENV=production`, `DATABASE_URL`, `DATABASE_POOL_MAX`, `S3_ENDPOINT=http://minio:9000`, `S3_PUBLIC_ENDPOINT=https://media.DOMAIN`, `S3_BUCKET`, `S3_ACCESS_KEY`/`S3_SECRET_KEY` (= root MinIO), `S3_REGION=eu-central-1`, `S3_FORCE_PATH_STYLE=true`, `SESSION_SECRET`, `FACE_ENGINE=insightface`, `FACE_SERVICE_URL=http://face-service:8090`, `INSIGHTFACE_MIN_COSINE`, `INSIGHTFACE_SURE_COSINE`, `INSIGHTFACE_MAX_FACES`, `INSIGHTFACE_MIN_FACE_QUALITY`, `FACE_INDEX_TPS`, `FACE_SEARCH_TPS`, `LIVENESS_CHECK`, `LIVENESS_REQUIRED`, `LIVENESS_CHALLENGE` (+ `LIVENESS_CHALLENGE_TURNS`, `LIVENESS_CHALLENGE_TTL_SECONDS`, `LIVENESS_TURN_MIN_YAW`, `LIVENESS_FRONT_MAX_YAW`, `LIVENESS_IDENTITY_MIN_COSINE`), `AWS_REGION`, `REKOGNITION_COLLECTION_PREFIX`, `MAIL_TRANSPORT=smtp`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_SECURE`, `SMTP_STARTTLS`, `SMTP_FROM`, `WEB_ORIGIN`/`API_ORIGIN=https://DOMAIN`, `SEED_DEMO=false`, `TRUSTED_PROXY_HOPS=1`, `WORKER_CONCURRENCY`, `WORKER_PUBLISH_METRICS=false`.
+**Variabili che arrivano ad api e worker** (tutte da `compose.yml`, `x-app-env`): `NODE_ENV=production`, `DATABASE_URL`, `DATABASE_POOL_MAX`, `S3_ENDPOINT=http://minio:9000`, `S3_PUBLIC_ENDPOINT=https://media.DOMAIN`, `S3_BUCKET`, `S3_ACCESS_KEY`/`S3_SECRET_KEY` (= utente applicativo MinIO, **non** root: § 6 bis), `S3_REGION=eu-central-1`, `S3_FORCE_PATH_STYLE=true`, `SESSION_SECRET`, `FACE_ENGINE=insightface`, `FACE_SERVICE_URL=http://face-service:8090`, `INSIGHTFACE_MIN_COSINE`, `INSIGHTFACE_SURE_COSINE`, `INSIGHTFACE_MAX_FACES`, `INSIGHTFACE_MIN_FACE_QUALITY`, `FACE_INDEX_TPS`, `FACE_SEARCH_TPS`, `LIVENESS_CHECK`, `LIVENESS_REQUIRED`, `LIVENESS_CHALLENGE` (+ `LIVENESS_CHALLENGE_TURNS`, `LIVENESS_CHALLENGE_TTL_SECONDS`, `LIVENESS_TURN_MIN_YAW`, `LIVENESS_FRONT_MAX_YAW`, `LIVENESS_IDENTITY_MIN_COSINE`), `AWS_REGION`, `REKOGNITION_COLLECTION_PREFIX`, `MAIL_TRANSPORT=smtp`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_SECURE`, `SMTP_STARTTLS`, `SMTP_FROM`, `WEB_ORIGIN`/`API_ORIGIN=https://DOMAIN`, `SEED_DEMO=false`, `TRUSTED_PROXY_HOPS=1`, `WORKER_CONCURRENCY`, `WORKER_PUBLISH_METRICS=false`.
 
 ---
 
@@ -130,7 +130,7 @@ docker compose --env-file .env.production up -d
 docker compose --env-file .env.production ps
 ```
 
-`up -d` ricrea solo i container la cui immagine o configurazione è cambiata. Le migrazioni SQL partono da sole al boot di api/worker (lock advisory, una sola istanza le applica); per applicarle prima del rollout: `scripts/migrate.sh` tra `build` e `up`. Rollback: `git checkout <tag precedente>` e di nuovo build + up (le migrazioni non si annullano da sole: avere un backup appena fatto). Impostare `IMAGE_TAG` allo sha del commit se si vuole tenere le immagini precedenti sul disco.
+`up -d` ricrea solo i container la cui immagine o configurazione è cambiata. **Le migrazioni SQL NON partono da sole**: né api né worker le applicano all'avvio, e in `deploy/compose.yml` non c'è un servizio `migrate`. Vanno lanciate a mano con `deploy/scripts/migrate.sh`, **tra `build` e `up`** — altrimenti i container salgono su uno schema vecchio. (`migrate()` prende un lock advisory, quindi lanciarlo due volte in parallelo è innocuo.) Rollback: `git checkout <tag precedente>` e di nuovo build + up (le migrazioni non si annullano da sole: avere un backup appena fatto). Impostare `IMAGE_TAG` allo sha del commit se si vuole tenere le immagini precedenti sul disco.
 
 ---
 
@@ -140,9 +140,157 @@ Il servizio `backup` ogni giorno alle `BACKUP_AT` (UTC) fa `pg_dump -Fc` in `BAC
 
 - Backup subito: `scripts/backup.sh`.
 - Ripristino: `scripts/restore.sh [nome-dump]` (default: l'ultimo). Ferma api e worker, `pg_restore --clean` nel database esistente, rimanda gli oggetti nel bucket (additivo), riavvia.
-- **Prova di ripristino** (da fare prima dell'evento, non dopo): su un secondo VPS o in locale, stesso `.env.production`, `docker compose up -d postgres minio minio-init backup`, copiare `BACKUP_DIR`, `scripts/restore.sh --yes`, poi `up -d` del resto e controllare che una galleria si apra con le miniature.
 
 Il disco di backup deve essere **fisico/logico diverso** da quello dei dati (volume aggiuntivo, Storage Box via CIFS/SSHFS, o `rclone` verso un bucket esterno subito dopo `last-ok`). `BACKUP_DIR` sullo stesso disco protegge solo dagli errori umani, non dai guasti.
+
+### Prova di ripristino (restore drill)
+
+**Da fare prima dell'evento, non dopo. Un backup che non è mai stato ripristinato non è un backup.**
+La prova va fatta su un **host o progetto compose separato**, mai contro la produzione: `restore.sh`
+fa `pg_restore --clean`, cioè *droppa e ricrea ogni tabella* del database di destinazione.
+
+Preparazione: un secondo VPS (o la stessa macchina con `name:` diverso in un compose a parte), una
+copia di `.env.production` con `DOMAIN` finto, e una copia di `BACKUP_DIR` (`rsync -a` dal disco di
+backup, oppure il disco rimontato in sola lettura e copiato).
+
+```sh
+# 1. solo i servizi di dato sull'host di prova
+cd /srv/rephoto-drill/app/deploy
+docker compose --env-file .env.drill up -d postgres minio minio-init
+docker compose --env-file .env.drill ps          # postgres e minio `healthy`
+
+# 2. il database di destinazione deve essere VUOTO (è la prova che il dump basta da solo)
+docker compose --env-file .env.drill exec -T postgres \
+  psql -U rephoto -d rephoto -tAc \
+  "select count(*) from pg_tables where schemaname='public'"      # atteso: 0
+
+# 3. ripristino: dump Postgres + mirror degli oggetti nel bucket
+docker compose --env-file .env.drill up -d backup
+./scripts/restore.sh --yes                        # oppure --yes rephoto-20261007-033000.dump
+```
+
+Controlli, nell'ordine (se uno fallisce il backup non è utilizzabile e va sistemato subito):
+
+```sh
+D="docker compose --env-file .env.drill exec -T postgres psql -U rephoto -d rephoto -tAc"
+
+# a. le righe ci sono tutte: confrontare con gli stessi conteggi presi in produzione
+$D "select (select count(*) from photos) || ' foto, '
+        || (select count(*) from galleries) || ' gallerie, '
+        || (select count(*) from gallery_items) || ' item, '
+        || (select count(*) from users) || ' utenti'"
+
+# b. le migrazioni sono nel dump (api/worker non devono riapplicarne nessuna)
+$D "select count(*) || ' migrazioni, ultima=' || max(id) from schema_migrations"
+
+# c. pgvector e gli indici HNSW sono sopravvissuti (sono nel dump, non si ricreano da soli)
+$D "select extname || ' ' || extversion from pg_extension where extname='vector'"
+$D "select indexname from pg_indexes where indexdef like '%hnsw%' order by indexname"
+
+# d. gli indici di paginazione della 014 ci sono (altrimenti l'admin va in seq scan)
+$D "select indexname from pg_indexes where indexname like '%_ms_idx' order by indexname"
+
+# e. una pagina keyset usa ancora l'indice
+docker compose --env-file .env.drill exec -T postgres psql -U rephoto -d rephoto -c \
+  "explain (costs off) select id from photos
+     order by date_trunc('milliseconds', created_at, 'UTC') desc, id desc limit 51"
+
+# f. gli oggetti: numero e dimensione totale uguali alla copia di backup
+docker compose --env-file .env.drill exec -T minio \
+  /usr/bin/mc du local/rephoto
+
+# g. l'applicazione: avviare il resto e aprire una galleria con le miniature
+docker compose --env-file .env.drill up -d api worker web
+curl -fsS http://localhost:8787/health
+#    poi, da browser, login di un partecipante noto e verifica che le foto si vedano
+#    (le miniature sono URL firmate: se compaiono, api, MinIO e il database concordano)
+```
+
+Alla fine: `docker compose --env-file .env.drill down -v` sull'host di prova.
+
+**Tempi misurati** (prova eseguita il 2026-10-07 su un Mac arm64 con Docker Desktop, non sull'host
+di produzione — servono come ordine di grandezza della parte *database*, non come SLA):
+
+| Passo | Dato | Tempo (3 ripetizioni) |
+| --- | --- | --- |
+| `pg_dump -Fc --compress=6` | 170.000 righe `photos` + 60.000 `upload_sessions` + 40.000 `match_runs`, database 152 MB | 0,69 / 0,72 / 0,73 s → dump da **19 MB** |
+| `pg_restore --clean --if-exists` in un database vuoto | lo stesso dump da 19 MB | 1,02 / 1,04 / 1,06 s |
+| `mc mirror` bucket → disco | 600 oggetti, 64 MiB | 0,06–0,39 s (≈ 195 MiB/s) |
+| `mc mirror` disco → bucket | 600 oggetti, 64 MiB | ≈ 108 MiB/s |
+
+Esito: conteggi identici, 9 migrazioni presenti (ultima `014_keyset_indexes.sql`), `vector 0.8.7`
+con entrambi gli indici HNSW, i quattro indici `*_ms_idx` presenti e la pagina keyset ancora servita
+da `photos_event_created_ms_idx`.
+
+**Come estrapolare.** Il tempo del *database* scala con le righe e resta nell'ordine dei minuti:
+150.000 foto reali hanno lo stesso ordine di grandezza di metadati di questa prova, ma `face_vectors`
+no — un embedding da 512 float per volto è ~2 KB, quindi 150.000 foto × ~3 volti ≈ 900 MB di soli
+vettori, e la **ricostruzione degli indici HNSW** durante `pg_restore` è la voce dominante (decine di
+minuti, con `maintenance_work_mem=1GB`). Il tempo dell'*object store* è invece una pura copia di
+disco: 1,2 TB a 100 MiB/s sono ~3,5 ore, ed è questo a dettare il tempo di ripristino reale. Chi fa
+la prova prima dell'evento deve rimisurare **sull'host di produzione e con i dati veri**: i numeri
+qui sopra non sostituiscono quella misura.
+
+---
+
+## 6 bis. Credenziali MinIO e privilegio minimo
+
+api e worker **non** hanno le credenziali di root di MinIO. Fino alla v5 `compose.yml` passava
+`MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD` come `S3_ACCESS_KEY`/`S3_SECRET_KEY`: le chiavi che stanno
+nell'ambiente di quattro processi Node e che firmano ogni URL presigned consegnata a un browser
+erano quelle del superutente dell'object store (creare e cancellare bucket, leggere la copia di
+backup, aggiungere utenti, cambiare le policy).
+
+Ora `minio-init` esegue `scripts/minio-provision.sh`, che a ogni `up`:
+
+1. crea il bucket se manca;
+2. installa la policy `rephoto-app` — solo oggetti **di quel bucket**;
+3. crea (o ri-chiavizza) l'utente applicativo `S3_APP_ACCESS_KEY` e gli attacca la policy;
+4. (v6 H3, solo se `S3_SELFIE_EXPIRE_DAYS` è valorizzata) aggiunge la regola di lifecycle che
+   scade `selfies/*` dopo N giorni, una volta sola — la controlla prima di aggiungerla. Qui la
+   variabile non è impostata, quindi il passo viene saltato: la usa solo
+   `docker-compose.coolify.yml`, dove la regola esisteva già inline. Il controllo è un `case`
+   di shell e non un `grep`: l'immagine `cgr.dev/chainguard/minio` non ha `grep`.
+
+| Variabile | Chi la usa | Perché |
+| --- | --- | --- |
+| `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` | `minio` (server), `minio-init`, `backup`, `scripts/reset-event.sh` | amministrazione e backup: `mc mirror` deve elencare tutto il bucket e un ripristino deve riscriverlo |
+| `S3_APP_ACCESS_KEY` / `S3_APP_SECRET_KEY` | `api`, `worker` (come `S3_ACCESS_KEY`/`S3_SECRET_KEY`) | leggere, scrivere e cancellare oggetti dentro `S3_BUCKET`, niente altro |
+
+La policy concede `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject`, `s3:AbortMultipartUpload`,
+`s3:ListMultipartUploadParts` su `arn:aws:s3:::<bucket>/*` e `s3:ListBucketMultipartUploads`,
+`s3:GetBucketLocation` sul bucket. **Non** concede `s3:ListBucket`: api e worker indirizzano ogni
+oggetto per chiave (`apps/api/src/objects.ts` usa Get/Put/Delete/Head e i comandi multipart, mai un
+listing), quindi una chiave applicativa rubata non permette di enumerare il bucket. Niente azione
+`admin:*`, niente creazione o cancellazione di bucket, nessun altro bucket.
+
+Verificato il 2026-10-07 contro un MinIO di prova, eseguendo il vero `createS3ObjectStore`: tutte e
+16 le operazioni dell'applicazione funzionano con l'utente ristretto (`put`, `head`, `get`,
+`stream`, `head`/`get` di una chiave assente che tornano `null`, `presignPut` + PUT dal browser,
+`presignGet` + GET dal browser, `createMultipartUpload`, `presignUploadPart` + PUT della parte,
+`completeMultipartUpload`, `abortMultipartUpload`, `delete`). Negate come previsto: `MakeBucket`,
+`RemoveBucket`, scrittura in un altro bucket, `ListBucket`, `admin user list/add`,
+`admin policy ls`, `admin info`, `anonymous set public`. Due dettagli da sapere:
+
+- `mc ls` e `mc stat` **falliscono** con l'utente applicativo perché elencano il prefisso prima di
+  leggere: non è un problema (l'applicazione non elenca mai), ma per ispezionare il bucket a mano
+  si usa l'alias root.
+- MinIO lascia comunque vedere il **nome** del bucket in `ListBuckets` (filtra la lista a quelli
+  raggiungibili). Non espone nulla: il nome è già in `S3_BUCKET` nello stesso ambiente.
+
+**Rotazione della chiave applicativa** (nessun fermo del database, ~10 s di 5xx sugli upload):
+
+```sh
+# nuovo segreto in .env.production
+sed -i "s|^S3_APP_SECRET_KEY=.*|S3_APP_SECRET_KEY=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=')|" .env.production
+docker compose --env-file .env.production up -d --force-recreate minio-init
+docker compose --env-file .env.production up -d --force-recreate api worker
+docker compose --env-file .env.production logs --tail 20 minio-init   # "done"
+```
+
+`minio-provision.sh` si rifiuta di partire se `S3_APP_ACCESS_KEY` è uguale a `MINIO_ROOT_USER` o se
+il segreto è più corto di 8 caratteri, e fallisce il servizio (quindi blocca api e worker, che
+dipendono da `minio-init: service_completed_successfully`) se la policy non è stata attaccata.
 
 ---
 
@@ -325,3 +473,86 @@ Con la variante `AX` (server dedicato con NVMe locali da 2 × 1,9 TB) si evita i
 - `docker compose -f deploy/compose.yml --env-file deploy/.env.production.example config` valida.
 - `Caddyfile` validato con `caddy validate` nell'immagine `caddy:2-alpine`.
 - `apps/api`: `npx tsc --noEmit` e `node --import tsx --test apps/api/test/routes.test.ts` verdi, incluso il test che controlla che le URL firmate usino `S3_PUBLIC_ENDPOINT`.
+- v6 G (ritiro del consenso, retention automatica, allarme per e-mail): `pnpm test` verde (247 test, 0 falliti) con `TEST_DATABASE_URL` su un `pgvector/pgvector:pg16` reale, quindi comprese le prove di cancellazione di `packages/db/src/privacy.pg.test.ts`; `docker compose --env-file deploy/.env.production.example -f deploy/compose.yml config` mostra le cinque variabili `RETENTION_*` su api e worker; `pnpm --filter @rephoto/web build` compila la pagina `/i-miei-dati`. Non provato su un host di produzione.
+
+## 11 bis. Retention automatica (v6 G)
+
+**Prima della v6 nessuno lanciava la retention**: il job `retention` funzionava e `/admin` lo accodava, ma in `deploy/` non c'era né cron né timer, quindi il giorno 90 non arrivava mai da solo. Ora lo scheduler sta **dentro il worker**: nessun cron sull'host, niente da installare a mano, niente che si perda spostando il VPS. Vale anche il contrario: **se il worker è spento, la retention non gira** — ed è per questo che c'è l'allarme.
+
+### Come funziona
+
+- a ogni tick (`RETENTION_TICK_SECONDS`, default **300 s**) ogni replica del worker guarda tutti gli eventi e prova a *rivendicare* la finestra corrente;
+- la finestra è lunga `RETENTION_WINDOW_HOURS` (default **24 h**) ed è allineata all'epoch in **UTC**: con 24 cambia alle **00:00 UTC**, quindi il job parte al primo tick dopo mezzanotte UTC (circa 5 minuti dopo), non all'ora in cui è stato avviato il container;
+- la rivendicazione è una riga in `retention_schedule` (migrazione 015) e riesce **una volta sola per evento per finestra**, anche con `WORKER_REPLICAS=2` che tickano insieme; la chiave di dedupe della coda (`retention:<eventId>`) è la seconda garanzia;
+- il job cancella le foto oltre la retention **album per album** (`albums.retention_days` se c'è, altrimenti `events.retention_days`), con i loro template, derivati e originali, e azzera la parte biometrica delle gallerie il cui match è anteriore al cutoff. Dettaglio e conseguenze legali: `docs/DPIA.md` §8 e §8 bis;
+- `RETENTION_SCHEDULER=false` lo spegne (chi preferisce un cron esterno che chiami `POST /v1/admin/retention/run`). Lo schermo admin lo dichiara.
+
+| Variabile | Default | Cosa fa |
+| --- | --- | --- |
+| `RETENTION_SCHEDULER` | `true` | Accende lo scheduler nel worker |
+| `RETENTION_WINDOW_HOURS` | `24` | Al massimo un job per evento per finestra |
+| `RETENTION_TICK_SECONDS` | `300` | Ogni quanto il worker controlla se c'è una finestra da rivendicare |
+| `RETENTION_ALARM_MAIL` | `true` | Manda l'allarme per e-mail (mailer già configurato, nessun trasporto nuovo) |
+| `RETENTION_ALARM_EMAIL` | *(vuoto)* | Destinatari, separati da virgola. Vuoto ⇒ ripiega su `BOOTSTRAP_ADMINS` |
+
+### L'allarme per e-mail
+
+Un allarme che nessuno riceve non è un allarme: una retention che si ferma il venerdì tiene dati personali oltre il periodo di conservazione, e `skipped` e `never` sono proprio gli stati che si verificano quando il worker è giù, cioè quando nessuno sta guardando nemmeno i suoi log. Quindi:
+
+- **chi lo riceve**: `RETENTION_ALARM_EMAIL` (lista separata da virgola), altrimenti `BOOTSTRAP_ADMINS`. Con entrambe vuote non parte nulla e il worker logga `alarmMail: "no-recipient"` — configurazione da correggere, non silenzio voluto;
+- **quando**: su `failed`, `job_error` e `skipped`. Un `failed` appena accaduto parte subito, gli altri al tick in cui vengono visti (entro `RETENTION_TICK_SECONDS`);
+- **quanto spesso**: **una volta per finestra**, non una per tick. Lo stato «già avvisato» sta in `retention_schedule` accanto alla finestra rivendicata (migrazione 015), quindi la soppressione è condivisa dalle repliche del worker **e sopravvive a un riavvio**. Senza questo, a 300 s di tick, sarebbero 288 messaggi identici al giorno: l'indirizzo finirebbe filtrato e l'allarme sarebbe come non averlo. Un motivo **diverso** nella stessa finestra è informazione nuova e parte;
+- **quando rientra**: un solo messaggio «retention rientrata», così un problema risolto non resta aperto nella testa di qualcuno. Arriva al primo tick **dopo** un'esecuzione riuscita: l'allarme viene giudicato sullo stato *precedente* alla rivendicazione (altrimenti un `skipped` verrebbe cancellato dalla stessa esecuzione che chiude il buco), quindi arrivare al confine di una finestra in stato cattivo costa un messaggio in più, seguito da quello di rientro;
+- **se l'invio fallisce** (SMTP giù) la rivendicazione viene rilasciata e il tick successivo riprova: un singolo singhiozzo del provider non seppellisce l'allarme per una finestra intera;
+- la **riga di log** e il **riquadro rosso** su `/admin` → Stato restano identici: sono la diagnosi, la mail è solo la convocazione. `RETENTION_ALARM_MAIL=false` lascia soltanto quei due;
+- `never` (evento che lo scheduler non ha ancora raggiunto) **non** viene spedito: è uno stato transitorio, perché lo stesso tick che lo vedrebbe rivendica la finestra. Resta visibile sullo schermo.
+
+**Quello che questa mail non può fare.** Non può arrivare da un processo che non sta girando: se il worker è spento, o il container non parte, nessuno manda niente. Quel caso si vede in due modi, entrambi indiretti: lo stato **`skipped`** al primo avvio successivo (con la sua mail, perché la finestra è passata senza esecuzioni) e il **monitoraggio di disponibilità** dell'host e dei container (§7, uptime-kuma), che è un'altra cosa e non è collegata a questo allarme. Nessun servizio nuovo è stato aggiunto per chiudere il buco, ed è una scelta: la decisione su come sorvegliare l'host è di chi gestisce l'infrastruttura finale. Allo stesso modo **non** c'è un ritentativo automatico del job di retention: i cinque tentativi sono quelli della coda, e cosa fare dopo è una decisione di chi opera, non un ciclo.
+
+### Verificare un'esecuzione
+
+1. **Dallo schermo admin** (il modo normale): `/admin` → **Stato** → riquadro **Retention**. Per ogni evento: ultima esecuzione, prossima finestra, numero di esecuzioni, esito della pianificazione e stato dell'ultimo job. Un riquadro rosso è un allarme: pianificazione `failed`, job in `error`, oppure `skipped` (più di due finestre senza esecuzioni: il worker è stato giù).
+
+2. **Dall'API**, con un cookie di sessione admin:
+
+```bash
+curl -s -b "rephoto_session=$TOKEN" https://$DOMAIN/v1/admin/retention/schedule | jq
+# {
+#   "enabled": true,
+#   "windowSeconds": 86400,
+#   "events": [ { "slug": "conferenza-2026", "retentionDays": 90,
+#                 "lastRunAt": "...", "nextRunAt": "...", "runs": 3,
+#                 "outcome": "enqueued", "jobStatus": "done", "alarm": null } ]
+# }
+```
+
+3. **Dai log del worker** (`deploy/scripts/logs.sh worker`): ogni esecuzione del job lascia la riga JSON `"type":"retention","outcome":"done"` con la durata; un allarme lascia una riga `{"alarm":"retention","reason":"skipped|failed|job_error", ...}`. Grep utile per un controllo rapido:
+
+```bash
+docker compose logs --since 48h worker | grep -E '"type":"retention"|"alarm":"retention"'
+```
+
+4. **Dal database**, se serve la prova per il DPO:
+
+```bash
+docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c \
+  "select e.slug, s.window_start, s.claimed_at, s.runs, s.last_outcome, s.last_error
+     from retention_schedule s join events e on e.id = s.event_id order by e.slug"
+# e le cancellazioni che il job ha fatto (attore nullo = scheduler, non una persona):
+docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c \
+  "select created_at, target, meta from audit_log
+     where action = 'photo.deleted' and meta->>'retention' = 'true'
+     order by created_at desc limit 10"
+# una riga per esecuzione dello scheduler:
+docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c \
+  "select created_at, target, meta from audit_log where action = 'retention.scheduled'
+     order by created_at desc limit 10"
+```
+
+5. **Forzare un'esecuzione subito**, senza aspettare la finestra (per una prova o dopo un `skipped`): il bottone **Esegui adesso** nel riquadro Retention, o la rotta `POST /v1/admin/retention/run` con `{ "eventId": "…" }`. Passa dalla stessa coda e dallo stesso job; l'attore dell'audit è l'admin invece di essere nullo, e la finestra dello scheduler non viene consumata.
+
+**Avvertenze.**
+
+- la retention cancella **davvero** foto, originali e template: su un evento appena importato con `retention_days` basso la prima esecuzione può svuotare l'archivio. Controllare `events.retention_days` e `albums.retention_days` prima di accendere lo scheduler su un evento di produzione;
+- l'allarme ha un destinatario (sopra) ma **è una e-mail, non una sveglia**: se la posta del provider è in ritardo o il messaggio finisce in spam, nessuno viene svegliato. E non può arrivare se il worker è spento (sopra);
+- lo scheduler **non** è stato provato su un VPS di produzione: quanto sopra è verificato in locale (test contro Postgres reale con pgvector e test del worker) e con `docker compose config`.

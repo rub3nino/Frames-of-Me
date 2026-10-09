@@ -188,10 +188,13 @@ export class InsightFaceEngine implements FaceEngine {
     const rows = await sql.begin(async (tx) => {
       await tx.unsafe(DELETE_PHOTO_SQL, [input.photoId]);
       if (faces.length === 0) return [];
+      // v6: `face_vectors.album_id` is not null. An explicit album wins; without one the
+      // insert reads it from the photo row, so a v5 caller keeps working.
       return tx.unsafe(INSERT_FACES_SQL, [
         input.eventId,
         input.photoId,
         faces.map((face) => vectorText(face.embedding)),
+        input.albumId ?? null,
       ]);
     });
     if (faces.length === 0) return [];
@@ -212,7 +215,9 @@ export class InsightFaceEngine implements FaceEngine {
     // Same shape check as indexPhoto: the vector literal must be 512 finite numbers.
     const largest = largestFace(embedded.faces.filter((face) => isEmbedding(face.embedding)));
     if (!largest) return [];
-    return this.nearest(sql, input.eventId, vectorText(largest.embedding), null, {});
+    return this.nearest(sql, input.eventId, vectorText(largest.embedding), null, {
+      albumIds: input.albumIds,
+    });
   }
 
   async searchFaces(input: SearchFacesInput): Promise<SearchHit[]> {
@@ -220,7 +225,10 @@ export class InsightFaceEngine implements FaceEngine {
     const rows = await sql.unsafe(SELECT_VECTOR_SQL, [input.externalFaceId, input.eventId]);
     const stored = rows[0]?.embedding;
     if (typeof stored !== "string") return [];
-    return this.nearest(sql, input.eventId, stored, input.externalFaceId, {});
+    // v6: without an explicit album list, a face is compared inside its own album only.
+    const own = rows[0]?.album_id;
+    const albumIds = input.albumIds ?? (typeof own === "string" ? [own] : undefined);
+    return this.nearest(sql, input.eventId, stored, input.externalFaceId, { albumIds });
   }
 
   /**
@@ -255,6 +263,7 @@ export class InsightFaceEngine implements FaceEngine {
     const hits = await this.nearest(sql, input.eventId, vectorText(input.embedding), null, {
       minCosine: input.minCosine,
       limit: input.maxFaces,
+      albumIds: input.albumIds,
     });
     return hits as VectorHit[];
   }
@@ -320,16 +329,37 @@ export class InsightFaceEngine implements FaceEngine {
     eventId: string,
     vector: string,
     excludeFaceId: string | null,
-    options: { minCosine?: number; limit?: number },
+    options: { minCosine?: number; limit?: number; albumIds?: readonly string[] },
   ): Promise<SearchHit[]> {
     const limit = clampLimit(options.limit ?? this.searchMaxFaces);
     const minCosine = options.minCosine ?? this.minCosine;
     const efSearch = Math.max(MIN_EF_SEARCH, limit);
+    const albumIds = options.albumIds;
+    // No album to search: nothing can match. An absent list is the v5 whole-event search.
+    if (albumIds !== undefined && albumIds.length === 0) return [];
     const rows = await sql.begin(async (tx) => {
       await tx.unsafe(`set local hnsw.ef_search = ${efSearch}`);
-      return excludeFaceId === null
-        ? tx.unsafe(SEARCH_SQL, [vector, eventId, limit])
-        : tx.unsafe(SEARCH_EXCLUDING_SQL, [vector, eventId, limit, excludeFaceId]);
+      if (albumIds === undefined) {
+        return excludeFaceId === null
+          ? tx.unsafe(SEARCH_SQL, [vector, eventId, limit])
+          : tx.unsafe(SEARCH_EXCLUDING_SQL, [vector, eventId, limit, excludeFaceId]);
+      }
+      // One query per album: each is served by that album's partial HNSW index
+      // (migration 011), so the album filter is applied by the index, never after it.
+      const perAlbum: Row[] = [];
+      for (const albumId of albumIds) {
+        const batch =
+          excludeFaceId === null
+            ? await tx.unsafe(searchAlbumSql(albumId), [vector, eventId, limit])
+            : await tx.unsafe(searchAlbumExcludingSql(albumId), [
+                vector,
+                eventId,
+                limit,
+                excludeFaceId,
+              ]);
+        perAlbum.push(...batch);
+      }
+      return perAlbum;
     });
     const hits: SearchHit[] = [];
     for (const row of rows) {
@@ -341,6 +371,11 @@ export class InsightFaceEngine implements FaceEngine {
         similarity: this.mapSimilarity(cosine) ?? 0,
         cosine,
       });
+    }
+    // Several albums answered independently: best first, and never more rows than asked.
+    if (albumIds !== undefined && albumIds.length > 1) {
+      hits.sort((a, b) => (b.cosine ?? 0) - (a.cosine ?? 0));
+      return hits.slice(0, limit);
     }
     return hits;
   }
@@ -428,10 +463,15 @@ export class InsightFaceEngine implements FaceEngine {
 
 // --- SQL (documented in CONTRACTS.md) -------------------------------------
 
-/** One row per face; the input text[] of vector literals is expanded in order. */
+/**
+ * One row per face; the input text[] of vector literals is expanded in order. `album_id`
+ * ($4) is the album of the photo (v6, migration 011): given explicitly, or read from the
+ * photo row when the caller did not pass one.
+ */
 export const INSERT_FACES_SQL = `
-insert into face_vectors (event_id, photo_id, embedding)
-select $1::uuid, $2::uuid, input.embedding::vector
+insert into face_vectors (event_id, photo_id, embedding, album_id)
+select $1::uuid, $2::uuid, input.embedding::vector,
+       coalesce($4::uuid, (select p.album_id from photos p where p.id = $2::uuid))
 from unnest($3::text[]) with ordinality as input(embedding, ord)
 order by input.ord
 returning external_face_id`;
@@ -452,8 +492,46 @@ where event_id = $2::uuid and external_face_id <> $4::uuid
 order by embedding <=> $1::vector
 limit $3`;
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The album id goes into the statement text, not into a parameter, and this is the reason:
+ * the per-album index of migration 011 is a *partial* index (`where album_id = '<uuid>'`),
+ * and Postgres can only use a partial index when it can prove the query's restriction
+ * implies the index predicate. `album_id = $4` proves nothing at plan time, so the index is
+ * skipped and the search degrades to a full album scan — exactly the recall/cost problem
+ * A3 is about. Measured on pgvector 0.8 / Postgres 16: with the id as a literal the plan is
+ * `Index Scan using face_vectors_hnsw_<album>`, with it as a parameter it is not.
+ * The id is checked against {@link UUID_PATTERN} before it is interpolated.
+ */
+export function albumUuid(albumId: string): string {
+  if (!UUID_PATTERN.test(albumId)) throw new Error("albumId must be a uuid");
+  return albumId;
+}
+
+/** Nearest neighbours inside one album, served by that album's partial HNSW index. */
+export function searchAlbumSql(albumId: string): string {
+  return `
+select external_face_id, photo_id, 1 - (embedding <=> $1::vector) as cos
+from face_vectors
+where event_id = $2::uuid and album_id = '${albumUuid(albumId)}'::uuid
+order by embedding <=> $1::vector
+limit $3`;
+}
+
+/** Same as {@link searchAlbumSql}, minus the face whose vector is being searched. */
+export function searchAlbumExcludingSql(albumId: string): string {
+  return `
+select external_face_id, photo_id, 1 - (embedding <=> $1::vector) as cos
+from face_vectors
+where event_id = $2::uuid and album_id = '${albumUuid(albumId)}'::uuid
+  and external_face_id <> $4::uuid
+order by embedding <=> $1::vector
+limit $3`;
+}
+
 export const SELECT_VECTOR_SQL = `
-select embedding::text as embedding
+select embedding::text as embedding, album_id::text as album_id
 from face_vectors
 where external_face_id = $1::uuid and event_id = $2::uuid`;
 
@@ -475,21 +553,24 @@ export const TABLE_EXISTS_SQL = `select to_regclass('public.face_vectors') is no
 export const CREATE_EXTENSION_SQL = `create extension if not exists vector`;
 
 /**
- * Same DDL as migrations 005_face_vectors.sql + 006_recognition.sql (the face_vectors part),
- * run by the engine when the table is missing. The foreign key is added only when `photos`
- * exists (it always does once the migrations ran).
+ * Same DDL as migrations 005_face_vectors.sql + 006_recognition.sql (the face_vectors part)
+ * + 011_vectors_per_album.sql, run by the engine when the table is missing. The foreign
+ * keys are added only when their table exists (both always do once the migrations ran).
+ * There is no global HNSW index: 011 replaced it with one partial index per album, created
+ * by `face_vectors_album_index` when an album with recognition is created.
  */
 export const FACE_VECTORS_DDL: readonly string[] = [
   `create table if not exists face_vectors (
   external_face_id uuid primary key default gen_random_uuid(),
   event_id uuid not null,
   photo_id uuid not null,
+  album_id uuid not null,
   embedding vector(512) not null,
   created_at timestamptz not null default now()
 )`,
   `create index if not exists face_vectors_event_idx on face_vectors (event_id)`,
   `create index if not exists face_vectors_photo_idx on face_vectors (photo_id)`,
-  `create index if not exists face_vectors_embedding_idx on face_vectors using hnsw (embedding vector_cosine_ops) with (m = 16, ef_construction = 64)`,
+  `create index if not exists face_vectors_album_idx on face_vectors (album_id)`,
   `do $$
 begin
   if to_regclass('public.photos') is not null
@@ -497,6 +578,12 @@ begin
     alter table face_vectors
       add constraint face_vectors_photo_id_fkey
       foreign key (photo_id) references photos(id) on delete cascade;
+  end if;
+  if to_regclass('public.albums') is not null
+     and not exists (select 1 from pg_constraint where conname = 'face_vectors_album_id_fkey') then
+    alter table face_vectors
+      add constraint face_vectors_album_id_fkey
+      foreign key (album_id) references albums(id) on delete cascade;
   end if;
 end
 $$`,

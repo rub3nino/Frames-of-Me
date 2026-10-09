@@ -1,4 +1,7 @@
 import { z } from "zod";
+// v6 (agent C): the shared default of REPORT_AUTO_PENDING. `http.ts` imports nothing from
+// here, so this direction is the acyclic one.
+import { REPORT_AUTO_PENDING_DEFAULT } from "./http.ts";
 
 function blankToUndefined(value: unknown): unknown {
   if (typeof value !== "string") return value;
@@ -183,7 +186,24 @@ export const envSchema = z
     ),
     /** Comma-separated IPs or CIDRs that skip both limits (the test room's NAT). */
     RATE_LIMIT_EXEMPT_IPS: z.preprocess(blankToUndefined, z.string().default("")),
-    /** Optional shared limiter for horizontally scaled API instances. */
+    /**
+     * Crowd-album uploads one participant may START per album per hour; 0 disables the
+     * limit. This is a BURST gate and is not the same thing as `albums.max_photos_per_user`,
+     * which is an absolute cap on the album and is `null` (unlimited) by default — on such
+     * an album this is the only thing standing between one account and the bucket.
+     *
+     * Read per request, so the event-day value can be raised without a restart.
+     */
+    ALBUM_UPLOAD_MAX_PER_HOUR: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().int().min(0).default(20),
+    ),
+    /**
+     * Optional shared limiter for horizontally scaled api instances
+     * (see apps/api/src/distributed-rate-limit.ts). When it is absent every limiter still
+     * holds — the crowd-upload gate falls back to counting `upload_sessions` — so this is a
+     * latency optimisation on the hot path, never the thing that makes a limit correct.
+     */
     UPSTASH_REDIS_REST_URL: z.preprocess(blankToUndefined, z.string().url().optional()),
     UPSTASH_REDIS_REST_TOKEN: optionalText,
     /** Comma-separated emails upserted as admin when the api boots. */
@@ -217,6 +237,104 @@ export const envSchema = z
     ),
     /** Host the browser uses for presigned URLs (MinIO behind a proxy); S3_ENDPOINT stays internal. */
     S3_PUBLIC_ENDPOINT: z.preprocess(blankToUndefined, z.string().url().optional()),
+    // --- v6 auth (agent B) ----------------------------------------------------
+    /** Google OIDC client. The three GOOGLE_* vars go together; without them the Google routes 404. */
+    GOOGLE_CLIENT_ID: optionalText,
+    GOOGLE_CLIENT_SECRET: optionalText,
+    /** Must match the redirect URI registered in the Google console, e.g. https://host/v1/auth/google/callback. */
+    GOOGLE_REDIRECT_URL: z.preprocess(blankToUndefined, z.string().url().optional()),
+    /** HMAC key for the short-lived state/PKCE cookie. Defaults to SESSION_SECRET when unset. */
+    OAUTH_STATE_SECRET: z.preprocess(blankToUndefined, z.string().min(16).optional()),
+    /** Self-registrations per client IP per hour; 0 disables the limit. */
+    REGISTER_PER_IP: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().int().min(0).default(20),
+    ),
+    /** Self-registrations per event code per hour; 0 disables the limit. */
+    REGISTER_PER_CODE: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().int().min(0).default(600),
+    ),
+    // --- v6 admin console (agent D) -------------------------------------------
+    // Operations page: external dashboards, links only. Each one is optional; the console
+    // shows exactly the ones that are set and nothing else. No API integration mirrors
+    // these dashboards (spec D, frozen).
+    OPS_LINK_RESEND: z.preprocess(blankToUndefined, z.string().url().optional()),
+    OPS_LINK_POSTHOG: z.preprocess(blankToUndefined, z.string().url().optional()),
+    OPS_LINK_SENTRY: z.preprocess(blankToUndefined, z.string().url().optional()),
+    OPS_LINK_COOLIFY: z.preprocess(blankToUndefined, z.string().url().optional()),
+    OPS_LINK_AUTHENTIK: z.preprocess(blankToUndefined, z.string().url().optional()),
+    OPS_LINK_R2: z.preprocess(blankToUndefined, z.string().url().optional()),
+    // --- v6 crowd upload and moderation (agent C) -----------------------------
+    /**
+     * How many DISTINCT people with a **counting** open report flip a photo to `pending`
+     * (C2) — see MODERATION_COUNTING_REASONS: `not_me` is excluded, so no value here can
+     * turn a wrong match into a takedown. Read per request, so the event-day value can
+     * change without a restart of anything but the api process.
+     */
+    REPORT_AUTO_PENDING: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().int().min(1).default(REPORT_AUTO_PENDING_DEFAULT),
+    ),
+    /** Reports one participant may file per hour; 0 disables the limit. */
+    REPORT_PER_USER: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().int().min(0).default(30),
+    ),
+    // --- v6 privacy and retention scheduling (agent G) ------------------------
+    /**
+     * The retention scheduler runs inside the worker (every replica; the claim in
+     * `retention_schedule` makes it exactly one run per window). "false" turns it off,
+     * for a deployment that prefers a host cron calling POST /v1/admin/retention/run.
+     */
+    RETENTION_SCHEDULER: z.preprocess(
+      blankToUndefined,
+      z.enum(["true", "false"]).default("true"),
+    ),
+    /**
+     * Length of the retention window: at most one `retention` job per event per window.
+     * Windows are aligned to the Unix epoch in UTC, so the default 24 h turns over at
+     * 00:00 UTC and the job is enqueued at the first tick after that.
+     */
+    RETENTION_WINDOW_HOURS: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().int().min(1).max(168).default(24),
+    ),
+    /** How often the worker looks for a window to claim. Well below the window. */
+    RETENTION_TICK_SECONDS: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().int().min(10).max(3600).default(300),
+    ),
+    /**
+     * Send the retention alarm by e-mail (the existing mailer, no new transport). "false"
+     * leaves only the log line and the red box on /admin → Stato, which nobody watches at
+     * three in the morning.
+     */
+    RETENTION_ALARM_MAIL: z.preprocess(
+      blankToUndefined,
+      z.enum(["true", "false"]).default("true"),
+    ),
+    /**
+     * Who receives it, comma-separated. Empty = fall back to `BOOTSTRAP_ADMINS`; with both
+     * empty nothing is sent and the worker logs `alarmMail: "no-recipient"` once per window.
+     */
+    RETENTION_ALARM_EMAIL: z.preprocess(blankToUndefined, z.string().default("")),
+    // --- v6 hardening (agent H): the password-reset budget is its own -------------------
+    //
+    // It used to be the magic-link budget (`MAGIC_LINK_PER_*`), which coupled two
+    // unrelated flows: a reset flood exhausted the event-day login fallback, and a
+    // login-link flood locked a participant out of their own reset. Counted on
+    // `password_reset_tokens` (migration 016), which only this route writes.
+    /** Reset links per account per hour; 0 disables the limit. */
+    PASSWORD_RESET_PER_USER: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().int().min(0).default(3),
+    ),
+    /** Reset links per client IP per hour; 0 disables the limit. */
+    PASSWORD_RESET_PER_IP: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().int().min(0).default(20),
+    ),
   })
   .superRefine((env, ctx) => {
     if (env.INSIGHTFACE_SURE_COSINE <= env.INSIGHTFACE_MIN_COSINE) {
@@ -242,8 +360,22 @@ export const envSchema = z
         });
       }
     }
+    // A URL without a token is a limiter that will 401 on every call, i.e. a limiter that
+    // silently falls back to the database count forever. Refuse to boot instead.
     if (env.UPSTASH_REDIS_REST_URL && !env.UPSTASH_REDIS_REST_TOKEN) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["UPSTASH_REDIS_REST_TOKEN"], message: "required when UPSTASH_REDIS_REST_URL is set" });
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["UPSTASH_REDIS_REST_TOKEN"],
+        message: "required when UPSTASH_REDIS_REST_URL is set",
+      });
+    }
+    // And a token with no URL is a configuration someone believes is doing something.
+    if (env.UPSTASH_REDIS_REST_TOKEN && !env.UPSTASH_REDIS_REST_URL) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["UPSTASH_REDIS_REST_URL"],
+        message: "required when UPSTASH_REDIS_REST_TOKEN is set",
+      });
     }
     if (env.MAIL_TRANSPORT === "smtp") {
       if (!env.SMTP_HOST) {
@@ -260,6 +392,16 @@ export const envSchema = z
           message: "required when MAIL_TRANSPORT is smtp",
         });
       }
+    }
+    // v6 (agent B): a half-configured Google client is a deploy mistake, not a feature.
+    const google = [env.GOOGLE_CLIENT_ID, env.GOOGLE_CLIENT_SECRET, env.GOOGLE_REDIRECT_URL];
+    if (google.some(Boolean) && !google.every(Boolean)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["GOOGLE_CLIENT_ID"],
+        message:
+          "GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET and GOOGLE_REDIRECT_URL must be set together",
+      });
     }
   })
   .transform((env) => ({
@@ -280,6 +422,10 @@ export const envSchema = z
     MATCH_LOG: env.MATCH_LOG === "true",
     KEEP_SELFIES: env.KEEP_SELFIES === "true",
     LOG_IDS: env.LOG_IDS === "true",
+    OAUTH_STATE_SECRET: env.OAUTH_STATE_SECRET ?? env.SESSION_SECRET,
+    // v6 (agent G)
+    RETENTION_SCHEDULER: env.RETENTION_SCHEDULER === "true",
+    RETENTION_ALARM_MAIL: env.RETENTION_ALARM_MAIL === "true",
   }));
 
 export type Env = z.infer<typeof envSchema>;

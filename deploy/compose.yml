@@ -36,8 +36,12 @@ x-app-env: &app_env
   S3_ENDPOINT: http://minio:9000
   S3_PUBLIC_ENDPOINT: https://media.${DOMAIN}
   S3_BUCKET: ${S3_BUCKET:-rephoto}
-  S3_ACCESS_KEY: ${MINIO_ROOT_USER}
-  S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+  # v6 F2 — least privilege: the application user may only read, write and delete objects inside
+  # S3_BUCKET. `minio-init` creates it and attaches the policy (deploy/scripts/minio-provision.sh).
+  # The MinIO root credentials are NEVER handed to api or worker: they are for minio-init, the
+  # backup sidecar and manual administration only.
+  S3_ACCESS_KEY: ${S3_APP_ACCESS_KEY:-rephoto-app}
+  S3_SECRET_KEY: ${S3_APP_SECRET_KEY}
   S3_REGION: eu-central-1
   S3_FORCE_PATH_STYLE: "true"
   SESSION_SECRET: ${SESSION_SECRET}
@@ -79,6 +83,18 @@ x-app-env: &app_env
   TRUSTED_PROXY_HOPS: "1"
   WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
   WORKER_PUBLISH_METRICS: "false"
+  # v6 G — automatic retention. The scheduler runs inside the worker (every replica; the claim
+  # in `retention_schedule` makes it one run per event per window), so there is no cron on the
+  # host and nothing to install by hand. The api reads the same variables only to show the
+  # window and the next run on /admin → Stato. See README.md § 11 bis.
+  RETENTION_SCHEDULER: ${RETENTION_SCHEDULER:-true}
+  RETENTION_WINDOW_HOURS: ${RETENTION_WINDOW_HOURS:-24}
+  RETENTION_TICK_SECONDS: ${RETENTION_TICK_SECONDS:-300}
+  # The alarm needs a destination: a retention that stops on a Friday keeps personal data past
+  # its period, and nobody reads a red box on a screen at night. One mail per window while the
+  # problem lasts, one when it clears, through the mailer already configured above.
+  RETENTION_ALARM_MAIL: ${RETENTION_ALARM_MAIL:-true}
+  RETENTION_ALARM_EMAIL: ${RETENTION_ALARM_EMAIL:-}
 
 services:
   # ------------------------------------------------------------------ edge
@@ -182,12 +198,14 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
       S3_BUCKET: ${S3_BUCKET:-rephoto}
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        set -e
-        /usr/bin/mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
-        /usr/bin/mc mb --ignore-existing "local/$$S3_BUCKET"
+      # Creates the bucket, the `rephoto-app` bucket-scoped policy and the application user that
+      # api and worker authenticate with (v6 F2). Idempotent: it runs on every `up`, and changing
+      # S3_APP_SECRET_KEY here rotates the key.
+      S3_APP_ACCESS_KEY: ${S3_APP_ACCESS_KEY:-rephoto-app}
+      S3_APP_SECRET_KEY: ${S3_APP_SECRET_KEY}
+    volumes:
+      - ./scripts/minio-provision.sh:/provision.sh:ro
+    entrypoint: ["/bin/sh", "/provision.sh"]
     logging: *logging
 
   # ------------------------------------------------------------------ face engine
@@ -200,8 +218,13 @@ services:
     environment:
       MODEL_NAME: buffalo_l
       ONNX_THREADS: ${FACE_SERVICE_THREADS:-4}
-      # Detection on a 2560 px long edge with a 1024 px SCRFD input: ~2x the cost of the
-      # old 1600/640 but it keeps 60-80 px faces in 24 MP hall photos (docs/test-readiness.md §3).
+      # Detection on a 2560 px long edge with a 1024 px SCRFD input: ~2x the cost of the old
+      # 1600/640 but it keeps 60-80 px faces in 24 MP hall photos (docs/test-readiness.md §3).
+      # Measured in v6 (docs/face-throughput.md §4): that 2x is ENTIRELY DET_SIZE 640 -> 1024
+      # (1.9x throughput). The long edge 1600 -> 2560 costs only ~6 %, because SCRFD always runs
+      # on a DET_SIZE square whatever the source resolution. So the long edge is nearly free and
+      # keeps the small faces; DET_SIZE is the only real cost/recall switch, and lowering it is
+      # exactly what loses the back rows -- never move it without a recall run (scripts/eval).
       DET_SIZE: ${FACE_DET_SIZE:-1024}
       DET_LONG_EDGE: ${FACE_DET_LONG_EDGE:-2560}
       # uvicorn worker processes; each loads its own model (≈ 1-1.5 GB RSS) and runs up to
@@ -325,6 +348,9 @@ services:
       PGUSER: ${POSTGRES_USER}
       PGPASSWORD: ${POSTGRES_PASSWORD}
       PGDATABASE: ${POSTGRES_DB}
+      # One of the two legitimate holders of the MinIO root credentials (the other is minio-init):
+      # `mc mirror` has to list the whole bucket, and a restore has to write it back. The
+      # application user cannot list (v6 F2), so it could not take a backup.
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
       S3_BUCKET: ${S3_BUCKET:-rephoto}

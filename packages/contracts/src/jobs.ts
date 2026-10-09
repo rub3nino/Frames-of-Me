@@ -50,7 +50,8 @@ export const matchPayloadSchema = z
     frameKeys: z.array(z.string().min(1)).min(1).max(8).optional(),
   })
   .strict();
-export const emailKindSchema = z.enum(["ready", "new"]);
+/** `tagged` is v6 E (agent E): someone tagged the recipient in a photo. */
+export const emailKindSchema = z.enum(["ready", "new", "tagged"]);
 export type EmailKind = z.infer<typeof emailKindSchema>;
 export const emailPayloadSchema = z
   .object({
@@ -71,7 +72,12 @@ export type EmailPayload = z.infer<typeof emailPayloadSchema>;
 export const retentionPayloadSchema = z
   .object({
     eventId: z.string().uuid(),
-    actorId: z.string().uuid(),
+    /**
+     * The admin who asked, or null when the scheduler enqueued it (v6 G). It is not a free
+     * identifier: `audit_log.actor_id` references `users (id)`, so an invented uuid would
+     * break every audit row the job writes.
+     */
+    actorId: z.string().uuid().nullable().default(null),
   })
   .strict();
 

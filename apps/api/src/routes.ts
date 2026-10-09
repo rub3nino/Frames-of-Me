@@ -21,9 +21,7 @@ import {
   galleryFeedbackBodySchema,
   consentBodySchema,
   decodeGalleryCursor,
-  decodePublicGalleryCursor,
   encodeGalleryCursor,
-  encodePublicGalleryCursor,
   eventPatchBodySchema,
   galleryDownloadBodySchema,
   galleryQuerySchema,
@@ -32,12 +30,8 @@ import {
   invitePhotographerBodySchema,
   MAGIC_LINK_RATE_LIMIT,
   MULTIPART_THRESHOLD_BYTES,
-  PUBLIC_UPLOAD_RATE_LIMIT,
   objectKeys,
   participantsImportBodySchema,
-  publicGalleryQuerySchema,
-  publicPhotoReportSchema,
-  photoModerationSchema,
   requestLinkBodySchema,
   retentionBodySchema,
   SELFIE_CHALLENGE_FIELD,
@@ -58,6 +52,12 @@ import {
   type DownloadVariant,
   type Role,
   type SelfieLiveness,
+  // v6 (agent B): auth
+  googleCallbackQuerySchema,
+  OAUTH_STATE_COOKIE_NAME,
+  OAUTH_STATE_TTL_SECONDS,
+  registerBodySchema,
+  REGISTER_RATE_LIMIT,
 } from "@rephoto/contracts";
 import {
   DuplicateKeyError,
@@ -80,8 +80,23 @@ import {
   webOrigin,
 } from "./http.js";
 import { ipMatches, parseIpList } from "./net.js";
+import {
+  assertGoogleClaims,
+  createGoogleTokenExchange,
+  decodeIdToken,
+  googleConfig,
+  OauthError,
+  startGoogleFlow,
+  verifiedEmail,
+  verifyCallbackState,
+} from "./oauth.js";
 import { purgePhoto } from "./purge.js";
-import { incrementSharedLimit } from "./distributed-rate-limit.js";
+import { registerAdminV6Routes } from "./routes.admin-v6.js";
+import { registerCrowdRoutes } from "./routes.crowd.js";
+// v6 G (agent G): the privacy routes live in their own file; this is the only line they add here.
+import { registerPrivacyRoutes } from "./routes.privacy.js";
+import { registerResetRoutes } from "./routes.reset.js";
+import { registerTagRoutes } from "./routes.tags.js";
 
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -90,8 +105,11 @@ const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
 const INVITE_TTL_SECONDS = 7 * 24 * 60 * 60;
 const SELFIE_MAX_BYTES = 8_388_608;
 const HEALTH_TIMEOUT_MS = 2_000;
+/** v6 (agent B): keys kept by the in-process registration limiter before it prunes. */
+const RATE_LIMIT_KEYS_MAX = 20_000;
 
 export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
+  registerTagRoutes(app, deps); // v6 E (agent E): every tagging route lives in routes.tags.ts
   const health = async (c: Context<AppEnv>) => {
     if (await databaseHealthy(deps)) return c.json({ ok: true });
     return c.json({ ok: false }, 503);
@@ -140,6 +158,8 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       }
       user = await deps.db.insertUser(consumed.email, "participant");
     }
+    // v6: clicking the link proves the address (lazy verification, migration 012).
+    await deps.db.markEmailVerified(user.id);
     await startSession(c, deps, user);
     return c.json({ user: publicUser(user) });
   });
@@ -167,6 +187,10 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     if (invite.role === "photographer") {
       await deps.db.addEventPhotographer(invite.eventId, user.id);
     }
+    // v6 (integration): accepting an invite is an entry path into the event, so it records
+    // membership like self-registration does. `source` already reserved `invite` for it.
+    // Idempotent, and provenance only — nothing reads `source` to decide anything.
+    await deps.db.addEventMember({ userId: user.id, eventId: invite.eventId, source: "invite" });
     await startSession(c, deps, user);
     return c.json({ user: publicUser(user) });
   });
@@ -293,11 +317,26 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const image = await readSelfie(c);
     const key = objectKeys.selfie(event.id, user.id, randomUUID());
     await deps.objects.put(key, image.bytes, image.contentType);
-    await deps.queue.enqueue("match", {
-      userId: user.id,
-      eventId: event.id,
-      selfieKey: key,
-    });
+    // The object is written before the job that owns it, so a failed enqueue would leave a
+    // PHOTOGRAPH OF A FACE that nothing in the system references: a selfie key lives on the
+    // match job and, after a match, on `galleries.selfie_key`, and the worker's housekeeping
+    // only ever sweeps `upload_sessions`. Nothing could reach it again. The `selfies/`
+    // bucket expiry rule is a backstop measured in days; the DPIA promises the file goes
+    // right after the search, so the code deletes it here rather than leaning on the rule.
+    try {
+      await deps.queue.enqueue("match", {
+        userId: user.id,
+        eventId: event.id,
+        selfieKey: key,
+      });
+    } catch (error) {
+      await deps.objects.delete(key).catch(() => {
+        // Best effort: the lifecycle rule is the only remaining backstop, and the enqueue
+        // failure is what the caller must be told about.
+        console.error(`orphaned selfie object ${key}`);
+      });
+      throw error;
+    }
     // The DPIA cites this: whether the selfie went through the browser liveness challenge.
     // The value is asserted by the client (a deterrent, not proof): the server cannot verify
     // the challenge ran. The server-side check, when enabled, is LIVENESS_CHECK in the worker.
@@ -325,14 +364,21 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       deps.db.findGalleryByUser(user.id, event.id),
       deps.db.listGalleryPage(user.id, event.id, { limit, ...(cursor ? { cursor } : {}) }),
     ]);
+    // v6 (F4): the feedback read is scoped to the photos of this page. It used to load the user's
+    // whole event feedback on every gallery request, which grows with the gallery, not the page.
+    // It costs one extra round trip because the page's photo ids are the input; the response is
+    // unchanged (only the ids of this page are ever looked up below).
     const feedbackRows = await deps.db.listFeedback(
       user.id,
       event.id,
-      page.items.map((item) => item.photoId),
+      page.items.map((row) => row.photoId),
     );
     const status = galleryStatus(latest?.status ?? null, gallery !== null, page.total);
     // v5 (D): `not_me` items stay in the page with the flag; the web hides them under "Nascoste".
     const feedbackByPhoto = new Map(feedbackRows.map((row) => [row.photoId, row.verdict]));
+    // Presigning is HMAC and a string build, no I/O, but it was 2 awaits per row serialised
+    // 60 rows deep. `Promise.all` is main's fix (`presignVariantUrls`, d477c3a) and keeps the
+    // response order, which the cursor depends on.
     const items = await Promise.all(
       page.items.map(async (row) => ({
         photoId: row.photoId,
@@ -361,33 +407,6 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     });
   });
 
-  app.get("/v1/events/:slug/public-gallery", async (c) => {
-    const user = requireUser(c);
-    requireRole(user, ["participant"]);
-    const event = await loadEvent(deps, c.req.param("slug"));
-    await requireParticipantAccess(deps, user, event);
-    const query = publicGalleryQuerySchema.safeParse(c.req.query());
-    if (!query.success) throw new ApiError(400, MESSAGES.validation);
-    const cursor = query.data.cursor ? decodePublicGalleryCursor(query.data.cursor) : undefined;
-    if (query.data.cursor && !cursor) throw new ApiError(400, MESSAGES.validation);
-    const page = await deps.db.listPublicGallery(event.id, { limit: query.data.limit, ...(cursor ? { cursor } : {}) });
-    const items = await Promise.all(
-      page.map(async (row) => ({
-        photoId: row.photoId,
-        thumbUrl: await deps.objects.presignGet(row.thumbKey),
-        webUrl: await deps.objects.presignGet(row.webKey),
-        createdAt: row.createdAt.toISOString(),
-        originalReady: row.originalReady,
-      })),
-    );
-    const last = page[page.length - 1];
-    return c.json({
-      limit: query.data.limit,
-      items,
-      nextCursor: page.length === query.data.limit && last ? encodePublicGalleryCursor(last) : null,
-    });
-  });
-
   app.post("/v1/events/:slug/gallery/download", async (c) => {
     const user = requireUser(c);
     requireRole(user, ["participant"]);
@@ -396,35 +415,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const body = galleryDownloadBodySchema.safeParse(await readJson(c));
     if (!body.success) throw new ApiError(400, MESSAGES.validation);
     const photos = await ownedPhotos(deps, user, event, body.data.photoIds);
-    const urls = await presignVariantUrls(deps, photos, body.data.variant);
-    return c.json({ urls });
-  });
-
-  app.post("/v1/events/:slug/public-gallery/download", async (c) => {
-    const user = requireUser(c);
-    requireRole(user, ["participant"]);
-    const event = await loadEvent(deps, c.req.param("slug"));
-    await requireParticipantAccess(deps, user, event);
-    const body = galleryDownloadBodySchema.safeParse(await readJson(c));
-    if (!body.success) throw new ApiError(400, MESSAGES.validation);
-    const photos = await deps.db.listPublicPhotosByIds(event.id, body.data.photoIds);
-    if (photos.length !== new Set(body.data.photoIds).size) throw new ApiError(404, MESSAGES.notFound);
-    const urls = await presignVariantUrls(deps, photos, body.data.variant);
-    return c.json({ urls });
-  });
-
-  app.post("/v1/events/:slug/public-gallery/:photoId/report", async (c) => {
-    const user = requireUser(c);
-    requireRole(user, ["participant"]);
-    const event = await loadEvent(deps, c.req.param("slug"));
-    await requireParticipantAccess(deps, user, event);
-    const body = publicPhotoReportSchema.safeParse(await readJson(c));
-    if (!body.success) throw new ApiError(400, MESSAGES.validation);
-    const photos = await deps.db.listPublicPhotosByIds(event.id, [parseUuid(c.req.param("photoId"))]);
-    if (photos.length === 0) throw new ApiError(404, MESSAGES.notFound);
-    await deps.db.reportPhoto({ photoId: photos[0]!.id, reporterId: user.id, reason: body.data.reason });
-    await deps.db.insertAudit({ actorId: user.id, action: "photo.reported", target: `photo:${photos[0]!.id}`, meta: { eventId: event.id, reason: body.data.reason } });
-    return c.json({ status: "received" as const }, 202);
+    return c.json({ urls: await presignVariantUrls(deps, photos, body.data.variant) });
   });
 
   app.post("/v1/events/:slug/gallery/zip", async (c) => {
@@ -493,53 +484,39 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
 
   app.post("/v1/uploads/init", async (c) => {
     const user = requireUser(c);
+    requireRole(user, ["photographer"]);
     const body = uploadInitBodySchema.safeParse(await readJson(c));
     if (!body.success) throw new ApiError(400, MESSAGES.validation);
     const event = await deps.db.findEventById(body.data.eventId);
     if (!event) throw new ApiError(404, MESSAGES.notFound);
-    const input = body.data;
-    if (input.collection === "official") {
-      requireRole(user, ["photographer"]);
-      if (!(await deps.db.isEventPhotographer(event.id, user.id))) {
-        throw new ApiError(403, MESSAGES.forbidden);
-      }
-    } else {
-      // Public contributions still require an authenticated participant and event access.
-      // Anonymous uploads would make the 150k-photo target an unauditable abuse surface.
-      requireRole(user, ["participant"]);
-      await requireParticipantAccess(deps, user, event);
-      if (!rateLimitExempt(deps, c.get("ip"))) {
-        let recent: number | null = null;
-        try {
-          recent = await incrementSharedLimit({
-            url: deps.env.UPSTASH_REDIS_REST_URL,
-            token: deps.env.UPSTASH_REDIS_REST_TOKEN,
-            key: `rephoto:public-upload:${event.id}:${user.id}`,
-            windowSeconds: PUBLIC_UPLOAD_RATE_LIMIT.windowSeconds,
-          });
-        } catch (error) {
-          console.error(`shared upload limiter unavailable: ${String(error)}`);
-        }
-        if (recent === null) {
-          recent = (await deps.db.countUploadsSince(user.id, event.id, since(PUBLIC_UPLOAD_RATE_LIMIT.windowSeconds))) + 1;
-        }
-        if (recent > PUBLIC_UPLOAD_RATE_LIMIT.max) throw new ApiError(429, MESSAGES.rateLimited);
-      }
+    if (!(await deps.db.isEventPhotographer(event.id, user.id))) {
+      throw new ApiError(403, MESSAGES.forbidden);
     }
+    const input = body.data;
     const uploadId = randomUUID();
+    // v6 (agent C): dedup and the photo row are per album since migration 009
+    // (`photos unique (album_id, sha256)`). This route knows only an event, so it targets
+    // the event's official album — the one every event has, and the one v5 wrote into.
+    const album = await deps.db.findDefaultAlbum(event.id);
+    if (!album) throw new ApiError(404, MESSAGES.notFound);
     if (input.stage === "web") {
       // Web stage: the 1600 px JPEG goes straight to the web derivative key; the photo row
       // is created at complete with the original's sha256/bytes and original_status = pending.
-      const existing = await deps.db.findPhotoBySha(event.id, input.sha256);
-      if (existing) throw new ApiError(409, MESSAGES.conflict);
+      // Same bytes already in this album: an answer, not an error (v6 A2). The client
+      // marks the file as deduped instead of showing a failure.
+      const existing = await deps.db.findPhotoByAlbumSha(album.id, input.sha256);
+      if (existing) {
+        return c.json(
+          { status: "already-uploaded" as const, photoId: existing.id, albumId: album.id },
+          200,
+        );
+      }
       const photoId = randomUUID();
       const objectKey = objectKeys.web(photoId);
       await deps.db.insertUploadSession({
         id: uploadId,
         eventId: event.id,
-        photographerId: input.collection === "official" ? user.id : null,
-        uploaderId: user.id,
-        collection: input.collection,
+        photographerId: user.id,
         s3UploadId: null,
         objectKey,
         sha256: input.sha256,
@@ -550,6 +527,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
         originalBytes: input.originalBytes,
         filename: input.filename,
         tags: input.tags ?? [],
+        albumId: album.id,
       });
       return c.json(
         {
@@ -566,7 +544,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     if (input.photoId) {
       // Original stage of a web-first photo: the row exists and still waits for its bytes.
       const photo = await deps.db.findPhoto(input.photoId);
-      if (!photo || photo.uploaderId !== user.id || photo.eventId !== event.id) {
+      if (!photo || photo.photographerId !== user.id || photo.eventId !== event.id) {
         throw new ApiError(404, MESSAGES.notFound);
       }
       // An original that already arrived is a conflict, not a validation error: the client treats it as sent.
@@ -577,8 +555,13 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       objectKey = photo.originalKey;
       photoId = photo.id;
     } else {
-      const existing = await deps.db.findPhotoBySha(event.id, input.sha256);
-      if (existing) throw new ApiError(409, MESSAGES.conflict);
+      const existing = await deps.db.findPhotoByAlbumSha(album.id, input.sha256);
+      if (existing) {
+        return c.json(
+          { status: "already-uploaded" as const, photoId: existing.id, albumId: album.id },
+          200,
+        );
+      }
       objectKey = objectKeys.original(event.id, randomUUID());
     }
     const multipart = input.bytes > MULTIPART_THRESHOLD_BYTES;
@@ -588,9 +571,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     await deps.db.insertUploadSession({
       id: uploadId,
       eventId: event.id,
-      photographerId: input.collection === "official" ? user.id : null,
-      uploaderId: user.id,
-      collection: input.collection,
+      photographerId: user.id,
       s3UploadId,
       objectKey,
       sha256: input.sha256,
@@ -600,6 +581,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       photoId,
       filename: input.filename,
       tags: input.tags ?? [],
+      albumId: album.id,
     });
     if (multipart) {
       return c.json(
@@ -625,8 +607,8 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
 
   app.post("/v1/uploads/:id/parts", async (c) => {
     const user = requireUser(c);
+    requireRole(user, ["photographer"]);
     const session = await ownUpload(deps, c.req.param("id"), user.id);
-    requireRole(user, session.collection === "public" ? ["participant"] : ["photographer"]);
     if (!session.s3UploadId) throw new ApiError(400, MESSAGES.validation);
     const body = uploadPartBodySchema.safeParse(await readJson(c));
     if (!body.success) throw new ApiError(400, MESSAGES.validation);
@@ -640,8 +622,8 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
 
   app.post("/v1/uploads/:id/complete", async (c) => {
     const user = requireUser(c);
+    requireRole(user, ["photographer"]);
     const session = await ownUpload(deps, c.req.param("id"), user.id);
-    requireRole(user, session.collection === "public" ? ["participant"] : ["photographer"]);
     if (session.status !== "open") throw new ApiError(409, MESSAGES.conflict);
     const body = uploadCompleteBodySchema.safeParse(await readJson(c));
     if (!body.success) throw new ApiError(400, MESSAGES.validation);
@@ -657,22 +639,24 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     }
     const stored = await deps.objects.head(session.objectKey);
     if (!stored || stored.bytes <= 0) throw new ApiError(400, MESSAGES.validation);
-    if (stored.contentType !== session.contentType) {
-      await deps.db.markUploadSession(session.id, "aborted");
-      await deps.objects.delete(session.objectKey);
-      throw new ApiError(400, MESSAGES.validation);
-    }
     const discard = async (status: 400 | 404, message: string): Promise<never> => {
       await deps.db.markUploadSession(session.id, "aborted");
       await deps.objects.delete(session.objectKey);
       throw new ApiError(status, message);
     };
+    // Ported from main's fda8d64. The presigned PUT is issued FOR a content type, but S3
+    // stores whatever `Content-Type` the client actually sent, so without this the signed
+    // URL is a way to park arbitrary bytes in the bucket under a type of the uploader's
+    // choosing. The object goes back out with the session, exactly as a size mismatch does.
+    if (stored.contentType !== session.contentType) {
+      await discard(400, MESSAGES.validation);
+    }
     if (session.stage === "original" && session.photoId) {
       // Original of a web-first photo: no re-derive or re-index, only a deferred sha256 check.
       // The row is read right before the flip so a repeated complete (same session retried,
       // or a second session for the same photo) sees the status the earlier one left.
       const photo = await deps.db.findPhoto(session.photoId);
-      if (!photo || photo.uploaderId !== user.id) await discard(404, MESSAGES.notFound);
+      if (!photo || photo.photographerId !== user.id) await discard(404, MESSAGES.notFound);
       else if (stored.bytes !== photo.bytes) await discard(400, MESSAGES.sizeMismatch);
       else if (photo.originalStatus !== "pending") {
         // Already received: same answer, no second verify (the object key is the same one).
@@ -709,9 +693,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       await deps.db.insertPhoto({
         id: photoId,
         eventId: session.eventId,
-        photographerId: session.collection === "official" ? user.id : null,
-        uploaderId: user.id,
-        collection: session.collection,
+        photographerId: user.id,
         sha256: session.sha256,
         originalKey: web ? objectKeys.original(session.eventId, photoId) : session.objectKey,
         contentType: web ? session.originalContentType ?? session.contentType : session.contentType,
@@ -719,6 +701,10 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
         originalStatus: web ? "pending" : "present",
         filename: session.filename,
         tags: session.tags,
+        // v6 (agent C): the album chosen at init, carried on the session
+        // (`upload_sessions.album_id`, migration 010). Null only for a session written
+        // before that migration, where the official album is the right answer.
+        albumId: session.albumId ?? undefined,
       });
     } catch (error) {
       if (!(error instanceof DuplicateKeyError)) throw error;
@@ -731,14 +717,6 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       await deps.db.markUploadSession(session.id, "aborted");
       await deps.objects.delete(session.objectKey);
       throw new ApiError(409, MESSAGES.conflict);
-    }
-    if (session.collection === "public") {
-      await deps.db.setPhotoModeration({
-        photoId,
-        status: "pending",
-        reason: null,
-        actorId: user.id,
-      });
     }
     if (web) {
       await deps.db.upsertDerivative({ photoId, kind: "web", s3Key: session.objectKey });
@@ -783,6 +761,11 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     requireRole(user, ["photographer"]);
     const query = uploadLookupQuerySchema.safeParse(c.req.query());
     if (!query.success) throw new ApiError(400, MESSAGES.validation);
+    // v6 (agent C): this lookup is still EVENT-wide while dedup moved to
+    // `unique (album_id, sha256)` (migration 009), so with several albums per event the same
+    // bytes can exist more than once and this returns an arbitrary one. Harmless today --
+    // this route and the photographer upload above both target the event's official album --
+    // but an exact lookup needs an album id in the query.
     const photo = await deps.db.findOwnPhotoBySha(user.id, query.data.eventId, query.data.sha256);
     if (!photo) throw new ApiError(404, MESSAGES.notFound);
     return c.json({ photoId: photo.id, originalStatus: photo.originalStatus, status: photo.status });
@@ -882,18 +865,6 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       meta: { eventId: photo.eventId },
     });
     return c.body(null, 204);
-  });
-
-  app.patch("/v1/admin/photos/:id/moderation", async (c) => {
-    const user = requireUser(c);
-    requireRole(user, ["admin"]);
-    const body = photoModerationSchema.safeParse(await readJson(c));
-    if (!body.success) throw new ApiError(400, MESSAGES.validation);
-    const photo = await deps.db.findPhoto(parseUuid(c.req.param("id")));
-    if (!photo) throw new ApiError(404, MESSAGES.notFound);
-    await deps.db.setPhotoModeration({ photoId: photo.id, status: body.data.status, reason: body.data.reason, actorId: user.id });
-    await deps.db.insertAudit({ actorId: user.id, action: "photo.moderation_changed", target: `photo:${photo.id}`, meta: { status: body.data.status, reason: body.data.reason } });
-    return c.json({ status: body.data.status });
   });
 
   app.delete("/v1/admin/participants/:id", async (c) => {
@@ -1116,14 +1087,13 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const { cursor: rawCursor, limit, ...filters } = query.data;
     void rawCursor;
     const page = await deps.db.listPhotosAdmin(filters, { limit, ...(cursor ? { cursor } : {}) });
-    const photos = [];
-    for (const photo of page.items) {
-      photos.push({
+    const photos = await Promise.all(
+      page.items.map(async (photo) => ({
         ...adminPhoto(photo),
         thumbUrl:
           photo.status === "indexed" ? await deps.objects.presignGet(objectKeys.thumb(photo.id)) : null,
-      });
-    }
+      })),
+    );
     return c.json({
       photos,
       nextCursor: page.nextCursor
@@ -1181,6 +1151,14 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       deps.db.findEventById(eventId),
     ]);
     if (!user || !event) throw new ApiError(404, MESSAGES.notFound);
+    // v6 (integration) defence in depth: re-running face recognition for someone is
+    // processing their biometric data, so it needs an ACTIVE consent, not merely the traces
+    // of a past one. The hole was narrow — a stored selfie key implies a prior consented
+    // submission, and `withdrawConsent` deletes the gallery and with it the key — but it
+    // relied on two separate facts staying in step. This asks the consent directly.
+    if (!(await deps.db.hasActiveConsent(userId, eventId))) {
+      throw new ApiError(409, MESSAGES.consentRequired);
+    }
     const selfieKey = await deps.db.findGallerySelfieKey(userId, eventId);
     if (!selfieKey) throw new ApiError(409, MESSAGES.selfieNotKept);
     // Repeated clicks collapse into the queued/running job (match has no dedupe key of its own).
@@ -1280,6 +1258,20 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     );
   });
 
+  /*
+   * The file the recognition thresholds are tuned from after the event. `source` (migration
+   * 018) is what keeps it honest, and anyone computing precision/recall must filter on it:
+   *
+   *   source = 'recognition'   the matcher put this photo in the person's personal match
+   *                            gallery and they ruled on it. verdict = 'me' is a true
+   *                            positive, verdict = 'not_me' is a FALSE POSITIVE. These are
+   *                            the only rows a precision/recall calculation may use.
+   *   source = 'tag'           a human tagged this person and the person refused the tag.
+   *                            verdict is always 'not_me'. It is NOT a matcher error and
+   *                            must be excluded.
+   *
+   * Rows written before migration 018 are all 'recognition', which is what they were.
+   */
   app.get("/v1/admin/export/feedback.csv", async (c) => {
     const actor = requireUser(c);
     requireRole(actor, ["admin"]);
@@ -1287,7 +1279,19 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     return streamCsv(
       c,
       `feedback-${safeFilenamePart(event.slug)}.csv`,
-      ["email", "user_id", "photo_id", "sha256", "filename", "verdict", "score_at_time", "created_at"],
+      [
+        "email",
+        "user_id",
+        "photo_id",
+        "sha256",
+        "filename",
+        "verdict",
+        "score_at_time",
+        "created_at",
+        // Appended, not inserted: a column added in the middle would break every script
+        // already reading this file by position.
+        "source",
+      ],
       deps.db.exportFeedback(event.id),
       (row) => [
         row.email,
@@ -1298,6 +1302,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
         row.verdict,
         row.scoreAtTime === null ? "" : String(row.scoreAtTime),
         row.createdAt.toISOString(),
+        row.source,
       ],
     );
   });
@@ -1343,6 +1348,9 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       photoId: body.data.photoId,
       verdict: body.data.verdict,
       scoreAtTime: item?.score ?? null,
+      // The recognition flow: this is a ruling on what the matcher put in the gallery, so
+      // `not_me` here IS a false positive and belongs in the precision/recall numbers.
+      source: "recognition",
     });
     await deps.db.insertAudit({
       actorId: user.id,
@@ -1352,11 +1360,153 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     });
     return c.json({ photoId: body.data.photoId, verdict: body.data.verdict }, 201);
   });
+
+  // ---- auth v6 (agent B): Google OIDC + participant self-registration --------------------
+  //
+  // The magic-link routes above are untouched and keep working: they are the event-day
+  // fallback (see RUN.md) and the carrier of the password-reset link. Only the web UI
+  // stopped offering them.
+
+  const googleExchange = deps.googleTokenExchange ?? createGoogleTokenExchange();
+  // Per-process sliding windows. The hard gate is `event_codes.max_uses` in the database;
+  // these only blunt a bot loop, so losing them on restart (or multiplying them by the
+  // number of api replicas) is acceptable.
+  const registerLimiter = createRateLimiter(REGISTER_RATE_LIMIT.windowSeconds);
+
+  app.get("/v1/auth/google/start", async (c) => {
+    const config = googleConfig(deps.env);
+    if (!config) throw new ApiError(404, MESSAGES.googleUnavailable);
+    const flow = startGoogleFlow(config);
+    // state + PKCE verifier + nonce, signed, httpOnly, single use, 10 minutes.
+    setCookie(c, OAUTH_STATE_COOKIE_NAME, flow.cookie, {
+      httpOnly: true,
+      sameSite: "Lax",
+      path: "/",
+      secure: deps.env.WEB_ORIGIN.startsWith("https:"),
+      maxAge: OAUTH_STATE_TTL_SECONDS,
+    });
+    return c.redirect(flow.authorizeUrl, 302);
+  });
+
+  app.get("/v1/auth/google/callback", async (c) => {
+    const config = googleConfig(deps.env);
+    if (!config) throw new ApiError(404, MESSAGES.googleUnavailable);
+    const query = googleCallbackQuerySchema.safeParse(c.req.query());
+    const cookie = getCookie(c, OAUTH_STATE_COOKIE_NAME);
+    // The cookie is single-use: drop it before anything can fail, so a replayed callback
+    // cannot reuse the same state/verifier.
+    deleteCookie(c, OAUTH_STATE_COOKIE_NAME, {
+      path: "/",
+      secure: deps.env.WEB_ORIGIN.startsWith("https:"),
+    });
+    if (!query.success) throw new ApiError(400, MESSAGES.validation);
+    // The user pressed "deny" on the consent screen: back to the sign-in page, no error.
+    if (query.data.error) return c.redirect(`${webOrigin(deps.env)}/?google=annullato`, 302);
+
+    let user: UserRow;
+    try {
+      const flow = verifyCallbackState(config, {
+        cookie,
+        state: query.data.state,
+      });
+      if (!query.data.code) throw new OauthError("missing code");
+      const { idToken } = await googleExchange({
+        code: query.data.code,
+        codeVerifier: flow.verifier,
+        config,
+      });
+      const claims = decodeIdToken(idToken);
+      assertGoogleClaims(claims, { config, nonce: flow.nonce });
+      // `verifiedEmail` returns null unless the token said `email_verified`. An unverified
+      // address is never used to find or create an account.
+      const email = verifiedEmail(claims);
+      user = await resolveGoogleUser(deps, claims.sub, email);
+    } catch (error) {
+      if (error instanceof OauthError) throw new ApiError(400, MESSAGES.linkInvalid);
+      throw error;
+    }
+    await deps.db.insertAudit({
+      actorId: user.id,
+      action: "auth.google",
+      target: `user:${user.id}`,
+      meta: { role: user.role },
+    });
+    await startSession(c, deps, user);
+    return c.redirect(`${webOrigin(deps.env)}${homePathForRole(user.role)}`, 302);
+  });
+
+  app.post("/v1/auth/register", async (c) => {
+    const body = registerBodySchema.safeParse(await readJson(c));
+    if (!body.success) throw new ApiError(400, MESSAGES.validation);
+    const email = body.data.email.toLowerCase();
+    const eventCode = body.data.eventCode.trim().toUpperCase();
+    const ip = c.get("ip");
+    if (!rateLimitExempt(deps, ip)) {
+      const perIp = deps.env.REGISTER_PER_IP;
+      if (perIp > 0 && !registerLimiter.allow(`ip:${ip}`, perIp)) {
+        throw new ApiError(429, MESSAGES.rateLimited);
+      }
+      const perCode = deps.env.REGISTER_PER_CODE;
+      if (perCode > 0 && !registerLimiter.allow(`code:${eventCode}`, perCode)) {
+        throw new ApiError(429, MESSAGES.rateLimited);
+      }
+    }
+    // Checked before the code is claimed, so a second tap on "Registrati" does not burn a
+    // use of a single-use badge code. The cost is a weak existence oracle on this route,
+    // which is rate limited per IP; an existing account is never adopted by a new password.
+    if (await deps.db.findUserByEmailRole(email, "participant")) {
+      throw new ApiError(409, MESSAGES.accountExists);
+    }
+    // scrypt, ~100ms of CPU: done before the transaction opens, so a registration holds a
+    // pooled connection for the four writes and nothing else.
+    const passwordHash = hashPassword(body.data.password);
+    // v6 (integration): one transaction, because a badge code is single use. Interrupted
+    // between the claim and the membership write, the old code left the use spent, the
+    // account created and the person with no membership — registered and locked out of the
+    // event, with no way to repair it themselves. Either all four rows land or none do.
+    const registered = await deps.db.transaction(async (tx) => {
+      // One statement in Postgres: expiry and `max_uses` are checked and `uses` incremented
+      // atomically. Absent, expired and exhausted are one answer on purpose.
+      const claimed = await tx.claimEventCode(eventCode);
+      // Returned, not thrown: an invalid code is an answer, not a failed transaction.
+      if (!claimed) return null;
+      const user = await tx.insertUser(email, "participant");
+      await tx.setUserPassword(user.id, passwordHash);
+      // v6 E (agent E): the non-biometric membership record. The claimed code already resolved
+      // the event; before this row existed that fact was thrown away into the audit line below,
+      // and "is this person a participant of this event?" had no answer for anyone who never
+      // consented to face recognition and is not on an allowlist. `claimEventCode` keeps its
+      // semantics; this only persists what it already knew.
+      await tx.addEventMember({ userId: user.id, eventId: claimed.eventId, source: "event_code" });
+      // Lazy verification (v6): no e-mail is sent here and `email_verified_at` stays null.
+      // The address is proven later, by a password-reset link or a Google token.
+      await tx.insertAudit({
+        actorId: user.id,
+        action: "auth.registered",
+        target: `event:${claimed.eventId}`,
+        meta: { eventCode: claimed.code, uses: claimed.uses },
+      });
+      return user;
+    });
+    if (!registered) throw new ApiError(403, MESSAGES.eventCodeInvalid);
+    // Outside the transaction on purpose: a session is a cookie, and failing to mint one
+    // leaves a complete account the person can simply log into.
+    await startSession(c, deps, registered);
+    return c.json({ user: publicUser(registered) }, 201);
+  });
+
+  registerAdminV6Routes(app, deps); // v6 D (agent D): admin console, routes.admin-v6.ts
+  registerCrowdRoutes(app, deps);
+  registerPrivacyRoutes(app, deps); // v6 G (agent G): apps/api/src/routes.privacy.ts
+  // v6 hardening H1 (agent H): password reset, own token table. This REPLACES the two
+  // inline /v1/auth/password-reset routes that agent B had written against `magic_links`
+  // — a login link must not be able to set a password (016_password_reset_tokens.sql).
+  registerResetRoutes(app, deps);
 }
 
 // ---- admin and participant tooling v5 (agent D) helpers --------------------------------------
 
-function rateLimitExempt(deps: AppDeps, ip: string): boolean {
+export function rateLimitExempt(deps: AppDeps, ip: string): boolean {
   const entries = parseIpList(deps.env.RATE_LIMIT_EXEMPT_IPS);
   return entries.length > 0 && ipMatches(ip, entries);
 }
@@ -1472,7 +1622,7 @@ function parseUuid(value: string): string {
   return value;
 }
 
-function publicUser(user: UserRow) {
+export function publicUser(user: UserRow) {
   return { id: user.id, email: user.email, role: user.role };
 }
 
@@ -1492,7 +1642,44 @@ async function loadEvent(deps: AppDeps, slug: string) {
   return event;
 }
 
-/** Enforces event allowlists consistently for every participant-facing route. */
+/**
+ * Enforces the event allowlist consistently for every participant-facing v5-era route
+ * (ported from `main`, where the same check had drifted into one route and was missing from
+ * nine others; on v6 it was inline in `POST /v1/events/:slug/selfie` and nowhere else).
+ *
+ * What it asserts, and deliberately no more: on an `access = 'list'` event the caller's email
+ * is on the imported participant list. On an `access = 'open'` event it is a no-op, because
+ * "open" IS the policy decision that any signed-in participant may take part.
+ *
+ * Why this is NOT `assertEventMember` (routes.crowd.ts), which additionally requires an
+ * `event_members` row. Membership is written by self-registration with an event code, by
+ * accepting an invite, by the 013 backfill and by a crowd upload. It is NOT written by the
+ * magic-link flow, which is the event-day fallback (RUN.md) and is not event-scoped at all:
+ * a magic link signs you in, it does not join you to anything. Gating the personal match
+ * gallery, its consent row or its download on membership would therefore lock out every
+ * magic-link participant — and the personal galleries must behave exactly as before (section
+ * G, hard rule). The stricter gate stays where v6 put it: on the crowd surfaces, which are
+ * about reading and reporting OTHER people's photos.
+ *
+ * Not applied to `routes.privacy.ts` on purpose either: a participant must be able to read
+ * their consent state and withdraw it even after an admin has taken them off the list.
+ *
+ * Where main's ten call sites live on v6 — all ten are covered, six here and four by the
+ * album-model gates, which are the same check or stricter:
+ *
+ * | main route                                      | v6 |
+ * |-------------------------------------------------|----|
+ * | `POST /v1/events/:slug/consent`                 | this helper |
+ * | `POST /v1/events/:slug/selfie`                  | this helper (was the one inline check) |
+ * | `GET  /v1/events/:slug/gallery`                 | this helper |
+ * | `POST /v1/events/:slug/gallery/download`        | this helper |
+ * | `POST /v1/events/:slug/gallery/zip`             | this helper |
+ * | `POST /v1/events/:slug/gallery/feedback`        | this helper |
+ * | `GET  /v1/events/:slug/public-gallery`          | `GET /v1/albums/:albumId/photos` → `assertEventMember` |
+ * | `POST .../public-gallery/download`              | `POST /v1/albums/:albumId/photos/download` → `assertEventMember` |
+ * | `POST .../public-gallery/:photoId/report`       | `POST /v1/photos/:id/report` → `assertEventMember` |
+ * | `POST /v1/uploads/init` (the public branch)     | `POST /v1/albums/:albumId/uploads/init` → `assertOnEventList` |
+ */
 async function requireParticipantAccess(
   deps: AppDeps,
   user: UserRow,
@@ -1506,11 +1693,9 @@ async function requireParticipantAccess(
   }
 }
 
-async function ownUpload(deps: AppDeps, id: string, userId: string) {
+async function ownUpload(deps: AppDeps, id: string, photographerId: string) {
   const session = await deps.db.findUploadSession(parseUuid(id));
-  // Ownership follows uploader_id (the actor who started the upload); photographer_id is kept
-  // only for backwards compatibility and equals uploader_id for rows created before 010.
-  if (!session || (session.uploaderId ?? session.photographerId) !== userId) {
+  if (!session || session.photographerId !== photographerId) {
     throw new ApiError(404, MESSAGES.notFound);
   }
   return session;
@@ -1553,7 +1738,12 @@ function variantKey(photo: PhotoRow, variant: DownloadVariant): string {
   return photo.originalKey;
 }
 
-/** Presigned download URLs for the given photos, in request order. */
+/**
+ * Presigned download URLs for the given photos, IN REQUEST ORDER (ported from main's
+ * d477c3a). The order is part of the contract: the client pairs the urls with the ids it
+ * sent, so `Promise.all` over a `map` is required here and `Promise.race`-shaped anything is
+ * not. Presigning does no I/O, so this is a latency fix only — 60 serial HMACs per page.
+ */
 function presignVariantUrls(
   deps: AppDeps,
   photos: PhotoRow[],
@@ -1712,7 +1902,7 @@ async function issueMagicLink(
   });
 }
 
-async function startSession(c: Context<AppEnv>, deps: AppDeps, user: UserRow): Promise<void> {
+export async function startSession(c: Context<AppEnv>, deps: AppDeps, user: UserRow): Promise<void> {
   const token = newToken();
   await deps.db.insertSession({
     userId: user.id,
@@ -1787,4 +1977,89 @@ async function readSelfieFrame(
     throw new ApiError(400, MESSAGES.validation);
   }
   return { bytes, contentType };
+// ---- auth v6 (agent B) helpers ---------------------------------------------------------------
+
+/**
+ * Finds the user behind a Google sign-in, in the order of B2: the identity row first, then
+ * a link by **verified** e-mail to an existing participant, then a new participant.
+ *
+ * `role` is always `participant` for a user created here; an existing identity row decides
+ * the role for everyone else, which is how a photographer who signed up with Google keeps
+ * their role. `users.unique (email, role)` is untouched: the same address can exist as a
+ * participant and as a photographer, and only the participant row is looked up by e-mail.
+ */
+async function resolveGoogleUser(
+  deps: AppDeps,
+  subject: string,
+  verifiedEmailAddress: string | null,
+): Promise<UserRow> {
+  const linked = await deps.db.findUserByIdentity("google", subject);
+  if (linked) {
+    if (verifiedEmailAddress) await deps.db.markEmailVerified(linked.id);
+    return linked;
+  }
+  if (!verifiedEmailAddress) {
+    // No identity row and no address we are allowed to trust: nothing can be created.
+    throw new OauthError("no verified email");
+  }
+  const existing = await deps.db.findUserByEmailRole(verifiedEmailAddress, "participant");
+  const user = existing ?? (await deps.db.insertUser(verifiedEmailAddress, "participant"));
+  try {
+    await deps.db.insertIdentity({
+      userId: user.id,
+      provider: "google",
+      subject,
+      email: verifiedEmailAddress,
+    });
+  } catch (error) {
+    // Two callbacks raced: whoever lost re-reads the row the winner wrote.
+    if (!(error instanceof DuplicateKeyError)) throw error;
+    const raced = await deps.db.findUserByIdentity("google", subject);
+    if (!raced) throw error;
+    await deps.db.markEmailVerified(raced.id);
+    return raced;
+  }
+  await deps.db.markEmailVerified(user.id);
+  return user;
+}
+
+/** Where the web sends each role after a sign-in. Mirrors `apps/web/lib/paths.ts`. */
+function homePathForRole(role: Role): string {
+  if (role === "photographer") return "/upload";
+  if (role === "admin") return "/admin";
+  return "/selfie";
+}
+
+type RateLimiter = {
+  /** True when the call is within `max` hits for `key` in the window, and counts it. */
+  allow(key: string, max: number): boolean;
+};
+
+/**
+ * In-process sliding window, one instance per app (so tests do not leak into each other).
+ * Deliberately not in the database: these limits guard against a bot loop, while the
+ * hard guarantee for an event code is `event_codes.max_uses`, enforced in one statement.
+ */
+function createRateLimiter(windowSeconds: number): RateLimiter {
+  const hits = new Map<string, number[]>();
+  const windowMs = windowSeconds * 1000;
+  return {
+    allow(key, max) {
+      const now = Date.now();
+      const cutoff = now - windowMs;
+      const kept = (hits.get(key) ?? []).filter((at) => at > cutoff);
+      if (kept.length >= max) {
+        hits.set(key, kept);
+        return false;
+      }
+      kept.push(now);
+      hits.set(key, kept);
+      if (hits.size > RATE_LIMIT_KEYS_MAX) {
+        for (const [other, times] of hits) {
+          if (times.length === 0 || times[times.length - 1]! <= cutoff) hits.delete(other);
+        }
+      }
+      return true;
+    },
+  };
 }

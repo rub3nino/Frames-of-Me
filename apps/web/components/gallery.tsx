@@ -444,6 +444,11 @@ function GalleryBody({ slug }: { slug: string }) {
         <input ref={variantRef} type="hidden" name="variant" />
       </form>
 
+      {/* v6 G (agent G): the way to "I miei dati" and the withdrawal, from where people land. */}
+      <p className="note">
+        <a href="/i-miei-dati">I miei dati</a> — cosa conserviamo di te e come ritirare il consenso.
+      </p>
+
       {open !== null && items ? (
         <Viewer
           items={items}

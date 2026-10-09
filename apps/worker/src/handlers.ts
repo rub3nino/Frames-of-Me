@@ -20,6 +20,7 @@ import type { Mailer } from "@rephoto/api/mailer";
 import type { ObjectStore } from "@rephoto/api/object-store";
 import type { JobQueue } from "@rephoto/api/queue";
 import type { FaceServiceBreaker } from "./breaker.js";
+import type { FaceServiceGate } from "./face-compat.js";
 
 /** Rekognition Bytes API rejects images over 5 MB. S3Object allows 15 MB; we send bytes. */
 const REKOGNITION_MAX_IMAGE_BYTES = 5 * 1024 * 1024;
@@ -54,6 +55,9 @@ const ORIGINAL_MISSING = "original missing";
 const MAIL_SUBJECTS: Record<EmailPayload["kind"], string> = {
   ready: "Le tue foto sono pronte",
   new: "Ci sono nuove foto per te",
+  // v6 E (agent E): a tag is a person<->photo link someone else asserted, so the tagged
+  // person is told about it. Enqueued by the tag route, sent by `sendGalleryMail` unchanged.
+  tagged: "Ti hanno taggato in una foto",
 };
 
 /** A failure that retrying cannot fix: the job fails terminally on the first attempt. */
@@ -95,8 +99,11 @@ export type JobLogEntry = {
   error?: string;
   /** `match` only: the selfie failed the engine's liveness check and got an empty gallery. */
   liveness?: "rejected";
-  /** `match` only: the selfie was rejected by a quality gate (`reason` says which). */
-  match?: "rejected";
+  /**
+   * `match` only: `rejected` = the selfie failed a quality gate (`reason` says which);
+   * `withdrawn` = the consent was withdrawn after the job was enqueued (v6 G).
+   */
+  match?: "rejected" | "withdrawn";
   reason?: SelfieRejectReason;
   /** `match` only: photos in the rebuilt gallery. */
   hits?: number;
@@ -122,6 +129,13 @@ export type WorkerDeps = {
   breaker?: FaceServiceBreaker;
   /** How often an in-flight job refreshes `claimed_at`. Default 2 minutes. */
   heartbeatMs?: number;
+  /**
+   * v6 hardening H2 (agent H): standing refusal to claim the jobs that post to
+   * `/v1/embed?max_faces=` (`index` and `match`) when the face service's build cannot serve
+   * what the worker will ask of it (see src/face-compat.ts). Unlike the breaker this does
+   * not close by itself — only a new deploy clears it.
+   */
+  faceGate?: FaceServiceGate;
 };
 
 export type WorkerJob =
@@ -252,13 +266,18 @@ async function verifyOriginal(photoId: string, deps: WorkerDeps): Promise<void> 
 async function indexPhoto(photoId: string, deps: WorkerDeps): Promise<void> {
   const photo = await deps.db.findPhoto(photoId);
   if (!photo) return;
-  // Public uploads must never enter the face engine or create biometric records.
-  if (photo.collection === "public") {
-    await deps.db.setPhotoIndexed(photo.id);
-    return;
-  }
   if (photo.originalKey.startsWith("selfies/")) {
     throw new Error("Refusing to index a selfie");
+  }
+  const album = await deps.db.findAlbum(photo.albumId);
+  if (!album) throw new Error("Album missing");
+  if (!album.recognition) {
+    // v6 (decision 2, second half): an album without recognition is never embedded. No
+    // bytes reach the face service, no vector is computed and none is stored; the photo
+    // still completes its pipeline so it is served, counted and retained like any other.
+    // There is nothing to attach either: no face row exists for it.
+    await deps.db.setPhotoIndexed(photo.id);
+    return;
   }
   const existing = await deps.db.listExternalIds(photo.id);
   if (photo.status === "indexed" && existing.length > 0) return;
@@ -273,6 +292,7 @@ async function indexPhoto(photoId: string, deps: WorkerDeps): Promise<void> {
     photoId: photo.id,
     imageBytes,
     contentType: "image/jpeg",
+    albumId: photo.albumId,
   });
   await deps.db.replaceFaces(
     photo.id,
@@ -335,9 +355,9 @@ type AttachCandidate = { faceId: string; score: number };
 async function attachPhoto(photoId: string, deps: WorkerDeps): Promise<void> {
   const photo = await deps.db.findPhoto(photoId);
   if (!photo) return;
-  // Defensive: `index` never enqueues `attach` for a public photo (it short-circuits first), so
-  // this only matters if a reprocess path ever schedules one — public photos have no faces.
-  if (photo.collection === "public") return;
+  // v6: an album without recognition holds no vector, so there is nothing to attach from.
+  const album = await deps.db.findAlbum(photo.albumId);
+  if (!album?.recognition) return;
   const faces = await deps.db.findFaceRowsByPhoto(photo.id);
   if (faces.length === 0) return;
   // Nothing to attach to yet (uploads usually start before the first selfie): skip the searches.
@@ -357,6 +377,7 @@ async function attachPhoto(photoId: string, deps: WorkerDeps): Promise<void> {
     const hits = await deps.faces.searchFaces({
       eventId: photo.eventId,
       externalFaceId: face.externalId,
+      albumIds: [photo.albumId],
     });
     for (const hit of hits) {
       if (hit.photoId === photo.id) continue;
@@ -459,6 +480,19 @@ async function matchSelfie(
   job: { type: "match" } & MatchPayload,
   deps: WorkerDeps,
 ): Promise<JobNote | undefined> {
+  // v6 G: the api requires an active consent before it accepts a selfie, but the job may sit
+  // in the queue (or be re-enqueued by an admin rematch) while the participant withdraws.
+  // Without this check the `match` would rebuild the gallery and store a new selfie vector
+  // right after the withdrawal deleted both.
+  //
+  // The test is "withdrawn and not renewed", not "has an active consent": consent presence is
+  // the api's gate, and a job for a user with no consent row at all is a pre-v6 fixture or an
+  // operator action, not a withdrawal. A re-consent (a new row) lets the match run again.
+  const consent = await deps.db.findConsentState(job.userId, job.eventId);
+  if (consent.grantedAt === null && consent.withdrawnAt !== null) {
+    await deps.objects.delete(job.selfieKey);
+    return { match: "withdrawn" };
+  }
   const selfie = await deps.objects.get(job.selfieKey);
   if (!selfie) throw new Error("Selfie object missing");
   const previousSelfieKey = await keptSelfieKey(job, deps);
@@ -514,6 +548,9 @@ async function matchSelfie(
   }
   const embedSelfie = deps.faces.embedSelfie?.bind(deps.faces);
   const searchByVector = deps.faces.searchByVector?.bind(deps.faces);
+  // v6: only albums with recognition hold vectors, and the search is restricted to them so
+  // the album filter is served by an index instead of applied after it (A3).
+  const albumIds = await deps.db.listRecognitionAlbumIds(job.eventId);
   const started = Date.now();
   let hits: SearchHit[];
   let queryEmbedding: number[] | null = null;
@@ -535,12 +572,14 @@ async function matchSelfie(
       eventId: job.eventId,
       embedding: queryEmbedding,
       minCosine: deps.env.MATCH_LOG ? MATCH_LOG_MIN_COSINE : deps.env.INSIGHTFACE_MIN_COSINE,
+      albumIds,
     });
   } else {
     hits = await deps.faces.search({
       eventId: job.eventId,
       imageBytes,
       contentType: "image/jpeg",
+      albumIds,
     });
   }
   const engineMs = Date.now() - started;
@@ -833,14 +872,48 @@ function cosineScore(
   return 0.8 + 0.2 * Math.min(1, Math.max(0, t));
 }
 
+/**
+ * Retention of one event (v6 G: album-aware).
+ *
+ * `events.retention_days` is the event's clock; since migration 009 an album may set its own
+ * `albums.retention_days`, shorter (a crowd album kept for a week) or longer. Every photo
+ * belongs to exactly one album (`photos.album_id`, not null since 009), so the pass runs per
+ * album with `album.retentionDays ?? event.retentionDays`. A crowd album needs nothing
+ * special: it holds no vector at all, and `deletePhotosBefore` finds none to delete.
+ *
+ * The event-wide pass stays as the fallback for a database where the albums of an event are
+ * somehow missing: without it a failed 009 backfill would silently mean no retention at all.
+ */
 async function retainEvent(
   job: { type: "retention" } & RetentionPayload,
   deps: WorkerDeps,
 ): Promise<void> {
   const event = await deps.db.findEventById(job.eventId);
   if (!event) return;
-  const cutoff = new Date(Date.now() - event.retentionDays * 24 * 60 * 60 * 1000);
-  await deletePhotosBefore(event, cutoff, job.actorId, { retention: true }, deps);
+  const now = Date.now();
+  const cutoffOf = (days: number): Date => new Date(now - days * 24 * 60 * 60 * 1000);
+  const cutoff = cutoffOf(event.retentionDays);
+  const albums = await deps.db.listAlbums(event.id);
+  if (albums.length === 0) {
+    await deletePhotosBefore(
+      event,
+      cutoff,
+      job.actorId,
+      { retention: true, scheduled: job.actorId === null },
+      deps,
+    );
+  }
+  for (const album of albums) {
+    const days = album.retentionDays ?? event.retentionDays;
+    await deletePhotosBefore(
+      event,
+      cutoffOf(days),
+      job.actorId,
+      { retention: true, albumId: album.id, retentionDays: days, scheduled: job.actorId === null },
+      deps,
+      album.id,
+    );
+  }
   // Galleries matched before the cutoff lose their biometric part (selfie vector, anchors)
   // and the kept selfie object, if any: the match itself is as old as the photos it found.
   for (const key of await deps.db.expireGalleryMatches(event.id, cutoff)) {
@@ -877,21 +950,24 @@ async function resetEvent(job: { type: "reset" } & ResetPayload, deps: WorkerDep
   });
 }
 
-/** Deletes the photos of the event created before `cutoff`, in batches; returns how many. */
+/**
+ * Deletes the photos created before `cutoff`, in batches; returns how many. With `albumId`
+ * only that album's photos are considered (v6 G: `albums.retention_days`), otherwise the
+ * whole event's.
+ */
 async function deletePhotosBefore(
   event: EventRow,
   cutoff: Date,
-  actorId: string,
+  actorId: string | null,
   auditMeta: Record<string, unknown>,
   deps: WorkerDeps,
+  albumId?: string,
 ): Promise<number> {
   let deleted = 0;
   for (;;) {
-    const photos = await deps.db.listPhotosCreatedBefore(
-      event.id,
-      cutoff,
-      RETENTION_PHOTO_BATCH,
-    );
+    const photos = albumId
+      ? await deps.db.listAlbumPhotosCreatedBefore(albumId, cutoff, RETENTION_PHOTO_BATCH)
+      : await deps.db.listPhotosCreatedBefore(event.id, cutoff, RETENTION_PHOTO_BATCH);
     if (photos.length === 0) break;
     const photoIds = photos.map((photo) => photo.id);
     const externalIds = await deps.db.listExternalIdsForPhotos(photoIds);

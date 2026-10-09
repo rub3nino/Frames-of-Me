@@ -50,4 +50,51 @@ export type {
   PhotoAdminFilters,
   PhotoAdminRow,
   PhotoDetail,
+  // v6 (agent A): albums
+  AlbumInsert,
+  AlbumKind,
+  AlbumModeration,
+  AlbumPatch,
+  AlbumRow,
+  AlbumVisibility,
+  // v6 (agent B)
+  EventCodeRow,
+  IdentityProvider,
+  // v6 (agent D): admin console
+  AlbumPhotographerRow,
+  EventCodePatch,
+  EventStatus,
+  EventStatusAlbum,
+  // v6 (agent C): crowd upload and moderation
+  AlbumPhoto,
+  ModerationItem,
+  ModerationState,
+  ReportReason,
+  ReportRow,
+  // v6 (agent G): privacy and retention scheduling
+  ConsentState,
+  ConsentWithdrawal,
+  RetentionAlarmMail,
+  RetentionOutcome,
+  RetentionStatusRow,
+  // v6 (agent E): event membership + tagging
+  AuditEntryRow,
+  EventMemberRow,
+  EventMemberSource,
+  PhotoTagRow,
+  PhotoTagState,
+  PhotoTagWithNameRow,
+  TagProfileRow,
+  TaggableUserRow,
+  TaggedPhotoRow,
 } from "./types.js";
+export { AlbumRecognitionLockedError, AlbumRecognitionNotAllowedError } from "./types.js";
+// v6 (agent E): tagging
+export {
+  DISPLAY_NAME_MAX_LENGTH,
+  nextTagConsent,
+  normalizeDisplayName,
+  TAG_SEARCH_MIN_PREFIX,
+} from "./types.js";
+// v6 (integration): gallery_feedback.source (migration 018)
+export type { FeedbackSource } from "./types.js";

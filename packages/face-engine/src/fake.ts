@@ -31,16 +31,30 @@ export interface FaceIndexRecord {
   r: number;
   g: number;
   b: number;
+  /**
+   * v6 hardening H4 (agent H): the album this face belongs to (`face_index.album_id`,
+   * migration 016). Null only for a row written before that migration — a stored face whose
+   * album is unknown is excluded from every album-filtered search rather than matching all
+   * of them, because the rule it would break ("a crowd album is never biometric") is a
+   * product decision with legal weight, not a default.
+   */
+  albumId: string | null;
 }
 
 export interface FaceIndexStore {
   upsert(record: FaceIndexRecord): Promise<void>;
   findById(externalFaceId: string): Promise<FaceIndexRecord | null>;
+  /**
+   * `albumIds` is the fake's equivalent of the `album_id = any($n)` filter every real search
+   * path carries (v6 A3): undefined = the whole event (v5 behaviour), an empty array = no
+   * album to search, which matches nothing.
+   */
   findByColor(
     eventId: string,
     r: number,
     g: number,
     b: number,
+    albumIds?: readonly string[],
   ): Promise<FaceIndexRecord[]>;
   deleteIds(eventId: string, externalFaceIds: string[]): Promise<void>;
   deleteEvent(eventId: string): Promise<void>;
@@ -93,12 +107,15 @@ export class MemoryFaceIndexStore implements FaceIndexStore {
     r: number,
     g: number,
     b: number,
+    albumIds?: readonly string[],
   ): Promise<FaceIndexRecord[]> {
+    if (albumIds !== undefined && albumIds.length === 0) return [];
+    const allowed = albumIds === undefined ? null : new Set(albumIds);
     const hits: FaceIndexRecord[] = [];
     for (const row of this.rows.values()) {
-      if (row.eventId === eventId && row.r === r && row.g === g && row.b === b) {
-        hits.push({ ...row });
-      }
+      if (row.eventId !== eventId || row.r !== r || row.g !== g || row.b !== b) continue;
+      if (allowed && (row.albumId === null || !allowed.has(row.albumId))) continue;
+      hits.push({ ...row });
     }
     return hits;
   }
@@ -135,14 +152,15 @@ export class SqlFaceIndexStore implements FaceIndexStore {
       () => this.memory.upsert(record),
       async (db) => {
         await db.query(
-          `INSERT INTO face_index (external_face_id, event_id, photo_id, r, g, b)
-           VALUES ($1, $2, $3, $4, $5, $6)
+          `INSERT INTO face_index (external_face_id, event_id, photo_id, r, g, b, album_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
            ON CONFLICT (external_face_id) DO UPDATE SET
              event_id = EXCLUDED.event_id,
              photo_id = EXCLUDED.photo_id,
              r = EXCLUDED.r,
              g = EXCLUDED.g,
-             b = EXCLUDED.b`,
+             b = EXCLUDED.b,
+             album_id = EXCLUDED.album_id`,
           [
             record.externalFaceId,
             record.eventId,
@@ -150,6 +168,7 @@ export class SqlFaceIndexStore implements FaceIndexStore {
             record.r,
             record.g,
             record.b,
+            record.albumId,
           ],
         );
       },
@@ -161,7 +180,7 @@ export class SqlFaceIndexStore implements FaceIndexStore {
       () => this.memory.findById(externalFaceId),
       async (db) => {
         const result = await db.query<FaceIndexSql>(
-          `SELECT external_face_id, photo_id, event_id, r, g, b
+          `SELECT external_face_id, photo_id, event_id, r, g, b, album_id
            FROM face_index
            WHERE external_face_id = $1`,
           [externalFaceId],
@@ -177,15 +196,20 @@ export class SqlFaceIndexStore implements FaceIndexStore {
     r: number,
     g: number,
     b: number,
+    albumIds?: readonly string[],
   ): Promise<FaceIndexRecord[]> {
+    if (albumIds !== undefined && albumIds.length === 0) return [];
     return this.run(
-      () => this.memory.findByColor(eventId, r, g, b),
+      () => this.memory.findByColor(eventId, r, g, b, albumIds),
       async (db) => {
+        // `album_id = any($5)` with a null $5 is never true, so the filter is spelled out:
+        // undefined = the whole event, a list = those albums only (never a null album).
         const result = await db.query<FaceIndexSql>(
-          `SELECT external_face_id, photo_id, event_id, r, g, b
+          `SELECT external_face_id, photo_id, event_id, r, g, b, album_id
            FROM face_index
-           WHERE event_id = $1 AND r = $2 AND g = $3 AND b = $4`,
-          [eventId, r, g, b],
+           WHERE event_id = $1 AND r = $2 AND g = $3 AND b = $4
+             AND ($5::uuid[] IS NULL OR album_id = ANY($5::uuid[]))`,
+          [eventId, r, g, b, albumIds === undefined ? null : [...albumIds]],
         );
         return result.rows.map(mapFaceIndexRow);
       },
@@ -261,6 +285,9 @@ export class FakeFaceEngine implements FaceEngine {
       r: color.r,
       g: color.g,
       b: color.b,
+      // v6 H4: the worker always passes it (handlers.ts `indexPhoto`); a caller that does
+      // not gets a face that no album-filtered search will ever return.
+      albumId: input.albumId ?? null,
     });
     return [{ externalFaceId, confidence: 99, bbox: { ...FULL_FRAME } }];
   }
@@ -273,6 +300,7 @@ export class FakeFaceEngine implements FaceEngine {
       color.r,
       color.g,
       color.b,
+      input.albumIds,
     );
     return rows.map((row) => ({
       externalFaceId: row.externalFaceId,
@@ -285,7 +313,23 @@ export class FakeFaceEngine implements FaceEngine {
   async searchFaces(input: SearchFacesInput): Promise<SearchHit[]> {
     const anchor = await this.store.findById(input.externalFaceId);
     if (!anchor || anchor.eventId !== input.eventId) return [];
-    const rows = await this.store.findByColor(input.eventId, anchor.r, anchor.g, anchor.b);
+    // Absent `albumIds` means the anchor's own album, which is what `attach` needs: a face
+    // is only ever compared inside its album (see SearchFacesInput).
+    //
+    // An anchor with no album falls back to the whole event, i.e. exactly v5. That is the
+    // only meaning "inside my album" can have without an album, and it is unreachable in
+    // production: `face_vectors.album_id` is NOT NULL after migration 011 and the worker
+    // always passes `photo.albumId` (handlers.ts). Note where the strictness lives — when a
+    // caller *does* pass `albumIds`, a null-album row is never returned, and that is the
+    // path the crowd-album rule travels (the caller passes the recognising albums).
+    const albumIds = input.albumIds ?? (anchor.albumId === null ? undefined : [anchor.albumId]);
+    const rows = await this.store.findByColor(
+      input.eventId,
+      anchor.r,
+      anchor.g,
+      anchor.b,
+      albumIds,
+    );
     return rows
       .filter((row) => row.externalFaceId !== input.externalFaceId)
       .map((row) => ({
@@ -321,9 +365,16 @@ export class FakeFaceEngine implements FaceEngine {
   async searchByVector(input: SearchByVectorInput): Promise<VectorHit[]> {
     const bucket = fakeBucket(input.embedding);
     if (bucket === null || (input.minCosine ?? 0) > 1) return [];
+    if (input.albumIds !== undefined && input.albumIds.length === 0) return [];
     const hits: VectorHit[] = [];
     for (const key of bucketKeys(bucket)) {
-      const rows = await this.store.findByColor(input.eventId, key.r, key.g, key.b);
+      const rows = await this.store.findByColor(
+        input.eventId,
+        key.r,
+        key.g,
+        key.b,
+        input.albumIds,
+      );
       for (const row of rows) {
         hits.push({
           externalFaceId: row.externalFaceId,
@@ -339,6 +390,11 @@ export class FakeFaceEngine implements FaceEngine {
   async faceEmbedding(input: SearchFacesInput): Promise<number[] | null> {
     const row = await this.store.findById(input.externalFaceId);
     if (!row || row.eventId !== input.eventId) return null;
+    // A face outside the requested albums is not readable through this path either: the
+    // embedding is the face, and handing it out would be the album boundary leaking.
+    if (input.albumIds !== undefined) {
+      if (row.albumId === null || !input.albumIds.includes(row.albumId)) return null;
+    }
     return fakeEmbedding(row.r, row.g, row.b);
   }
 
@@ -394,6 +450,7 @@ type FaceIndexSql = {
   r: number;
   g: number;
   b: number;
+  album_id: string | null;
 };
 
 function mapFaceIndexRow(row: FaceIndexSql): FaceIndexRecord {
@@ -404,6 +461,7 @@ function mapFaceIndexRow(row: FaceIndexSql): FaceIndexRecord {
     r: Number(row.r),
     g: Number(row.g),
     b: Number(row.b),
+    albumId: row.album_id === null || row.album_id === undefined ? null : String(row.album_id),
   };
 }
 

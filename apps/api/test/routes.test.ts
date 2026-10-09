@@ -3,12 +3,12 @@ import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { test } from "node:test";
 import {
+  albumUploadDedupeResponseSchema,
   API_BODY_MAX_BYTES,
   CONSENT_TEXT_VERSION,
   envSchema,
   galleryResponseSchema,
   objectKeys,
-  PUBLIC_UPLOAD_RATE_LIMIT,
   SESSION_COOKIE_NAME,
   UPLOAD_MAX_BYTES,
   uploadCompleteResponseSchema,
@@ -25,6 +25,7 @@ import {
 import { createApp } from "../src/app.ts";
 import { hashPassword, sha256Hex } from "../src/crypto.ts";
 import type { AppDeps } from "../src/deps.ts";
+import { incrementSharedLimit } from "../src/distributed-rate-limit.ts";
 import { MESSAGES } from "../src/errors.ts";
 import type { Mailer, MailMessage } from "../src/mailer.ts";
 import type {
@@ -365,7 +366,9 @@ test("staff password login issues a session; wrong password and participant role
   );
   assert.equal(unset.status, 401);
 
-  // Participants are magic-link only — the schema rejects the role.
+  // v6 (agent B) revoked the v5 rule "participants are magic-link only": they now
+  // self-register with a password (`/v1/auth/register`), so the role is accepted and an
+  // unknown account answers exactly like a wrong password, 401 with MESSAGES.loginInvalid.
   const participant = await h.app.request(
     json("POST", "/v1/auth/login", {
       email: "p@example.com",
@@ -373,7 +376,7 @@ test("staff password login issues a session; wrong password and participant role
       role: "participant",
     }),
   );
-  assert.equal(participant.status, 400);
+  assert.equal(participant.status, 401);
 });
 
 test("admin creates staff credentials that then work for login", async () => {
@@ -467,6 +470,46 @@ test("upload init needs membership, rejects oversize files, and binds the byte c
   assert.ok(body.url.includes("length=1234"));
   const session = await h.db.findUploadSession(body.id);
   assert.equal(session?.bytes, 1234);
+});
+
+test("upload complete rejects bytes stored under a content type the PUT was not signed for", async () => {
+  // Ported from main's fda8d64. The presigned PUT is issued FOR `image/jpeg`; S3 keeps
+  // whatever `Content-Type` the client sent. Without the check the signed URL is a way to
+  // park arbitrary bytes in the bucket.
+  const h = await harness();
+  const photographer = await h.db.findUserByEmailRole(
+    "photographer@rephoto.local",
+    "photographer",
+  );
+  assert.ok(photographer);
+  const cookie = await sessionCookie(h.db, photographer.id);
+  const bytes = Buffer.from("MZ\u0090\u0000not an image at all");
+  const init = await h.app.request(
+    json(
+      "POST",
+      "/v1/uploads/init",
+      {
+        eventId: h.event.id,
+        filename: "a.jpg",
+        contentType: "image/jpeg",
+        sha256: sha256(bytes),
+        bytes: bytes.byteLength,
+      },
+      { cookie },
+    ),
+  );
+  assert.equal(init.status, 201);
+  const session = (await init.json()) as { id: string; objectKey: string };
+  // Same key, same byte count, a different stored content type.
+  await h.objects.put(session.objectKey, bytes, "application/x-msdownload");
+  const complete = await h.app.request(
+    json("POST", `/v1/uploads/${session.id}/complete`, { parts: [] }, { cookie }),
+  );
+  assert.equal(complete.status, 400);
+  assert.deepEqual(await complete.json(), { error: MESSAGES.validation });
+  assert.equal((await h.db.findUploadSession(session.id))?.status, "aborted");
+  // And the bytes are gone, not just unreferenced.
+  assert.equal(h.objects.objects.has(session.objectKey), false);
 });
 
 test("upload complete rejects a byte mismatch and aborts the session", async () => {
@@ -884,6 +927,129 @@ test("concurrent consent POSTs are idempotent (v4 report S4)", async () => {
   assert.equal(await h.db.hasActiveConsent(participant.id, h.event.id), true);
 });
 
+test("every participant route of a list-based event refuses an email that is not on the list", async () => {
+  // Ported from main's `requireParticipantAccess` (commit 8d80c59). On v6 the allowlist was
+  // checked in `POST /v1/events/:slug/selfie` and nowhere else, so consent, the gallery, its
+  // download, its zip and its feedback were all reachable by a signed-in participant who did
+  // not belong to the event. This locks all six down at once.
+  const h = await harness();
+  const admin = await h.db.findUserByEmailRole("admin@rephoto.local", "admin");
+  assert.ok(admin);
+  const adminCookie = await sessionCookie(h.db, admin.id);
+  assert.equal(
+    (
+      await h.app.request(
+        json("PATCH", `/v1/admin/events/${h.event.id}`, { access: "list" }, { cookie: adminCookie }),
+      )
+    ).status,
+    200,
+  );
+
+  const outsider = await h.db.createUser({ email: "outsider@example.com", role: "participant" });
+  const cookie = await sessionCookie(h.db, outsider.id);
+  // Seeded BEFORE the gate is exercised, so the 403s are the allowlist talking and not an
+  // empty gallery: without the gate these would be 200/201.
+  const seeded = await seedGallery(h, outsider.id, 1);
+  const photoId = seeded[0]!.photoId;
+
+  const attempts: Array<[string, Request]> = [
+    [
+      "consent",
+      json(
+        "POST",
+        `/v1/events/${h.event.slug}/consent`,
+        { textVersion: CONSENT_TEXT_VERSION, accepted: true },
+        { cookie },
+      ),
+    ],
+    [
+      "gallery",
+      new Request(`http://api.local/v1/events/${h.event.slug}/gallery`, { headers: { cookie } }),
+    ],
+    [
+      "gallery/download",
+      json("POST", `/v1/events/${h.event.slug}/gallery/download`, { photoIds: [photoId] }, { cookie }),
+    ],
+    [
+      "gallery/zip",
+      json("POST", `/v1/events/${h.event.slug}/gallery/zip`, { photoIds: [photoId] }, { cookie }),
+    ],
+    [
+      "gallery/feedback",
+      json(
+        "POST",
+        `/v1/events/${h.event.slug}/gallery/feedback`,
+        { photoId, verdict: "me" },
+        { cookie },
+      ),
+    ],
+  ];
+  for (const [name, request] of attempts) {
+    const response = await h.app.request(request);
+    assert.equal(response.status, 403, `${name} should be 403 before the import`);
+    assert.deepEqual(await response.json(), { error: MESSAGES.notOnList }, name);
+  }
+
+  // The same six calls succeed once the email is imported — the gate is the allowlist and
+  // nothing else (notably NOT an `event_members` row, which a magic-link participant never has).
+  assert.equal(
+    (
+      await h.app.request(
+        json(
+          "POST",
+          "/v1/admin/participants/import",
+          { eventId: h.event.id, emails: ["Outsider@Example.com"] },
+          { cookie: adminCookie },
+        ),
+      )
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      await h.app.request(
+        json(
+          "POST",
+          `/v1/events/${h.event.slug}/consent`,
+          { textVersion: CONSENT_TEXT_VERSION, accepted: true },
+          { cookie },
+        ),
+      )
+    ).status,
+    201,
+  );
+  const gallery = await h.app.request(
+    new Request(`http://api.local/v1/events/${h.event.slug}/gallery`, { headers: { cookie } }),
+  );
+  assert.equal(gallery.status, 200);
+  assert.equal(
+    (
+      await h.app.request(
+        json(
+          "POST",
+          `/v1/events/${h.event.slug}/gallery/download`,
+          { photoIds: [photoId] },
+          { cookie },
+        ),
+      )
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      await h.app.request(
+        json(
+          "POST",
+          `/v1/events/${h.event.slug}/gallery/feedback`,
+          { photoId, verdict: "me" },
+          { cookie },
+        ),
+      )
+    ).status,
+    201,
+  );
+});
+
 test("health reports 503 when the database does not answer", async () => {
   const h = await harness();
   const ok = await h.app.request("http://api.local/health");
@@ -1007,7 +1173,10 @@ test("web stage creates a pending photo with its web derivative and queues deriv
   assert.deepEqual(job?.payload, { photoId });
   assert.equal(await h.db.claimJob(), null);
 
-  // The same original again (any stage) is a conflict while the photo exists.
+  // v6 (agent C): the same original again is "already uploaded" — an answer, not an error.
+  // Dedup moved from `unique (event_id, sha256)` to `unique (album_id, sha256)` (migration
+  // 009) precisely because people re-upload the same forwarded image, and this route targets
+  // the event's official album.
   const again = await h.app.request(
     json(
       "POST",
@@ -1022,7 +1191,14 @@ test("web stage creates a pending photo with its web derivative and queues deriv
       { cookie },
     ),
   );
-  assert.equal(again.status, 409);
+  assert.equal(again.status, 200);
+  const official = await h.db.findDefaultAlbum(h.event.id);
+  assert.ok(official);
+  assert.deepEqual(albumUploadDedupeResponseSchema.parse(await again.json()), {
+    status: "already-uploaded",
+    photoId,
+    albumId: official.id,
+  });
 
   const summary = await h.app.request(
     new Request(`http://api.local/v1/uploads/summary?eventId=${h.event.id}`, {
@@ -1046,46 +1222,10 @@ test("web stage creates a pending photo with its web derivative and queues deriv
   assert.equal(metrics.photosByStatus.uploaded, 1);
 });
 
-test("public web-first upload completes with a null photographer and pending moderation (v4 report B1)", async () => {
-  // The public web-first path differs from the official one: photographer_id is null and
-  // the complete inserts a moderation row. v4 saw this 500 on the live box (migration drift);
-  // this locks the path's shape in so a regression is caught here.
-  const h = await harness();
-  const participant = await h.db.createUser({ email: "public@example.com", role: "participant" });
-  const cookie = await sessionCookie(h.db, participant.id);
-  const original = Buffer.from(`orig-${"o".repeat(400)}`);
-  const web = Buffer.from(`web-${"w".repeat(80)}`);
-  const init = await h.app.request(
-    json(
-      "POST",
-      "/v1/uploads/init",
-      {
-        eventId: h.event.id,
-        collection: "public",
-        filename: "p.jpg",
-        contentType: "image/jpeg",
-        sha256: sha256(original),
-        bytes: web.byteLength,
-        stage: "web",
-        originalContentType: "image/jpeg",
-        originalBytes: original.byteLength,
-      },
-      { cookie },
-    ),
-  );
-  assert.equal(init.status, 201);
-  const session = (await init.json()) as { id: string; objectKey: string };
-  await h.objects.put(session.objectKey, web, "image/jpeg");
-  const complete = await h.app.request(
-    json("POST", `/v1/uploads/${session.id}/complete`, { parts: [] }, { cookie }),
-  );
-  assert.equal(complete.status, 201);
-  const { photoId } = (await complete.json()) as { photoId: string };
-  const photo = await h.db.findPhoto(photoId);
-  assert.equal(photo?.collection, "public");
-  assert.equal(photo?.photographerId, null, "a public upload has no official photographer");
-  assert.equal(photo?.originalStatus, "pending");
-});
+// Il vecchio test B1 "public web-first upload" (collection `public` su /v1/uploads/init) è
+// stato ritirato col modello album della v6: quella rotta è solo-fotografi per design e il
+// percorso partecipante (403 incluso, moderazione, photographer nullo) è coperto da
+// apps/api/test/v6-crowd.test.ts.
 
 test("web stage complete with a byte mismatch aborts the session and drops the object", async () => {
   const h = await harness();
@@ -1432,6 +1572,50 @@ test("selfie records the liveness field in the audit log and defaults it to file
       [participant.id, "selfie.submitted", target, { liveness: "challenge" }],
       [participant.id, "selfie.submitted", target, { liveness: "file" }],
     ],
+  );
+});
+
+test("a selfie whose match job cannot be enqueued leaves no object behind", async () => {
+  // The selfie object is written before the job that owns it, and a selfie key is only ever
+  // referenced by that job and, after a match, by `galleries.selfie_key`. The worker's
+  // housekeeping sweeps `upload_sessions` and nothing else, so an object stranded here could
+  // never be reached again — and it is a photograph of someone's face.
+  const h = await harness();
+  const participant = await h.db.createUser({ email: "orphan@example.com", role: "participant" });
+  const cookie = await sessionCookie(h.db, participant.id);
+  await h.db.insertConsent({
+    userId: participant.id,
+    eventId: h.event.id,
+    textVersion: CONSENT_TEXT_VERSION,
+    ip: "127.0.0.1",
+    userAgent: "test",
+  });
+  const queue = createQueue(h.db);
+  queue.enqueue = async () => {
+    throw new Error("queue unavailable");
+  };
+  const app = createApp({
+    env,
+    db: h.db,
+    objects: h.objects,
+    mailer: h.mailer,
+    queue,
+    faces: new FakeFaceEngine(new MemoryFaceIndexStore()),
+  });
+  const form = new FormData();
+  form.set("selfie", new File([Buffer.from("not really a jpeg")], "me.jpg", { type: "image/jpeg" }));
+  const response = await app.request(
+    new Request(`http://api.local/v1/events/${h.event.slug}/selfie`, {
+      method: "POST",
+      headers: { cookie },
+      body: form,
+    }),
+  );
+  assert.equal(response.status, 500);
+  const selfiePrefix = `selfies/${h.event.id}/`;
+  assert.deepEqual(
+    [...h.objects.objects.keys()].filter((key) => key.startsWith(selfiePrefix)),
+    [],
   );
 });
 
@@ -1948,6 +2132,17 @@ test("rematch needs KEEP_SELFIES and a stored selfie; delete gallery removes it"
   const { id: keptParticipant } = await participantCookie(kept, "p@example.com");
   await seedGallery(kept, keptParticipant, 1);
   const keptPath = `/v1/admin/galleries/${keptParticipant}/${kept.event.id}`;
+  // v6 (integration): rematch re-runs face recognition, so it needs an ACTIVE consent. The
+  // consent is what the selfie route demanded before this gallery could exist at all
+  // (routes.ts: `hasActiveConsent` -> 403 consentRequired), so seeding it here is what the
+  // real world guarantees; `seedGallery` inserts the gallery rows directly and skips it.
+  await kept.db.insertConsent({
+    userId: keptParticipant,
+    eventId: kept.event.id,
+    textVersion: "v1",
+    ip: "127.0.0.1",
+    userAgent: "test",
+  });
   const noKey = await kept.app.request(new Request(`http://api.local${keptPath}/rematch`, { method: "POST", headers: { cookie: keptCookie } }));
   assert.equal(noKey.status, 409);
   kept.db.setGallerySelfieKey(keptParticipant, kept.event.id, objectKeys.selfie(kept.event.id, keptParticipant, "kept"));
@@ -2086,10 +2281,16 @@ test("csv exports stream galleries, match hits and feedback", async () => {
   const feedback = await h.app.request(get(`/v1/admin/export/feedback.csv?eventId=${h.event.id}`, cookie));
   assert.equal(feedback.status, 200);
   const feedbackLines = (await feedback.text()).trim().split("\n");
-  assert.equal(feedbackLines[0], "email,user_id,photo_id,sha256,filename,verdict,score_at_time,created_at");
+  // `source` is appended last (migration 018), never inserted: a column in the middle would
+  // break every script already reading this file by position.
+  assert.equal(
+    feedbackLines[0],
+    "email,user_id,photo_id,sha256,filename,verdict,score_at_time,created_at,source",
+  );
   assert.equal(feedbackLines.length, 2);
   assert.ok(feedbackLines[1]?.includes(`,${first.photoId},`));
   assert.ok(feedbackLines[1]?.includes(`,not_me,${first.score},`));
+  assert.ok(feedbackLines[1]?.endsWith(",recognition"));
 
   assert.equal((await h.app.request(get("/v1/admin/export/galleries.csv", cookie))).status, 400);
   assert.equal((await h.app.request(get(`/v1/admin/export/galleries.csv?eventId=${randomUUID()}`, cookie))).status, 404);
@@ -2220,132 +2421,149 @@ test("BOOTSTRAP_ADMINS upserts admins at boot", async () => {
   assert.equal(parsed.MAGIC_LINK_PER_IP, 0);
 });
 
-// ---- public collection ----------------------------------------------------------------------
-
-/** Inserts an indexed public photo (with thumb+web derivatives) owned by the seeded photographer. */
-async function seedPublicPhoto(h: Harness): Promise<string> {
-  const photographer = await h.db.findUserByEmailRole("photographer@rephoto.local", "photographer");
-  assert.ok(photographer);
-  const photoId = randomUUID();
-  const bytes = Buffer.from(`pub-${photoId}`);
-  await h.db.insertPhoto({
-    id: photoId,
-    eventId: h.event.id,
-    photographerId: photographer.id,
-    collection: "public",
-    sha256: sha256(bytes),
-    originalKey: objectKeys.original(h.event.id, photoId),
-    contentType: "image/jpeg",
-    bytes: bytes.byteLength,
-  });
-  await h.db.upsertDerivative({ photoId, kind: "thumb", s3Key: objectKeys.thumb(photoId) });
-  await h.db.upsertDerivative({ photoId, kind: "web", s3Key: objectKeys.web(photoId) });
-  await h.db.setPhotoIndexed(photoId);
-  return photoId;
-}
-
-test("public-gallery lists only indexed public photos and paginates by cursor without gaps", async () => {
-  const h = await harness();
-  const { cookie } = await participantCookie(h, "viewer@example.com");
-  const publicIds = new Set([await seedPublicPhoto(h), await seedPublicPhoto(h), await seedPublicPhoto(h)]);
-
-  // An official indexed photo and a public-but-not-indexed photo must never show up.
-  const official = await seedGallery(h, (await participantCookie(h, "owner@example.com")).id, 1);
-  const pendingPublic = randomUUID();
-  const pb = Buffer.from(`pending-${pendingPublic}`);
-  await h.db.insertPhoto({
-    id: pendingPublic,
-    eventId: h.event.id,
-    photographerId: (await h.db.findUserByEmailRole("photographer@rephoto.local", "photographer"))!.id,
-    collection: "public",
-    sha256: sha256(pb),
-    originalKey: objectKeys.original(h.event.id, pendingPublic),
-    contentType: "image/jpeg",
-    bytes: pb.byteLength,
-  });
-
-  type Page = { items: Array<{ photoId: string }>; nextCursor: string | null; limit: number };
-  const full = (await (await h.app.request(get(`/v1/events/${h.event.slug}/public-gallery?limit=50`, cookie))).json()) as Page;
-  assert.equal(full.items.length, 3, "only the three indexed public photos");
-  assert.deepEqual(new Set(full.items.map((i) => i.photoId)), publicIds);
-  assert.equal(full.items.some((i) => i.photoId === official[0]?.photoId), false, "official photo excluded");
-  assert.equal(full.items.some((i) => i.photoId === pendingPublic), false, "non-indexed public photo excluded");
-  assert.equal(full.nextCursor, null);
-
-  // Cursor paging must reproduce the canonical order in chunks, with no overlap or dropped rows.
-  const page1 = (await (await h.app.request(get(`/v1/events/${h.event.slug}/public-gallery?limit=2`, cookie))).json()) as Page;
-  assert.equal(page1.items.length, 2);
-  assert.ok(page1.nextCursor);
-  const page2 = (await (await h.app.request(
-    get(`/v1/events/${h.event.slug}/public-gallery?limit=2&cursor=${encodeURIComponent(page1.nextCursor!)}`, cookie),
-  )).json()) as Page;
-  assert.equal(page2.items.length, 1);
-  assert.equal(page2.nextCursor, null);
-  assert.deepEqual(
-    [...page1.items, ...page2.items].map((i) => i.photoId),
-    full.items.map((i) => i.photoId),
-  );
-});
-
-test("public-gallery/download presigns public photos but 404s on any non-public id (no IDOR)", async () => {
-  const h = await harness();
-  const { cookie } = await participantCookie(h, "viewer@example.com");
-  const a = await seedPublicPhoto(h);
-  const b = await seedPublicPhoto(h);
-  // An official photo id must not be reachable through the public download route.
-  const official = (await seedGallery(h, (await participantCookie(h, "owner@example.com")).id, 1))[0]!.photoId;
-
-  const leak = await h.app.request(
-    json("POST", `/v1/events/${h.event.slug}/public-gallery/download`, { photoIds: [a, official], variant: "web" }, { cookie }),
-  );
-  assert.equal(leak.status, 404, "mixing in an official id is refused wholesale");
-
-  const ok = await h.app.request(
-    json("POST", `/v1/events/${h.event.slug}/public-gallery/download`, { photoIds: [a, b], variant: "web" }, { cookie }),
-  );
-  assert.equal(ok.status, 200);
-  const body = (await ok.json()) as { urls: Array<{ photoId: string; url: string }> };
-  assert.deepEqual(new Set(body.urls.map((u) => u.photoId)), new Set([a, b]));
-});
-
-test("uploads/init: a participant may start a public upload but not an official one", async () => {
-  const h = await harness();
-  const { cookie } = await participantCookie(h, "contributor@example.com");
+test("the shared rate limiter is optional, needs both halves, and falls back when it breaks", async () => {
   const base = {
-    eventId: h.event.id,
-    filename: "a.jpg",
-    contentType: "image/jpeg" as const,
-    sha256: "a".repeat(64),
-    bytes: 1234,
+    DATABASE_URL: "postgres://x",
+    S3_BUCKET: "b",
+    S3_REGION: "eu-central-1",
+    SESSION_SECRET: "test-session-secret-value",
+    FACE_ENGINE: "fake",
+    SMTP_HOST: "localhost",
+    SMTP_PORT: "1025",
+    SMTP_FROM: "noreply@rephoto.local",
+    WEB_ORIGIN: "http://localhost:3000",
+    API_ORIGIN: "http://localhost:8787",
   };
+  // Neither half: the limiter is simply absent and the database count is the whole story.
+  const none = envSchema.parse(base);
+  assert.equal(none.UPSTASH_REDIS_REST_URL, undefined);
+  assert.equal(none.UPSTASH_REDIS_REST_TOKEN, undefined);
+  assert.equal(none.ALBUM_UPLOAD_MAX_PER_HOUR, 20);
+  // Half of it configured is a limiter that would 401 forever, or a token pointing nowhere:
+  // both refuse to boot rather than silently degrade.
+  assert.throws(() => envSchema.parse({ ...base, UPSTASH_REDIS_REST_URL: "https://x.upstash.io" }));
+  assert.throws(() => envSchema.parse({ ...base, UPSTASH_REDIS_REST_TOKEN: "tok" }));
+  const both = envSchema.parse({
+    ...base,
+    UPSTASH_REDIS_REST_URL: "https://x.upstash.io/",
+    UPSTASH_REDIS_REST_TOKEN: "tok",
+    ALBUM_UPLOAD_MAX_PER_HOUR: "3",
+  });
+  assert.equal(both.UPSTASH_REDIS_REST_URL, "https://x.upstash.io/");
+  assert.equal(both.ALBUM_UPLOAD_MAX_PER_HOUR, 3);
 
-  const official = await h.app.request(json("POST", "/v1/uploads/init", base, { cookie }));
-  assert.equal(official.status, 403, "official (default) uploads stay photographer-only");
+  // And the limiter itself: null when unconfigured, the INCR result when it answers, a throw
+  // when it does not — which is what lets the call site fall back instead of failing closed.
+  assert.equal(await incrementSharedLimit({ key: "k", windowSeconds: 60 }), null);
+  assert.equal(
+    await incrementSharedLimit({ token: "t", key: "k", windowSeconds: 60 }),
+    null,
+    "a token without a url is still unconfigured",
+  );
+  assert.equal(
+    await incrementSharedLimit({ url: "https://x.y", key: "k", windowSeconds: 60 }),
+    null,
+    "a url without a token is still unconfigured",
+  );
 
-  const pub = await h.app.request(json("POST", "/v1/uploads/init", { ...base, collection: "public" }, { cookie }));
-  assert.equal(pub.status, 201);
-  const session = await h.db.findUploadSession(((await pub.json()) as { id: string }).id);
-  assert.equal(session?.collection, "public");
+  const realFetch = globalThis.fetch;
+  const calls: Array<{ url: string; body: unknown; auth: string | undefined }> = [];
+  try {
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      calls.push({
+        url: String(input),
+        body: JSON.parse(String(init?.body)),
+        auth: headers.get("authorization") ?? undefined,
+      });
+      return new Response(JSON.stringify([{ result: 7 }, { result: 1 }]), { status: 200 });
+    }) as typeof globalThis.fetch;
+    assert.equal(
+      await incrementSharedLimit({
+        url: "https://x.upstash.io/",
+        token: "tok",
+        key: "rephoto:album-upload:a:u",
+        windowSeconds: 3600,
+      }),
+      7,
+    );
+    assert.deepEqual(calls, [
+      {
+        // The trailing slash of the configured URL must not double up.
+        url: "https://x.upstash.io/pipeline",
+        body: [
+          ["INCR", "rephoto:album-upload:a:u"],
+          ["EXPIRE", "rephoto:album-upload:a:u", 3600],
+        ],
+        auth: "Bearer tok",
+      },
+    ]);
+
+    globalThis.fetch = (async () => new Response("nope", { status: 500 })) as typeof globalThis.fetch;
+    await assert.rejects(
+      incrementSharedLimit({ url: "https://x.y", token: "t", key: "k", windowSeconds: 60 }),
+      /shared rate limiter returned 500/,
+    );
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify([{ result: "not a number" }]), {
+        status: 200,
+      })) as typeof globalThis.fetch;
+    await assert.rejects(
+      incrementSharedLimit({ url: "https://x.y", token: "t", key: "k", windowSeconds: 60 }),
+      /invalid count/,
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });
 
-test("public uploads are rate limited per participant per event", async () => {
-  const h = await harness();
-  const { cookie } = await participantCookie(h, "burst@example.com");
-  const body = (n: number) => ({
+// ---- integration fix 2: rematch is defence in depth on consent -----------------------------
+
+test("rematch refuses without an active consent, even with KEEP_SELFIES and a stored selfie", async () => {
+  const h = await harness({ env: { ...env, KEEP_SELFIES: true } });
+  const cookie = await adminCookie(h);
+  const { id: participantId } = await participantCookie(h, "p@example.com");
+  await seedGallery(h, participantId, 1);
+  h.db.setGallerySelfieKey(
+    participantId,
+    h.event.id,
+    objectKeys.selfie(h.event.id, participantId, "kept"),
+  );
+  const path = `/v1/admin/galleries/${participantId}/${h.event.id}/rematch`;
+
+  // Everything the route used to check is satisfied: KEEP_SELFIES, the user, the event and a
+  // stored selfie key. What is missing is the consent, and that is now enough to refuse.
+  const noConsent = await h.app.request(
+    new Request(`http://api.local${path}`, { method: "POST", headers: { cookie } }),
+  );
+  assert.equal(noConsent.status, 409);
+  assert.deepEqual(await noConsent.json(), { error: MESSAGES.consentRequired });
+  assert.equal(await h.db.countMatchJobsSince(participantId, new Date(0)), 0);
+
+  // With the consent in place it goes through, unchanged.
+  await h.db.insertConsent({
+    userId: participantId,
     eventId: h.event.id,
-    filename: `f${n}.jpg`,
-    contentType: "image/jpeg" as const,
-    sha256: "b".repeat(64),
-    bytes: 1000 + n,
-    collection: "public" as const,
+    textVersion: "v1",
+    ip: "127.0.0.1",
+    userAgent: "test",
   });
-  for (let n = 0; n < PUBLIC_UPLOAD_RATE_LIMIT.max; n += 1) {
-    const res = await h.app.request(json("POST", "/v1/uploads/init", body(n), { cookie }));
-    assert.equal(res.status, 201, `init ${n} within the window`);
-  }
-  const blocked = await h.app.request(json("POST", "/v1/uploads/init", body(999), { cookie }));
-  assert.equal(blocked.status, 429);
-  assert.deepEqual(await blocked.json(), { error: MESSAGES.rateLimited });
+  const ok = await h.app.request(
+    new Request(`http://api.local${path}`, { method: "POST", headers: { cookie } }),
+  );
+  assert.equal(ok.status, 202);
+  assert.equal(await h.db.countMatchJobsSince(participantId, new Date(0)), 1);
+
+  // And a withdrawal closes it again. `withdrawConsent` deletes the gallery and the selfie
+  // key too, so after it BOTH guards refuse — which is the point of defence in depth: the
+  // route no longer depends on those two facts staying in step.
+  await h.db.withdrawConsent({ userId: participantId, eventId: h.event.id });
+  assert.equal(await h.db.hasActiveConsent(participantId, h.event.id), false);
+  const withdrawn = await h.app.request(
+    new Request(`http://api.local${path}`, { method: "POST", headers: { cookie } }),
+  );
+  assert.equal(withdrawn.status, 409);
+  assert.deepEqual(await withdrawn.json(), { error: MESSAGES.consentRequired });
 });
 
 test("challenge issue returns a server-dictated action sequence (v4 report F05)", async () => {
