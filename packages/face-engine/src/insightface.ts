@@ -80,6 +80,7 @@ export interface ServiceFace {
   score: number;
   quality: number;
   embedding: number[];
+  yaw?: number | null;
 }
 
 export interface EmbedResponse {
@@ -248,6 +249,7 @@ export class InsightFaceEngine implements FaceEngine {
           score: clamp(face.score, 0, 1),
           quality: clamp(face.quality, 0, 1),
           embedding: [...face.embedding],
+          yaw: typeof face.yaw === "number" ? clamp(face.yaw, -1, 1) : null,
         })),
     };
   }

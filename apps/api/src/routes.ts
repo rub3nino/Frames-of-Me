@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomInt, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { ZipArchive } from "archiver";
 import type { Context, Hono } from "hono";
@@ -34,11 +34,14 @@ import {
   participantsImportBodySchema,
   requestLinkBodySchema,
   retentionBodySchema,
+  SELFIE_CHALLENGE_FIELD,
   SELFIE_FIELD_NAME,
+  SELFIE_FRAME_PREFIX,
   SELFIE_LIVENESS_FIELD,
   SELFIE_RATE_LIMIT,
   selfieLivenessSchema,
   SESSION_COOKIE_NAME,
+  type LivenessAction,
   uploadCompleteBodySchema,
   uploadInitBodySchema,
   uploadListQuerySchema,
@@ -227,6 +230,30 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     );
   });
 
+  // v4 report F05: issue a one-time, server-side challenge. Only reachable when
+  // LIVENESS_CHALLENGE is on; the client performs the returned actions live and uploads a
+  // frame per action to /selfie. The random left/right order is what a replayed recording
+  // cannot satisfy.
+  app.post("/v1/events/:slug/selfie/challenge", async (c) => {
+    const user = requireUser(c);
+    requireRole(user, ["participant"]);
+    if (!deps.env.LIVENESS_CHALLENGE) throw new ApiError(404, MESSAGES.notFound);
+    const event = await loadEvent(deps, c.req.param("slug"));
+    await requireParticipantAccess(deps, user, event);
+    if (!(await deps.db.hasActiveConsent(user.id, event.id))) {
+      throw new ApiError(403, MESSAGES.consentRequired);
+    }
+    const actions = buildChallengeActions(deps.env.LIVENESS_CHALLENGE_TURNS);
+    const expiresAt = new Date(Date.now() + deps.env.LIVENESS_CHALLENGE_TTL_SECONDS * 1000);
+    const { id } = await deps.db.insertLivenessChallenge({
+      userId: user.id,
+      eventId: event.id,
+      actions,
+      expiresAt,
+    });
+    return c.json({ challengeId: id, actions, expiresAt: expiresAt.toISOString() }, 201);
+  });
+
   app.post("/v1/events/:slug/selfie", async (c) => {
     const user = requireUser(c);
     requireRole(user, ["participant"]);
@@ -243,6 +270,50 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       );
       if (recent >= selfieMax) throw new ApiError(429, MESSAGES.rateLimited);
     }
+
+    if (deps.env.LIVENESS_CHALLENGE) {
+      // Server-verified challenge-response (F05): a submission without a valid, unconsumed,
+      // unexpired, owned challenge is refused outright — this is what closes the bypass.
+      const body = await c.req.parseBody();
+      const challengeId = body[SELFIE_CHALLENGE_FIELD];
+      if (typeof challengeId !== "string" || !UUID_RE.test(challengeId)) {
+        throw new ApiError(400, MESSAGES.challengeRequired);
+      }
+      const challenge = await deps.db.findLivenessChallenge(challengeId);
+      if (
+        !challenge ||
+        challenge.userId !== user.id ||
+        challenge.eventId !== event.id ||
+        challenge.consumedAt !== null ||
+        challenge.expiresAt.getTime() <= Date.now()
+      ) {
+        throw new ApiError(400, MESSAGES.challengeInvalid);
+      }
+      const frameKeys: string[] = [];
+      for (let i = 0; i < challenge.actions.length; i += 1) {
+        const frame = await readSelfieFrame(body, `${SELFIE_FRAME_PREFIX}${i}`);
+        const key = objectKeys.selfie(event.id, user.id, randomUUID());
+        await deps.objects.put(key, frame.bytes, frame.contentType);
+        frameKeys.push(key);
+      }
+      // The frontal frame (last action) is the one the match uses; keep it as selfieKey so the
+      // worker's KEEP_SELFIES bookkeeping is unchanged. The worker verifies and consumes.
+      await deps.queue.enqueue("match", {
+        userId: user.id,
+        eventId: event.id,
+        selfieKey: frameKeys[frameKeys.length - 1]!,
+        challengeId,
+        frameKeys,
+      });
+      await deps.db.insertAudit({
+        actorId: user.id,
+        action: "selfie.submitted",
+        target: `event:${event.id}`,
+        meta: { liveness: "challenge" },
+      });
+      return c.json({ status: "queued" }, 202);
+    }
+
     const image = await readSelfie(c);
     const key = objectKeys.selfie(event.id, user.id, randomUUID());
     await deps.objects.put(key, image.bytes, image.contentType);
@@ -1877,6 +1948,35 @@ async function readSelfie(c: Context<AppEnv>): Promise<{
   return { bytes, contentType, liveness };
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** A random left/right turn sequence (crypto RNG) with a final frontal step (v4 report F05). */
+function buildChallengeActions(turns: number): LivenessAction[] {
+  const out: LivenessAction[] = [];
+  for (let i = 0; i < turns; i += 1) out.push(randomInt(2) === 0 ? "left" : "right");
+  out.push("front");
+  return out;
+}
+
+/** One challenge frame from the multipart body; same content-type/size rules as the selfie. */
+async function readSelfieFrame(
+  body: Record<string, unknown>,
+  field: string,
+): Promise<{ bytes: Uint8Array; contentType: "image/jpeg" | "image/png" }> {
+  const image = body[field];
+  if (!(image instanceof File)) throw new ApiError(400, MESSAGES.validation);
+  const contentType = image.type.split(";")[0]?.trim();
+  if (contentType !== "image/jpeg" && contentType !== "image/png") {
+    throw new ApiError(400, MESSAGES.validation);
+  }
+  if (image.size <= 0 || image.size > SELFIE_MAX_BYTES) {
+    throw new ApiError(400, MESSAGES.validation);
+  }
+  const bytes = new Uint8Array(await image.arrayBuffer());
+  if (bytes.byteLength <= 0 || bytes.byteLength > SELFIE_MAX_BYTES) {
+    throw new ApiError(400, MESSAGES.validation);
+  }
+  return { bytes, contentType };
 // ---- auth v6 (agent B) helpers ---------------------------------------------------------------
 
 /**

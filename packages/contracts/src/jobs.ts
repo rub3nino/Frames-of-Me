@@ -42,7 +42,12 @@ export const matchPayloadSchema = z
   .object({
     userId: z.string().uuid(),
     eventId: z.string().uuid(),
+    /** The frame used for the actual match (the frontal frame in a challenge). */
     selfieKey: z.string().min(1),
+    /** Set together for the challenge-response path (v4 report F05): the server-issued
+     * challenge and the ordered frame object keys (one per challenge action, frontal last). */
+    challengeId: z.string().uuid().optional(),
+    frameKeys: z.array(z.string().min(1)).min(1).max(8).optional(),
   })
   .strict();
 /** `tagged` is v6 E (agent E): someone tagged the recipient in a photo. */

@@ -1,0 +1,374 @@
+/* ============================================================
+   Pecorella — motore di animazione CSS (Frames of Me)
+   Solo transform/opacity. Le keyframes girano off-main-thread.
+   Stati (classe sul wrapper .pecorella):
+     (default)              → idle: respiro, blink, inclinazione testa
+     .pecorella--cammina    → cammina sul posto (coppie diagonali)
+     .pecorella--attraversa → + traslazione sinistra→destra (loop)
+     .pecorella--scuoti     → shake di gioia ~900ms, NON loop
+     .pecorella--testa      → pose curiose della testa
+     .pecorella--triste     → testa bassa, orecchio giù, blink lento
+   Token: usa --ease-bounce/--ease-out/--dur-mascot-* dai token di
+   brand (tokens.css) se presenti; altrimenti i fallback locali.
+   ============================================================ */
+
+.pecorella {
+  /* copie locali dei token (il :root di tokens.css, se importato, vince) */
+  --p-ease-out:    var(--ease-out,    cubic-bezier(0.23, 1, 0.32, 1));
+  --p-ease-in-out: var(--ease-in-out, cubic-bezier(0.77, 0, 0.175, 1));
+  --p-bounce:      var(--ease-bounce, cubic-bezier(0.34, 1.4, 0.64, 1));
+  --p-step:        var(--dur-mascot-step, 700ms);
+  --p-breath:      var(--dur-mascot-breath, 3200ms);
+  /* durata della traversata del contenitore (multiplo del passo) */
+  --p-attraversa:  calc(var(--p-step) * 14);
+
+  display: inline-block;
+  line-height: 0;
+}
+
+.pecorella svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+/* ---- Origini di rotazione (coordinate del viewBox 0 0 420 340) ---- */
+.pecorella #corpo,
+.pecorella #testa,
+.pecorella #ciuffo,
+.pecorella #orecchio-sx,
+.pecorella #orecchio-dx,
+.pecorella #occhio-sx,
+.pecorella #occhio-dx,
+.pecorella .zampa {
+  transform-box: view-box;
+}
+
+.pecorella #corpo       { transform-origin: 234px 262px; } /* basso centro: il respiro non stacca le zampe */
+.pecorella #testa       { transform-origin: 175px 165px; } /* "collo" */
+.pecorella #ciuffo      { transform-origin: 168px 122px; }
+.pecorella #orecchio-sx { transform-origin: 100px  92px; } /* attacco sotto il ciuffo */
+.pecorella #orecchio-dx { transform-origin: 231px 121px; } /* pende: perno in alto */
+.pecorella #occhio-sx   { transform-origin: 131px 140px; }
+.pecorella #occhio-dx   { transform-origin: 173px 148px; }
+.pecorella #zampa-as    { transform-origin: 178.5px 238px; } /* perno "anca", poco sotto il bordo */
+.pecorella #zampa-ad    { transform-origin: 210px   236px; }
+.pecorella #zampa-ps    { transform-origin: 266.5px 238px; }
+.pecorella #zampa-pd    { transform-origin: 298px   234px; }
+
+/* ============================================================
+   IDLE (default)
+   ============================================================ */
+
+@keyframes pecorella-respiro {
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(1.016, 1.024); }
+}
+
+@keyframes pecorella-testa-idle {
+  0%, 52%, 80%, 100% { transform: rotate(0deg); }
+  60%, 72%           { transform: rotate(-2.6deg); } /* piccola inclinazione ogni ~7s */
+}
+
+@keyframes pecorella-blink {
+  0%, 91%, 96.5%, 100% { transform: scaleY(1); }
+  93%, 94.2%           { transform: scaleY(0.06); }
+}
+
+@keyframes pecorella-orecchio-dx-idle {
+  0%, 52%, 84%, 100% { transform: rotate(0deg); }
+  62%, 74%           { transform: rotate(5deg); } /* follow-through dopo il tilt */
+}
+
+@keyframes pecorella-orecchio-sx-idle {
+  0%, 54%, 82%, 100% { transform: rotate(0deg); }
+  62%, 73%           { transform: rotate(-3deg); }
+}
+
+.pecorella #corpo {
+  animation: pecorella-respiro var(--p-breath) var(--p-ease-in-out) infinite;
+}
+.pecorella #testa {
+  animation: pecorella-testa-idle 7s var(--p-ease-in-out) infinite;
+}
+.pecorella #occhio-sx { animation: pecorella-blink 4s linear infinite; }
+.pecorella #occhio-dx { animation: pecorella-blink 4s linear infinite 40ms; }
+.pecorella #orecchio-dx {
+  animation: pecorella-orecchio-dx-idle 7s var(--p-ease-in-out) infinite 140ms;
+}
+.pecorella #orecchio-sx {
+  animation: pecorella-orecchio-sx-idle 7s var(--p-ease-in-out) infinite 90ms;
+}
+
+/* ============================================================
+   CAMMINA — passo sul posto, ciclo = --dur-mascot-step
+   Coppie diagonali: (as + pd) in fase, (ad + ps) in controfase.
+   ============================================================ */
+
+@keyframes pecorella-passo {
+  0%   { transform: rotate(12.5deg); }
+  50%  { transform: rotate(-12.5deg); }
+  100% { transform: rotate(12.5deg); }
+}
+
+@keyframes pecorella-bob {
+  0%, 50%, 100% { transform: translateY(0) scale(1); }
+  25%, 75%      { transform: translateY(-3.5px) scale(1.004, 0.996); }
+}
+
+@keyframes pecorella-testa-cammina {
+  0%, 100% { transform: translateY(0) rotate(1deg); }
+  25%      { transform: translateY(-3px) rotate(-0.6deg); }
+  50%      { transform: translateY(0) rotate(0.8deg); }
+  75%      { transform: translateY(-3px) rotate(-0.6deg); }
+}
+
+@keyframes pecorella-ciuffo-cammina {
+  0%, 50%, 100% { transform: rotate(1.4deg); }
+  25%, 75%      { transform: rotate(-1.4deg); }
+}
+
+@keyframes pecorella-orecchio-dx-cammina {
+  0%, 50%, 100% { transform: rotate(6deg); }
+  25%, 75%      { transform: rotate(-5deg); }
+}
+
+@keyframes pecorella-orecchio-sx-cammina {
+  0%, 50%, 100% { transform: rotate(2.5deg); }
+  25%, 75%      { transform: rotate(-2.5deg); }
+}
+
+.pecorella--cammina .zampa {
+  animation: pecorella-passo var(--p-step) var(--p-ease-in-out) infinite;
+}
+.pecorella--cammina #zampa-ad,
+.pecorella--cammina #zampa-ps {
+  animation-delay: calc(var(--p-step) / -2); /* controfase diagonale */
+}
+.pecorella--cammina #corpo {
+  animation: pecorella-bob var(--p-step) ease-in-out infinite;
+}
+/* la testa segue con ~100ms di ritardo (fase negativa = lag nel loop) */
+.pecorella--cammina #testa {
+  animation: pecorella-testa-cammina var(--p-step) ease-in-out infinite;
+  animation-delay: calc(100ms - var(--p-step));
+}
+.pecorella--cammina #ciuffo {
+  animation: pecorella-ciuffo-cammina var(--p-step) ease-in-out infinite;
+  animation-delay: calc(150ms - var(--p-step));
+}
+.pecorella--cammina #orecchio-dx {
+  animation: pecorella-orecchio-dx-cammina var(--p-step) ease-in-out infinite;
+  animation-delay: calc(180ms - var(--p-step));
+}
+.pecorella--cammina #orecchio-sx {
+  animation: pecorella-orecchio-sx-cammina var(--p-step) ease-in-out infinite;
+  animation-delay: calc(160ms - var(--p-step));
+}
+
+/* ============================================================
+   ATTRAVERSA — si aggiunge a .pecorella--cammina.
+   Trasla il wrapper da fuori-sinistra a fuori-destra del
+   contenitore (100cqw = larghezza del container ancestor con
+   container-type: inline-size; senza container vale il viewport).
+   La pecorella guarda a sinistra: si specchia per camminare
+   nel verso del moto.
+   ============================================================ */
+
+@keyframes pecorella-attraversa {
+  from { transform: translateX(calc(-100% - 24px)); }
+  to   { transform: translateX(calc(100cqw + 24px)); }
+}
+
+.pecorella--attraversa {
+  animation: pecorella-attraversa var(--p-attraversa) linear infinite;
+}
+.pecorella--attraversa svg {
+  transform: scaleX(-1); /* muso nel verso di marcia */
+}
+
+/* ============================================================
+   SCUOTI — gioia, ~900ms, una volta sola (il componente/demo
+   torna a idle su animationend di "pecorella-scuoti-corpo").
+   Rotazioni ±4° con decay + lana che vibra + orecchie al vento.
+   ============================================================ */
+
+.pecorella--scuoti #corpo { transform-origin: 234px 212px; }
+
+@keyframes pecorella-scuoti-corpo {
+  0%   { transform: rotate(0deg)    scale(1); }
+  10%  { transform: rotate(-4deg)   scale(1.025, 0.985); }
+  24%  { transform: rotate(4deg)    scale(0.985, 1.025); }
+  38%  { transform: rotate(-3.1deg) scale(1.02, 0.99); }
+  52%  { transform: rotate(2.3deg)  scale(0.99, 1.016); }
+  66%  { transform: rotate(-1.4deg) scale(1.01, 0.996); }
+  80%  { transform: rotate(0.7deg)  scale(0.998, 1.004); }
+  100% { transform: rotate(0deg)    scale(1); }
+}
+
+@keyframes pecorella-scuoti-testa {
+  0%   { transform: rotate(0deg); }
+  12%  { transform: rotate(3.2deg); }
+  26%  { transform: rotate(-3.2deg); }
+  40%  { transform: rotate(2.4deg); }
+  54%  { transform: rotate(-1.8deg); }
+  68%  { transform: rotate(1.1deg); }
+  82%  { transform: rotate(-0.5deg); }
+  100% { transform: rotate(0deg); }
+}
+
+@keyframes pecorella-scuoti-ciuffo {
+  0%   { transform: rotate(0deg)  scale(1); }
+  14%  { transform: rotate(3deg)  scale(1.04); }
+  30%  { transform: rotate(-3deg) scale(0.985); }
+  46%  { transform: rotate(2deg)  scale(1.025); }
+  62%  { transform: rotate(-1.2deg) scale(0.995); }
+  100% { transform: rotate(0deg)  scale(1); }
+}
+
+@keyframes pecorella-scuoti-orecchio-dx {
+  0%   { transform: rotate(0deg); }
+  12%  { transform: rotate(14deg); }
+  28%  { transform: rotate(-12deg); }
+  44%  { transform: rotate(9deg); }
+  60%  { transform: rotate(-6deg); }
+  76%  { transform: rotate(3deg); }
+  100% { transform: rotate(0deg); }
+}
+
+@keyframes pecorella-scuoti-orecchio-sx {
+  0%   { transform: rotate(0deg); }
+  14%  { transform: rotate(-9deg); }
+  30%  { transform: rotate(8deg); }
+  46%  { transform: rotate(-6deg); }
+  62%  { transform: rotate(3.5deg); }
+  100% { transform: rotate(0deg); }
+}
+
+.pecorella--scuoti #corpo {
+  animation: pecorella-scuoti-corpo 900ms var(--p-ease-out) both;
+}
+.pecorella--scuoti #testa {
+  animation: pecorella-scuoti-testa 900ms var(--p-ease-out) both;
+  animation-delay: 40ms; /* la testa segue il corpo */
+}
+.pecorella--scuoti #ciuffo {
+  animation: pecorella-scuoti-ciuffo 900ms var(--p-ease-out) both 60ms;
+}
+.pecorella--scuoti #orecchio-dx {
+  animation: pecorella-scuoti-orecchio-dx 900ms var(--p-ease-out) both 70ms;
+}
+.pecorella--scuoti #orecchio-sx {
+  animation: pecorella-scuoti-orecchio-sx 900ms var(--p-ease-out) both 70ms;
+}
+
+/* ============================================================
+   TESTA — curiosa: 3 pose in sequenza con hold, orecchie reattive.
+   Qui vive --ease-bounce (riservato alla mascotte).
+   ============================================================ */
+
+@keyframes pecorella-curiosa {
+  0%, 6%    { transform: rotate(0deg); }
+  16%, 34%  { transform: rotate(-7deg); }               /* posa 1: tilt */
+  46%, 62%  { transform: rotate(4.5deg) translateY(2px); } /* posa 2: dall'altra parte */
+  74%, 88%  { transform: rotate(-2deg); }               /* posa 3: ritorno curioso */
+  100%      { transform: rotate(0deg); }
+}
+
+@keyframes pecorella-orecchio-dx-curioso {
+  0%, 6%   { transform: rotate(0deg); }
+  18%, 34% { transform: rotate(9deg); }
+  48%, 62% { transform: rotate(-7deg); }
+  76%, 88% { transform: rotate(3deg); }
+  100%     { transform: rotate(0deg); }
+}
+
+@keyframes pecorella-orecchio-sx-curioso {
+  0%, 6%   { transform: rotate(0deg); }
+  18%, 34% { transform: rotate(-6deg); }
+  48%, 62% { transform: rotate(4deg); }
+  76%, 88% { transform: rotate(-2deg); }
+  100%     { transform: rotate(0deg); }
+}
+
+.pecorella--testa #testa {
+  animation: pecorella-curiosa 4.2s var(--p-bounce) infinite;
+}
+.pecorella--testa #orecchio-dx {
+  animation: pecorella-orecchio-dx-curioso 4.2s var(--p-bounce) infinite 80ms;
+}
+.pecorella--testa #orecchio-sx {
+  animation: pecorella-orecchio-sx-curioso 4.2s var(--p-bounce) infinite 80ms;
+}
+
+/* ============================================================
+   TRISTE — empty/error state: testa bassa, orecchio giù,
+   blink lento, respiro più lento. Dispiaciuta, mai drammatica.
+   ============================================================ */
+
+@keyframes pecorella-triste-testa {
+  to { transform: rotate(-10.5deg) translateY(6px); } /* il muso scende */
+}
+@keyframes pecorella-triste-orecchio-dx {
+  to { transform: rotate(19deg); } /* pende di più */
+}
+@keyframes pecorella-triste-orecchio-sx {
+  to { transform: rotate(12deg); } /* si affloscia */
+}
+@keyframes pecorella-triste-ciuffo {
+  to { transform: rotate(-2deg) translateY(1px); }
+}
+@keyframes pecorella-blink-lento {
+  0%, 84%, 100% { transform: translateY(2px) scaleY(0.86); }
+  89%, 92%      { transform: translateY(2px) scaleY(0.08); }
+}
+
+.pecorella--triste #testa {
+  animation: pecorella-triste-testa 700ms var(--p-ease-out) forwards;
+}
+.pecorella--triste #orecchio-dx {
+  animation: pecorella-triste-orecchio-dx 700ms var(--p-ease-out) forwards 60ms;
+}
+.pecorella--triste #orecchio-sx {
+  animation: pecorella-triste-orecchio-sx 700ms var(--p-ease-out) forwards 60ms;
+}
+.pecorella--triste #ciuffo {
+  animation: pecorella-triste-ciuffo 700ms var(--p-ease-out) forwards 40ms;
+}
+.pecorella--triste #occhio-sx {
+  animation: pecorella-blink-lento 5.5s linear infinite 750ms;
+}
+.pecorella--triste #occhio-dx {
+  animation: pecorella-blink-lento 5.5s linear infinite 790ms;
+}
+.pecorella--triste #corpo {
+  animation: pecorella-respiro calc(var(--p-breath) * 1.4) var(--p-ease-in-out) infinite;
+}
+/* palpebre socchiuse subito, prima che parta il ciclo lento */
+.pecorella--triste #occhio-sx,
+.pecorella--triste #occhio-dx {
+  transform: translateY(2px) scaleY(0.86);
+}
+
+/* ============================================================
+   REDUCED MOTION — tutto fermo, resta solo un respiro
+   d'opacità lentissimo (regola di brand).
+   ============================================================ */
+
+@keyframes pecorella-respiro-opacita {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.86; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pecorella,
+  .pecorella * {
+    animation: none !important;
+    transition: none !important;
+  }
+  .pecorella svg {
+    transform: none; /* niente specchiatura da ferma */
+    animation: pecorella-respiro-opacita 6s ease-in-out infinite !important;
+  }
+}

@@ -75,6 +75,19 @@ export function createClient(opts = {}) {
       fd.append("liveness", liveness); // "challenge" | "file"
       return req(`/events/${slug}/selfie`, { method: "POST", form: fd });
     },
+    // Server-verified challenge-response liveness (v4 report F05). Returns { challengeId,
+    // actions, expiresAt }, or throws ApiError(404) when the server runs the legacy flow.
+    getSelfieChallenge: (slug) =>
+      req(`/events/${slug}/selfie/challenge`, { method: "POST" }),
+    // `frames` are Blobs in the exact order of `actions` (one per action, frontal last).
+    sendSelfieChallenge: (slug, challengeId, frames) => {
+      const fd = new FormData();
+      fd.append("challengeId", challengeId);
+      frames.forEach((frame, i) => {
+        fd.append(`frame${i}`, frame, frame.type === "image/png" ? `frame${i}.png` : `frame${i}.jpg`);
+      });
+      return req(`/events/${slug}/selfie`, { method: "POST", form: fd });
+    },
     getGallery: (slug, { cursor, limit } = {}) => {
       const q = new URLSearchParams();
       if (cursor) q.set("cursor", cursor);

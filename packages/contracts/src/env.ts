@@ -99,6 +99,54 @@ export const envSchema = z
       blankToUndefined,
       z.enum(["true", "false"]).default("false"),
     ),
+    /**
+     * Fail-closed liveness (v4 report F05). When "true", a selfie match is delivered
+     * ONLY on a genuine positive liveness verdict from the face service: a missing
+     * model, an unavailable service, or a non-live verdict all reject the gallery
+     * instead of silently falling through. Implies LIVENESS_CHECK. Keep "true" in any
+     * deployment that serves real participants.
+     */
+    LIVENESS_REQUIRED: z.preprocess(
+      blankToUndefined,
+      z.enum(["true", "false"]).default("false"),
+    ),
+    /**
+     * Server-verified challenge-response liveness (v4 report F05, the real fix). When "true",
+     * a selfie match requires a one-time server-issued challenge: the client uploads one frame
+     * per server-dictated step and the worker verifies, via the face service, that the frames
+     * show the dictated head-turn sequence (live motion), are all the same identity (no spliced
+     * victim photo) and hold a single face. Implies LIVENESS_CHECK semantics are unnecessary:
+     * the challenge IS the liveness proof. Default off (legacy single-selfie flow).
+     */
+    LIVENESS_CHALLENGE: z.preprocess(
+      blankToUndefined,
+      z.enum(["true", "false"]).default("false"),
+    ),
+    /** Number of random left/right head-turn steps before the final frontal capture. */
+    LIVENESS_CHALLENGE_TURNS: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().int().min(1).max(5).default(2),
+    ),
+    /** Seconds a challenge stays valid after it is issued. */
+    LIVENESS_CHALLENGE_TTL_SECONDS: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().int().min(10).max(1800).default(120),
+    ),
+    /** |yaw| at/above which a turn frame counts as turned (face-service yaw, [-1,1]). */
+    LIVENESS_TURN_MIN_YAW: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().min(0.1).max(1).default(0.3),
+    ),
+    /** |yaw| at/below which the final frame counts as frontal. */
+    LIVENESS_FRONT_MAX_YAW: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().min(0).max(1).default(0.2),
+    ),
+    /** Min cosine between each frame and the frontal frame: identity must hold across the frames. */
+    LIVENESS_IDENTITY_MIN_COSINE: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().min(0).max(1).default(0.4),
+    ),
     AWS_REGION: z.literal("eu-central-1").default("eu-central-1"),
     REKOGNITION_COLLECTION_PREFIX: z.string().min(1).default("rephoto-"),
     REKOGNITION_SEARCH_MAX_FACES: z.preprocess(
@@ -365,7 +413,9 @@ export const envSchema = z
     WORKER_PUBLISH_METRICS: env.WORKER_PUBLISH_METRICS === "true",
     SMTP_SECURE:
       env.SMTP_SECURE === undefined ? env.SMTP_PORT === 465 : env.SMTP_SECURE === "true",
-    LIVENESS_CHECK: env.LIVENESS_CHECK === "true",
+    LIVENESS_CHECK: env.LIVENESS_CHECK === "true" || env.LIVENESS_REQUIRED === "true",
+    LIVENESS_REQUIRED: env.LIVENESS_REQUIRED === "true",
+    LIVENESS_CHALLENGE: env.LIVENESS_CHALLENGE === "true",
     INSIGHTFACE_ANCHOR_MIN_COSINE: env.INSIGHTFACE_ANCHOR_MIN_COSINE ?? env.INSIGHTFACE_SURE_COSINE,
     FACE_INDEX_SOURCE:
       env.FACE_INDEX_SOURCE ?? (env.FACE_ENGINE === "insightface" ? "original" : "web"),

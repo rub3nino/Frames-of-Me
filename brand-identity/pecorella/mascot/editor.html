@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Editor pecorella — Frames of Me</title>
+<style>
+  :root {
+    --canvas: #FFFFFF; --sunken: #F7F9FB; --line: #E7EAEE; --line-2: #DDE3EA;
+    --ink: #1F2430; --ink-2: #5A6472; --ink-3: #8A93A1;
+    --az: #2E7CB8; --az-vivo: #4FA8E8; --az-soft: #EAF4FB; --notte: #1C3A52;
+    --ok: #2F7D43;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+    background: var(--sunken); color: var(--ink); height: 100vh; display: flex; flex-direction: column;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px; padding: 10px 16px;
+    background: var(--canvas); border-bottom: 1px solid var(--line);
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 700; }
+  header .hint { color: var(--ink-3); font-size: 12.5px; }
+  header .spacer { flex: 1; }
+  .btn {
+    height: 34px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--line-2);
+    background: var(--canvas); color: var(--ink); font: inherit; font-size: 13.5px; font-weight: 600;
+    cursor: pointer;
+  }
+  .btn:hover { border-color: var(--az-vivo); background: var(--az-soft); }
+  .btn:active { transform: scale(0.97); }
+  .btn--primary { background: var(--az); border-color: var(--az); color: #fff; }
+  .btn--primary:hover { background: #276A9F; border-color: #276A9F; }
+  main { flex: 1; display: grid; grid-template-columns: 1fr 300px; min-height: 0; }
+  @media (max-width: 900px) {
+    header { flex-wrap: wrap; }
+    header .hint { display: none; }
+    main { display: flex; flex-direction: column; overflow: auto; }
+    #stage { min-height: 52vh; flex: none; }
+    #stage svg { width: auto; height: 46vh; }
+    aside { border-left: 0; border-top: 1px solid var(--line); }
+  }
+  #stage {
+    position: relative; display: grid; place-items: center; overflow: hidden;
+    background: var(--canvas); margin: 16px; border: 1px solid var(--line); border-radius: 12px;
+  }
+  #stage[data-bg="azzurro"] { background: var(--az-soft); }
+  #stage[data-bg="notte"]   { background: #3B332B; }
+  #stage svg { width: min(78vh, 92%); max-width: 720px; display: block; }
+  #stage svg [data-part] { cursor: grab; }
+  #stage svg [data-part]:active { cursor: grabbing; }
+  aside {
+    background: var(--canvas); border-left: 1px solid var(--line);
+    padding: 14px; overflow: auto; display: flex; flex-direction: column; gap: 14px;
+  }
+  .group { border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+  .group h2 { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); margin: 0 0 8px; }
+  #parts { display: flex; flex-wrap: wrap; gap: 6px; }
+  #parts button {
+    font: inherit; font-size: 12.5px; padding: 5px 10px; border-radius: 999px;
+    border: 1px solid var(--line-2); background: var(--canvas); color: var(--ink-2); cursor: pointer;
+  }
+  #parts button:hover { border-color: var(--az-vivo); }
+  #parts button.sel { background: var(--az); border-color: var(--az); color: #fff; }
+  .slider { display: grid; grid-template-columns: 24px 1fr 46px; gap: 8px; align-items: center; margin: 7px 0; }
+  .slider label { font-size: 12.5px; font-weight: 700; color: var(--ink-2); }
+  .slider output { font-size: 12px; color: var(--ink-3); text-align: right; font-variant-numeric: tabular-nums; }
+  input[type="range"] { width: 100%; accent-color: var(--az); }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  #toast {
+    position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%) translateY(8px);
+    background: var(--notte); color: #fff; font-size: 13.5px; padding: 10px 18px;
+    border-radius: 999px; opacity: 0; transition: opacity .18s, transform .18s; pointer-events: none;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%); }
+  .bbox { fill: none; stroke: var(--az-vivo); stroke-width: 1.5; stroke-dasharray: 5 4; pointer-events: none; }
+  .muted { font-size: 12px; color: var(--ink-3); line-height: 1.45; margin: 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🐑 Editor pecorella</h1>
+  <span class="hint">Trascina un pezzo sulla tela, oppure sceglilo e usa i cursori. Poi «Salva».</span>
+  <span class="spacer"></span>
+  <button class="btn" id="bg-toggle">Sfondo: bianco</button>
+  <button class="btn" id="reset-all">Reset tutto</button>
+  <button class="btn" id="download">Scarica JSON</button>
+  <button class="btn btn--primary" id="save">💾 Salva</button>
+</header>
+<main>
+  <div id="stage" data-bg="bianco"></div>
+  <aside>
+    <div class="group">
+      <h2>Componenti</h2>
+      <div id="parts"></div>
+      <p class="muted" style="margin-top:8px">Cliccando sulla tela selezioni il pezzo più interno; per muovere tutta la testa usa il bottone «Testa (tutta)».</p>
+    </div>
+    <div class="group" id="ctrl" hidden>
+      <h2 id="sel-name">—</h2>
+      <div class="slider"><label>X</label><input type="range" id="tx" min="-100" max="100" step="0.5" value="0"><output id="tx-v">0</output></div>
+      <div class="slider"><label>Y</label><input type="range" id="ty" min="-100" max="100" step="0.5" value="0"><output id="ty-v">0</output></div>
+      <div class="slider"><label>↻</label><input type="range" id="rot" min="-90" max="90" step="0.5" value="0"><output id="rot-v">0°</output></div>
+      <div class="slider"><label>⤢</label><input type="range" id="scale" min="0.4" max="1.8" step="0.01" value="1"><output id="scale-v">1.00</output></div>
+      <div class="row"><button class="btn" id="reset-part">Reset pezzo</button></div>
+    </div>
+    <div class="group">
+      <h2>Come funziona</h2>
+      <p class="muted">«Salva» scrive <code>layout.json</code> sul computer (serve il server <code>serve-editor.py</code>). Le posizioni salvate vengono ricaricate alla prossima apertura e poi applicate all'SVG definitivo.</p>
+    </div>
+  </aside>
+</main>
+<div id="toast"></div>
+
+<script>
+const PARTS = [
+  ["testa", "Testa (tutta)"],
+  ["muso", "Muso"],
+  ["ciuffo", "Ciuffo"],
+  ["orecchio-sx", "Orecchio sinistro"],
+  ["orecchio-dx", "Orecchio destro"],
+  ["occhio-sx", "Occhio sinistro"],
+  ["occhio-dx", "Occhio destro"],
+  ["sorriso", "Sorriso"],
+  ["corpo", "Corpo (lana)"],
+  ["macchie", "Macchie groppa"],
+  ["zampa-as", "Zampa ant. sx"],
+  ["zampa-ad", "Zampa ant. dx"],
+  ["zampa-ps", "Zampa post. sx"],
+  ["zampa-pd", "Zampa post. dx"],
+];
+const LABEL = Object.fromEntries(PARTS);
+const stage = document.getElementById("stage");
+const state = {};      // id -> {tx,ty,rot,scale}
+const pivots = {};     // id -> {cx,cy}
+let svg = null, selected = null, bboxRect = null;
+
+const $ = (id) => document.getElementById(id);
+const sliders = { tx: $("tx"), ty: $("ty"), rot: $("rot"), scale: $("scale") };
+
+function toast(msg, ok = true) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.style.background = ok ? "var(--notte)" : "#8C2F22";
+  t.classList.add("show");
+  clearTimeout(t._h);
+  t._h = setTimeout(() => t.classList.remove("show"), 2200);
+}
+
+function transformFor(id) {
+  const s = state[id], p = pivots[id];
+  return `translate(${s.tx} ${s.ty}) translate(${p.cx} ${p.cy}) rotate(${s.rot}) scale(${s.scale}) translate(${-p.cx} ${-p.cy})`;
+}
+
+function apply(id) {
+  const el = svg.getElementById(id);
+  const s = state[id];
+  if (s.tx === 0 && s.ty === 0 && s.rot === 0 && s.scale === 1) el.removeAttribute("transform");
+  else el.setAttribute("transform", transformFor(id));
+  if (id === selected) drawBBox();
+}
+
+function drawBBox() {
+  if (!selected) { bboxRect.setAttribute("width", 0); return; }
+  const el = svg.getElementById(selected);
+  const r = el.getBoundingClientRect();
+  const m = svg.getScreenCTM().inverse();
+  const pt = (x, y) => { const p = new DOMPoint(x, y).matrixTransform(m); return [p.x, p.y]; };
+  const [x1, y1] = pt(r.left, r.top), [x2, y2] = pt(r.right, r.bottom);
+  bboxRect.setAttribute("x", x1 - 4); bboxRect.setAttribute("y", y1 - 4);
+  bboxRect.setAttribute("width", x2 - x1 + 8); bboxRect.setAttribute("height", y2 - y1 + 8);
+}
+
+function select(id) {
+  selected = id;
+  document.querySelectorAll("#parts button").forEach(b => b.classList.toggle("sel", b.dataset.id === id));
+  $("ctrl").hidden = !id;
+  if (!id) { drawBBox(); return; }
+  $("sel-name").textContent = LABEL[id];
+  const s = state[id];
+  sliders.tx.value = s.tx; sliders.ty.value = s.ty; sliders.rot.value = s.rot; sliders.scale.value = s.scale;
+  refreshOutputs();
+  drawBBox();
+}
+
+function refreshOutputs() {
+  $("tx-v").textContent = (+sliders.tx.value).toFixed(1);
+  $("ty-v").textContent = (+sliders.ty.value).toFixed(1);
+  $("rot-v").textContent = (+sliders.rot.value).toFixed(1) + "°";
+  $("scale-v").textContent = (+sliders.scale.value).toFixed(2);
+}
+
+Object.entries(sliders).forEach(([k, inp]) => {
+  inp.addEventListener("input", () => {
+    if (!selected) return;
+    state[selected][k] = +inp.value;
+    refreshOutputs();
+    apply(selected);
+  });
+});
+
+$("reset-part").addEventListener("click", () => {
+  if (!selected) return;
+  state[selected] = { tx: 0, ty: 0, rot: 0, scale: 1 };
+  select(selected); apply(selected);
+});
+$("reset-all").addEventListener("click", () => {
+  PARTS.forEach(([id]) => { state[id] = { tx: 0, ty: 0, rot: 0, scale: 1 }; apply(id); });
+  if (selected) select(selected);
+  toast("Tutto riportato all'originale");
+});
+
+$("bg-toggle").addEventListener("click", () => {
+  const order = ["bianco", "azzurro", "notte"];
+  const next = order[(order.indexOf(stage.dataset.bg) + 1) % order.length];
+  stage.dataset.bg = next;
+  $("bg-toggle").textContent = "Sfondo: " + next;
+});
+
+function payload() {
+  const parts = {};
+  PARTS.forEach(([id]) => {
+    const s = state[id];
+    if (s.tx || s.ty || s.rot || s.scale !== 1) {
+      parts[id] = { ...s, cx: +pivots[id].cx.toFixed(2), cy: +pivots[id].cy.toFixed(2), transform: transformFor(id) };
+    }
+  });
+  return { savedAt: new Date().toISOString(), viewBox: "0 0 420 340", parts };
+}
+
+$("save").addEventListener("click", async () => {
+  try {
+    const r = await fetch("/save", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload()) });
+    if (!r.ok) throw new Error(await r.text());
+    toast("Salvato ✓ — layout.json aggiornato");
+  } catch (e) {
+    toast("Salvataggio fallito: usa «Scarica JSON»", false);
+  }
+});
+
+$("download").addEventListener("click", () => {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(payload(), null, 2)], { type: "application/json" }));
+  a.download = "pecorella-layout.json";
+  a.click();
+});
+
+/* ---- drag ---- */
+let drag = null;
+function unitsPerPx() {
+  const vb = svg.viewBox.baseVal;
+  return vb.width / svg.getBoundingClientRect().width;
+}
+function attachDrag() {
+  svg.addEventListener("pointerdown", (e) => {
+    const el = e.target.closest("[data-part]");
+    if (!el) return;
+    const id = el.dataset.part;
+    select(id);
+    drag = { id, x: e.clientX, y: e.clientY, tx: state[id].tx, ty: state[id].ty, k: unitsPerPx() };
+    svg.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+  svg.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    state[drag.id].tx = +(drag.tx + (e.clientX - drag.x) * drag.k).toFixed(1);
+    state[drag.id].ty = +(drag.ty + (e.clientY - drag.y) * drag.k).toFixed(1);
+    if (selected === drag.id) { sliders.tx.value = state[drag.id].tx; sliders.ty.value = state[drag.id].ty; refreshOutputs(); }
+    apply(drag.id);
+  });
+  const end = () => { drag = null; };
+  svg.addEventListener("pointerup", end);
+  svg.addEventListener("pointercancel", end);
+}
+
+/* ---- init ---- */
+(async function init() {
+  const txt = await (await fetch("pecorella.svg")).text();
+  stage.innerHTML = txt;
+  svg = stage.querySelector("svg");
+
+  PARTS.forEach(([id]) => {
+    state[id] = { tx: 0, ty: 0, rot: 0, scale: 1 };
+    const el = svg.getElementById(id);
+    if (!el) { console.warn("manca", id); return; }
+    el.dataset.part = id;
+    const b = el.getBBox();
+    pivots[id] = { cx: b.x + b.width / 2, cy: b.y + b.height / 2 };
+  });
+
+  bboxRect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+  bboxRect.setAttribute("class", "bbox");
+  svg.appendChild(bboxRect);
+
+  const partsBox = $("parts");
+  PARTS.forEach(([id, label]) => {
+    const b = document.createElement("button");
+    b.textContent = label; b.dataset.id = id;
+    b.addEventListener("click", () => select(id));
+    partsBox.appendChild(b);
+  });
+
+  attachDrag();
+
+  try {
+    const saved = await (await fetch("layout.json", { cache: "no-store" })).json();
+    if (saved && saved.parts) {
+      Object.entries(saved.parts).forEach(([id, s]) => {
+        if (state[id]) { state[id] = { tx: s.tx, ty: s.ty, rot: s.rot, scale: s.scale }; apply(id); }
+      });
+      toast("Caricato l'ultimo salvataggio");
+    }
+  } catch (_) { /* nessun layout salvato: si parte dall'originale */ }
+})();
+</script>
+</body>
+</html>

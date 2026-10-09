@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import sharp from "sharp";
 import { createQueue, type JobQueue } from "@rephoto/api/queue";
-import { JOB_PRIORITY, objectKeys, type Env } from "@rephoto/contracts";
+import { JOB_PRIORITY, objectKeys, type Env, type LivenessAction } from "@rephoto/contracts";
 import { MemoryDatabase, type Database } from "@rephoto/db";
 import {
   FakeFaceEngine,
@@ -774,4 +774,160 @@ test("liveness rejection records the `liveness` reason on the gallery", async ()
   assert.equal(gallery?.hasQueryVector, false);
   assert.equal(f.faces.selfieEmbeds, 0, "no embedding after a liveness rejection");
   assert.equal(f.mailer.sent.length, 1, "the ready mail still goes out on a liveness rejection");
+});
+
+test("LIVENESS_REQUIRED fails closed when the service cannot judge liveness (v4 F05)", async () => {
+  // Engine without a checkLiveness capability (e.g. the model weights are absent):
+  // required liveness must refuse the gallery rather than fall through to a match.
+  const f = await fixture({ LIVENESS_REQUIRED: true });
+  await ingest(f, [255, 0, 0]);
+  await selfie(f, [255, 0, 0]);
+  const gallery = await f.db.findGalleryByUser(f.participantId, f.eventId);
+  assert.equal(gallery?.reason, "liveness");
+  assert.equal(f.faces.selfieEmbeds, 0, "no search runs when liveness cannot be proven");
+});
+
+test("LIVENESS_REQUIRED rejects a `none` liveness verdict (v4 F05)", async () => {
+  // A verdict with method "none" means no real anti-spoofing model ran; required
+  // liveness treats that as not-live instead of silently serving the gallery.
+  const f = await fixture({ LIVENESS_REQUIRED: true });
+  f.deps.faces = {
+    ...f.faces,
+    async checkLiveness() {
+      return { live: true, score: 0, method: "none" };
+    },
+  };
+  await ingest(f, [255, 0, 0]);
+  await selfie(f, [255, 0, 0]);
+  const gallery = await f.db.findGalleryByUser(f.participantId, f.eventId);
+  assert.equal(gallery?.reason, "liveness");
+});
+
+test("LIVENESS_REQUIRED delivers the gallery on a genuine live verdict (v4 F05)", async () => {
+  const f = await fixture({ LIVENESS_REQUIRED: true });
+  f.deps.faces = {
+    ...f.faces,
+    async checkLiveness() {
+      return { live: true, score: 0.95, method: "silent-face" };
+    },
+  };
+  const red = await ingest(f, [255, 0, 0]);
+  await selfie(f, [255, 0, 0]);
+  const gallery = await f.db.findGalleryByUser(f.participantId, f.eventId);
+  assert.equal(gallery?.reason, null, "a real live verdict lets the match proceed");
+  const page = await f.db.listGalleryPage(f.participantId, f.eventId, { limit: 10 });
+  assert.deepEqual(page.items.map((item) => item.photoId), [red]);
+});
+
+/** A challenge frame: colour fixes the fake identity, PNG width encodes the yaw (fake.fakeYaw). */
+function framePng(rgb: [number, number, number], yaw: number): Promise<Buffer> {
+  return solidPng(rgb[0], rgb[1], rgb[2], 1100 + Math.round(yaw * 100));
+}
+
+/** Issues a challenge, stores the frames at selfie keys and runs the match job. */
+async function challengeMatch(
+  f: Fixture,
+  actions: LivenessAction[],
+  frames: Buffer[],
+  expiresAt = new Date(Date.now() + 120_000),
+): Promise<{ id: string; frameKeys: string[] }> {
+  const { id } = await f.db.insertLivenessChallenge({
+    userId: f.participantId,
+    eventId: f.eventId,
+    actions,
+    expiresAt,
+  });
+  const frameKeys: string[] = [];
+  for (const frame of frames) {
+    const key = objectKeys.selfie(f.eventId, f.participantId, randomUUID());
+    await f.objects.put(key, new Uint8Array(frame), "image/png");
+    frameKeys.push(key);
+  }
+  await f.queue.enqueue("match", {
+    userId: f.participantId,
+    eventId: f.eventId,
+    selfieKey: frameKeys[frameKeys.length - 1]!,
+    challengeId: id,
+    frameKeys,
+  });
+  await drain(f.deps);
+  return { id, frameKeys };
+}
+
+test("challenge-response delivers the gallery on a valid live sequence (v4 F05)", async () => {
+  const f = await fixture({ LIVENESS_CHALLENGE: true });
+  const red = await ingest(f, [255, 0, 0]);
+  const { id, frameKeys } = await challengeMatch(f, ["left", "right", "front"], [
+    await framePng([255, 0, 0], 0.5),
+    await framePng([255, 0, 0], -0.5),
+    await framePng([255, 0, 0], 0),
+  ]);
+  const gallery = await f.db.findGalleryByUser(f.participantId, f.eventId);
+  assert.equal(gallery?.reason, null, "a valid challenge lets the match proceed");
+  const page = await f.db.listGalleryPage(f.participantId, f.eventId, { limit: 10 });
+  assert.deepEqual(page.items.map((item) => item.photoId), [red]);
+  // The non-frontal frames are cleaned up; the challenge was consumed by the worker.
+  assert.equal(await f.objects.get(frameKeys[0]!), null, "turn frame deleted");
+  assert.equal(await f.objects.get(frameKeys[1]!), null, "turn frame deleted");
+  assert.equal(await f.db.consumeLivenessChallenge(id), false, "challenge already consumed");
+});
+
+test("challenge-response rejects a wrong head-turn sequence (v4 F05)", async () => {
+  const f = await fixture({ LIVENESS_CHALLENGE: true });
+  await ingest(f, [255, 0, 0]);
+  // Server dictated left, right, front but the first frame does not turn.
+  await challengeMatch(f, ["left", "right", "front"], [
+    await framePng([255, 0, 0], 0),
+    await framePng([255, 0, 0], -0.5),
+    await framePng([255, 0, 0], 0),
+  ]);
+  assert.equal((await f.db.findGalleryByUser(f.participantId, f.eventId))?.reason, "liveness");
+});
+
+test("challenge-response rejects frames that are not the same person (v4 F05)", async () => {
+  const f = await fixture({ LIVENESS_CHALLENGE: true });
+  await ingest(f, [255, 0, 0]);
+  // Correct motion, but the frontal frame is a different identity spliced in (the attack).
+  await challengeMatch(f, ["left", "front"], [
+    await framePng([255, 0, 0], 0.5),
+    await framePng([0, 0, 255], 0),
+  ]);
+  assert.equal((await f.db.findGalleryByUser(f.participantId, f.eventId))?.reason, "liveness");
+});
+
+test("challenge-response rejects a replayed (already consumed) challenge (v4 F05)", async () => {
+  const f = await fixture({ LIVENESS_CHALLENGE: true });
+  await ingest(f, [255, 0, 0]);
+  const { id } = await f.db.insertLivenessChallenge({
+    userId: f.participantId,
+    eventId: f.eventId,
+    actions: ["left", "front"],
+    expiresAt: new Date(Date.now() + 120_000),
+  });
+  assert.equal(await f.db.consumeLivenessChallenge(id), true); // consumed elsewhere first
+  const k0 = objectKeys.selfie(f.eventId, f.participantId, randomUUID());
+  const k1 = objectKeys.selfie(f.eventId, f.participantId, randomUUID());
+  await f.objects.put(k0, new Uint8Array(await framePng([255, 0, 0], 0.5)), "image/png");
+  await f.objects.put(k1, new Uint8Array(await framePng([255, 0, 0], 0)), "image/png");
+  await f.queue.enqueue("match", {
+    userId: f.participantId,
+    eventId: f.eventId,
+    selfieKey: k1,
+    challengeId: id,
+    frameKeys: [k0, k1],
+  });
+  await drain(f.deps);
+  assert.equal((await f.db.findGalleryByUser(f.participantId, f.eventId))?.reason, "liveness");
+});
+
+test("challenge-response rejects an expired challenge (v4 F05)", async () => {
+  const f = await fixture({ LIVENESS_CHALLENGE: true });
+  await ingest(f, [255, 0, 0]);
+  await challengeMatch(
+    f,
+    ["left", "front"],
+    [await framePng([255, 0, 0], 0.5), await framePng([255, 0, 0], 0)],
+    new Date(Date.now() - 1000),
+  );
+  assert.equal((await f.db.findGalleryByUser(f.participantId, f.eventId))?.reason, "liveness");
 });
