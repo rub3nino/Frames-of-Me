@@ -47,9 +47,13 @@
   /* selezione testo (superficie del browser, tinta dal cielo) */
   --ld-selection: #CFE7F9;
 
-  /* dot grid alla Notion: atmosfera, quasi impercettibile, mai sotto testo lungo */
-  --ld-dot: #D7DEE6;          /* puntino su bianco */
-  --ld-dot-sunken: #E3EAF1;   /* puntino su sezioni azzurrine */
+  /* dot grid alla Notion: atmosfera presente ma mai rumore, mai sotto testo lungo.
+     #D0D9E2 su bianco ≈ 1.43:1 (~1.4), #D0DAE5 su sunken ≈ 1.34:1; la visibilità
+     in più viene dal raggio 1.3px e dal passo 20px, non dal contrasto. */
+  --ld-dot: #D0D9E2;          /* puntino su bianco */
+  --ld-dot-sunken: #D0DAE5;   /* puntino su sezioni azzurrine */
+  --ld-dot-size: 1.3px;       /* raggio del puntino */
+  --ld-dot-grid: 20px;        /* passo della griglia */
 
   /* motion (emil: ease-out deciso, UI < 300ms, reveal 480ms una volta) */
   --ld-ease-out: cubic-bezier(0.23, 1, 0.32, 1);
