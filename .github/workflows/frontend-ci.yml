@@ -8,9 +8,10 @@
 # Apps are standalone: each is its own pnpm root with its own package.json +
 # pnpm-lock.yaml and is NOT part of the backend workspace, so we install and
 # build inside each app directory. pnpm is pinned to the same version the
-# backend workspace uses; it is NOT declared in the apps' package.json, because
-# pnpm 12 records `packageManager` in the lockfile and adding it there would
-# make `--frozen-lockfile` fail until every lockfile is regenerated.
+# backend workspace uses, here in the workflow and not in the apps'
+# package.json: pnpm 12 records `packageManager` in the lockfile, so declaring
+# it there would make `--frozen-lockfile` fail until every lockfile is
+# regenerated.
 # Vite resolves the shared packages (../../packages/ui, ../../packages/api-client)
 # via the `@ui`/`@api` aliases + `server.fs.allow` already set in each
 # vite.config.ts, so no extra wiring is needed here.
@@ -104,11 +105,15 @@ jobs:
           fi
 
       # Has to run before setup-node, or `cache: pnpm` finds no pnpm binary to
-      # ask for the store path. The version is explicit so a change to the
-      # runner image cannot change which pnpm resolves the lockfile.
-      - name: Enable Corepack (pnpm 12.6.0)
+      # ask for the store path. Not corepack: `corepack prepare --activate`
+      # creates no shim, and setup-node then replaces the Node that `corepack
+      # enable` would have put one under. The version is explicit so a change
+      # to the runner image cannot change which pnpm resolves the lockfile.
+      - name: Install pnpm 12.6.0
         if: steps.gate.outputs.changed == 'true'
-        run: corepack prepare pnpm@12.6.0 --activate
+        uses: pnpm/action-setup@v4
+        with:
+          version: 12.6.0
 
       - name: Setup Node
         if: steps.gate.outputs.changed == 'true'
