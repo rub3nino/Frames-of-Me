@@ -1,143 +1,267 @@
 /* ============================================================================
-   Frames of Me — Landing (marketing) stylesheet
-   A gentle shift from the Apple base toward an editorial/Notion feel:
-   thin hairline separators, a high-contrast editorial serif for display,
-   soft pastel feature cards, black CTAs — fonts & colors taken from the
-   reference the user pinned (OG Image.Design). Frames of Me-only content.
-   Isolated here so the functional app pages (blue accent, Geist) are untouched.
-   Motion follows Emil Kowalski's rules (strong curves, <300ms, stagger 30–80ms).
-   Load after tokens.css + base.css + components.css.
+   Frames of Me — vetrina (la pagina pubblica)
+   Load order: tokens.css → base.css → components.css → landing.css
+
+   La vetrina parla la lingua del prodotto, non una lingua da marketing
+   (docs/brand/README.md: «segue l'identità come tutto il resto, nessuna
+   eccezione pastello, nessun serif, nessun titolo oltre la scala»). Chi passa
+   di qui al prodotto non deve accorgersi di aver cambiato software.
+
+   Solo var(--…) che sono RUOLI nella prima metà di tokens.css. Gli alias di
+   transizione in fondo a quel file (--c-*, --mk-*, --t-*, --fs-*, --s-*,
+   --maxw-*) spariranno: qui non ce n'è nessuno.
+
+   Le misure in pixel che restano sono misure di impaginato — larghezza della
+   colonna, larghezza del modulo — non colori e non passi di spazio: quelli
+   vengono dai ruoli. Nessun esadecimale.
+
+   Quello che si vede a occhio, e perché:
+   - un'azione primaria sola in tutta la pagina, ed è inchiostro (REGOLE §1.2);
+   - la scala si ferma a --text-2xl: 30 px è il titolo, e non c'è nessun clamp;
+   - niente gradienti, niente vetro, niente sfondo a puntini, niente ombra e
+     bordo sullo stesso blocco, niente riquadro dentro un riquadro (REGOLE §1);
+   - le soglie sono quelle nominate — 1280 e 768 — e non se ne inventa una
+     terza (REGOLE §8);
+   - il fuoco si vede e non si toglie: lo dipinge base.css, qui non si tocca
+     (REGOLE §6).
    ============================================================================ */
 
-:root {
-  --mk-bg:     #FFFFFF;
-  --mk-ink:    #17171A;   /* headline near-black */
-  --mk-ink-2:  #56565E;   /* body grey */
-  --mk-ink-3:  #8A8A93;   /* muted */
-  --mk-hair:   #ECECEF;   /* Notion-thin separators */
-  --mk-line:   #E3E3E7;   /* slightly stronger hairline */
-  --mk-cta:    #111113; --mk-cta-hover:#2B2B30; --mk-cta-on:#FFFFFF;
-  --mk-dot:    #5B7CFA;   /* periwinkle accent (the "." in the reference) */
-  --mk-surface-2:#FAFAFB;
-
-  --font-serif: "Instrument Serif", "Iowan Old Style", Georgia, serif;
-
-  /* soft pastel tints (from the reference: butter + sky; + mint/lilac) */
-  --t-butter:#EEF0C2; --t-butter-ink:#54541F;
-  --t-sky:   #DBEAF7; --t-sky-ink:   #234A64;
-  --t-mint:  #DAEEE1; --t-mint-ink:  #214A34;
-  --t-lilac: #E7E4F8; --t-lilac-ink: #39336A;
-
-  --mk-ease: cubic-bezier(.23, 1, .32, 1);   /* Emil strong ease-out */
+/* --- Il foglio --------------------------------------------------------------
+   Il corpo è a 16 px e non a 14: questa è prosa che si legge in piedi, col
+   telefono in mano, non una tabella che si scorre col mouse. Il 16 è il
+   gradino --text-md, che tokens.css descrive come «lead, prosa, e il corpo
+   sul telefono». */
+body.vetrina {
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  line-height: var(--leading-body);
+  color: var(--text-primary);
+  background: var(--surface-page);
 }
 
-body.mkt { background: var(--mk-bg); color: var(--mk-ink); }
-.mkt .wrap { width: 100%; max-width: 1120px; margin-inline: auto; padding-inline: 24px; }
-.mkt .serif { font-family: var(--font-serif); font-weight: 400; letter-spacing: -0.005em; }
+/* Una colonna sola, allineata a sinistra. Il centrato è un gesto da manifesto,
+   e qui non si fanno manifesti: l'accesso è una colonna stretta, e questa è la
+   stessa colonna un po' più larga. */
+.vetrina__colonna {
+  width: 100%;
+  max-width: 680px;
+  margin-inline: auto;
+  padding-inline: var(--space-8);
+}
+@media (max-width: 1280px) { .vetrina__colonna { padding-inline: var(--space-6); } }
+@media (max-width: 768px)  { .vetrina__colonna { padding-inline: var(--space-4); } }
 
-/* ---- Nav ---------------------------------------------------------------- */
-.mkt-nav { position: sticky; top: 0; z-index: 200; background: rgba(255,255,255,.82);
-  backdrop-filter: saturate(180%) blur(16px); -webkit-backdrop-filter: saturate(180%) blur(16px);
-  border-bottom: 1px solid var(--mk-hair); }
-.mkt-nav .wrap { display: flex; align-items: center; gap: 24px; height: 64px; }
-.mkt-brand { display: inline-flex; align-items: baseline; gap: 9px; color: var(--mk-ink); text-decoration: none; }
-.mkt-brand svg { width: 24px; height: 24px; align-self: center; }
-.mkt-brand .nm { font-family: var(--font-serif); font-style: italic; font-size: 1.6rem; line-height: 1; letter-spacing: -0.01em; }
-.mkt-brand .nm b { font-style: normal; font-weight: 400; }
-.mkt-brand .dot { color: var(--mk-dot); }
-.mkt-nav nav { display: flex; align-items: center; gap: 28px; margin-left: 8px; }
-.mkt-nav nav a { color: var(--mk-ink-2); font-size: 0.95rem; text-decoration: none; transition: color 150ms ease; }
-.mkt-nav nav a:hover { color: var(--mk-ink); }
-.mkt-nav .spacer { flex: 1; }
-@media (max-width: 760px) { .mkt-nav nav { display: none; } }
+/* --- Testa ------------------------------------------------------------------
+   Non è appiccicata in alto e non è di vetro: è una riga con un filo sotto,
+   come la topbar del prodotto, e alta uguale. Non contiene l'azione: l'azione
+   è una sola e sta nel modulo, dove si compie. */
+.vetrina__testa {
+  border-bottom: 1px solid var(--line-subtle);
+  background: var(--surface-page);
+}
+.vetrina__testa-riga {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  min-height: var(--topbar-h);
+  padding-block: var(--space-3);
+}
 
-/* ---- Black CTA ---------------------------------------------------------- */
-.btn-cta { --press:0; display: inline-flex; align-items: center; justify-content: center; gap: 9px;
-  font-family: var(--font-sans); font-size: 0.95rem; font-weight: 500; color: var(--mk-cta-on);
-  background: var(--mk-cta); border: 0; border-radius: 12px; padding: 11px 20px; cursor: pointer;
-  text-decoration: none; white-space: nowrap; transform: scale(calc(1 - var(--press)*.03));
-  transition: transform 140ms var(--mk-ease), background 180ms ease, box-shadow 220ms ease; }
-.btn-cta:hover { background: var(--mk-cta-hover); box-shadow: 0 6px 20px rgba(0,0,0,.12); }
-.btn-cta svg { width: 17px; height: 17px; }
-.btn-cta.lg { padding: 14px 24px; font-size: 1rem; border-radius: 14px; }
+/* Il marchio è quello dell'app, identico: le stesse quattro squadre di
+   `mark.svg` e lo stesso punto blu. È l'unico blu della pagina che non sia un
+   link o un fuoco, e lo è perché è il marchio — non una decorazione aggiunta
+   qui. Cambiarlo solo in vetrina direbbe «altro prodotto». */
+.vetrina__marchio {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-primary);
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+  letter-spacing: -0.01em;
+  text-decoration: none;
+}
+.vetrina__marchio svg { width: 22px; height: 22px; }
+.vetrina__marchio:hover { text-decoration: none; }
 
-.btn-text { display: inline-flex; align-items: center; gap: 6px; color: var(--mk-ink); font-size: 0.95rem; font-weight: 500; text-decoration: none; }
-.btn-text svg { width: 16px; height: 16px; transition: transform 180ms var(--mk-ease); }
-.btn-text:hover svg { transform: translateX(3px); }
+/* I link di servizio — testa e piede — sono inchiostro, non blu. Il blu
+   distingue un link dalla prosa che lo circonda; qui intorno non c'è prosa da
+   cui distinguersi, e quattro parole blu in fila sembrerebbero un accento. */
+.vetrina__servizio {
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  text-decoration: none;
+  transition: color var(--dur-fast) var(--ease-out);
+}
+.vetrina__servizio:hover { color: var(--text-primary); text-decoration: none; }
 
-/* ---- Hero --------------------------------------------------------------- */
-.hero { text-align: center; padding: 72px 0 8px; }
-.pill { display: inline-flex; align-items: center; gap: 8px; font-size: 0.82rem; font-weight: 500; color: var(--mk-ink-2);
-  background: var(--mk-surface-2); border: 1px solid var(--mk-line); border-radius: 999px; padding: 6px 14px; }
-.pill .pdot { width: 6px; height: 6px; border-radius: 50%; background: var(--mk-dot); }
-.hero h1 { font-family: var(--font-serif); font-weight: 400; color: var(--mk-ink);
-  font-size: clamp(2.8rem, 1.6rem + 5.4vw, 5.25rem); line-height: 1.02; letter-spacing: -0.01em;
-  margin: 22px auto 0; max-width: 16ch; text-wrap: balance; }
-.hero .sub { font-size: clamp(1.05rem, 1rem + 0.5vw, 1.3rem); color: var(--mk-ink-2); line-height: 1.5;
-  max-width: 40ch; margin: 20px auto 0; }
+/* --- Sezioni ----------------------------------------------------------------
+   Sopra un titolo c'è più aria che sotto. Fra due sezioni c'è un filo, non un
+   cambio di fondo: il fondo cambia una volta sola, nel piede. */
+.vetrina__sezione { padding-block: var(--space-12); }
+.vetrina__sezione + .vetrina__sezione { border-top: 1px solid var(--line-subtle); }
 
-/* hero input — mirrors the reference's scan input, gradient border */
-.hero-field-label { font-size: 0.9rem; color: var(--mk-ink-3); margin: 40px 0 12px; }
-.hero-field { position: relative; max-width: 620px; margin: 0 auto; border-radius: 16px; padding: 2px;
-  background: linear-gradient(90deg, #C4E6CE, #CFE0F7);
-  transition: box-shadow 220ms ease; }
-.hero-field:focus-within { box-shadow: 0 0 0 4px rgba(91,124,250,.16); }
-.hero-field .inner { display: flex; align-items: center; gap: 8px; background: #fff; border-radius: 14px; padding: 7px 7px 7px 18px; }
-.hero-field input { flex: 1; border: 0; outline: 0; font-size: 1.05rem; color: var(--mk-ink); background: transparent; padding: 10px 0; }
-.hero-field input::placeholder { color: var(--mk-ink-3); }
-@media (max-width: 560px) { .hero-field .inner { flex-direction: column; align-items: stretch; gap: 8px; padding: 10px; } .hero-field input { padding: 8px 10px; } .hero-field .btn-cta { width: 100%; } }
-.privacy-note { display: inline-flex; align-items: center; gap: 7px; font-size: 0.85rem; color: var(--mk-ink-3); margin-top: 16px; }
-.privacy-note svg { width: 15px; height: 15px; color: #3EA06A; }
+.vetrina__titolo-sezione {
+  font-size: var(--text-xl);
+  font-weight: var(--weight-semibold);
+  line-height: var(--leading-tight);
+  letter-spacing: -0.012em;
+  margin-bottom: var(--space-4);
+}
 
-/* ---- Feature pastel cards ---------------------------------------------- */
-.features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 56px; }
-@media (max-width: 860px) { .features { grid-template-columns: 1fr; } }
-.card-feat { border-radius: 20px; padding: 28px; border: 1px solid rgba(0,0,0,.04); }
-.card-feat h3 { font-size: 1.22rem; font-weight: 600; letter-spacing: -0.01em; margin-bottom: 10px; color: inherit; font-family: var(--font-sans); }
-.card-feat p { font-size: 0.98rem; line-height: 1.5; color: inherit; opacity: .78; }
-.card-feat .fi { width: 30px; height: 30px; margin-bottom: 16px; }
-.t-butter { background: var(--t-butter); color: var(--t-butter-ink); }
-.t-sky    { background: var(--t-sky);    color: var(--t-sky-ink); }
-.t-mint   { background: var(--t-mint);   color: var(--t-mint-ink); }
-.t-lilac  { background: var(--t-lilac);  color: var(--t-lilac-ink); }
+/* --- Apertura ---------------------------------------------------------------
+   30 px è il tetto della scala ed è la misura del titolo dell'accesso: la
+   prima riga della vetrina e la prima riga del prodotto pesano uguale, e
+   questo è esattamente il punto. */
+.vetrina__apertura { padding-block: var(--space-12) var(--space-10); }
+.vetrina__titolo {
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-semibold);
+  line-height: var(--leading-tight);
+  letter-spacing: -0.015em;
+  text-wrap: balance;
+  max-width: 22ch;
+}
+.vetrina__sommario {
+  margin-top: var(--space-3);
+  font-size: var(--text-md);
+  line-height: var(--leading-prose);
+  color: var(--text-secondary);
+  max-width: 60ch;
+}
 
-/* ---- Separators & sections --------------------------------------------- */
-.sep { border: 0; height: 1px; background: var(--mk-hair); margin: 0; }
-.sect { padding: 72px 0; }
-.sec-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 36px; }
-.sec-head h2 { font-family: var(--font-serif); font-weight: 400; font-size: clamp(2rem, 1.4rem + 2.6vw, 3rem); line-height: 1.05; letter-spacing: -0.01em; color: var(--mk-ink); max-width: 20ch; }
+/* Il modulo: un campo con la sua etichetta sopra, il suo aiuto sotto, e poi
+   l'unico primario della pagina. Il pulsante sta su una riga sua e non di
+   fianco al campo: accanto, dovrebbe allinearsi a una colonna che cresce di
+   una riga appena compare un errore, e si sposterebbe. Sotto i 768 prende
+   tutta la larghezza, che è dove arriva il pollice. */
+.vetrina__modulo {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-4);
+  margin-top: var(--space-8);
+  max-width: 460px;
+}
+.vetrina__modulo .field { width: 100%; }
+@media (max-width: 768px) {
+  .vetrina__modulo { max-width: none; align-items: stretch; }
+}
 
-/* photo showcase row */
-.photo-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
-@media (max-width: 760px) { .photo-row { grid-template-columns: repeat(2, 1fr); } }
-.photo-row .ph { aspect-ratio: 4/5; border-radius: 14px; overflow: hidden; background: var(--c-sunken); }
-.photo-row .ph img { width: 100%; height: 100%; object-fit: cover; }
+/* `hidden` deve vincere su `display`. Il modulo è flex e il messaggio
+   d'errore del campo pure: senza questa riga nascondere l'uno o l'altro da
+   JavaScript non nasconderebbe niente. */
+.vetrina [hidden] { display: none !important; }
 
-/* how-it-works: three steps, hairline-separated (Notion) */
-.steps3 { display: grid; grid-template-columns: repeat(3, 1fr); }
-@media (max-width: 760px) { .steps3 { grid-template-columns: 1fr; } }
-.steps3 .st { padding: 4px 28px; }
-.steps3 .st + .st { border-left: 1px solid var(--mk-hair); }
-@media (max-width: 760px) { .steps3 .st { padding: 24px 0; } .steps3 .st + .st { border-left: 0; border-top: 1px solid var(--mk-hair); } }
-.steps3 .n { font-family: var(--font-serif); font-size: 2rem; color: var(--mk-dot); line-height: 1; display: block; margin-bottom: 14px; }
-.steps3 .st h3 { font-size: 1.1rem; font-weight: 600; margin-bottom: 6px; letter-spacing: -0.01em; }
-.steps3 .st p { font-size: 0.96rem; color: var(--mk-ink-2); line-height: 1.5; }
+/* L'esito prende il posto del modulo quando il link è partito: non è un
+   callout permanente che dice «è riuscito», è il passo dopo, e porta l'azione
+   che lo risolve (REGOLE §4). */
+.vetrina__esito { margin-top: var(--space-8); max-width: 460px; }
+.vetrina__esito-t {
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+  line-height: var(--leading-snug);
+}
+.vetrina__esito .vetrina__prosa { margin-top: var(--space-2); }
+.vetrina__esito .btn { margin-top: var(--space-3); }
 
-/* privacy band */
-.privacy-band { text-align: center; max-width: 640px; margin: 0 auto; }
-.privacy-band .shield { width: 36px; height: 36px; color: #3EA06A; margin: 0 auto 18px; }
-.privacy-band h2 { font-family: var(--font-serif); font-weight: 400; font-size: clamp(2rem, 1.4rem + 2.4vw, 2.9rem); line-height: 1.06; letter-spacing: -0.01em; margin-bottom: 14px; }
-.privacy-band p { font-size: 1.1rem; color: var(--mk-ink-2); line-height: 1.55; }
+.vetrina__promessa {
+  margin-top: var(--space-5);
+  font-size: var(--text-sm);
+  line-height: var(--leading-snug);
+  color: var(--text-secondary);
+  max-width: 56ch;
+}
 
-/* footer */
-.mkt-foot { border-top: 1px solid var(--mk-hair); padding: 48px 0; }
-.mkt-foot .wrap { display: flex; justify-content: space-between; gap: 24px; flex-wrap: wrap; align-items: center; }
-.mkt-foot nav { display: flex; gap: 24px; flex-wrap: wrap; }
-.mkt-foot a { color: var(--mk-ink-2); font-size: 0.92rem; text-decoration: none; }
-.mkt-foot a:hover { color: var(--mk-ink); }
-.mkt-foot .copy { color: var(--mk-ink-3); font-size: 0.88rem; }
+/* --- I tre passi ------------------------------------------------------------
+   Una lista numerata vera, separata da fili. Non sono tre schede affiancate:
+   un passo viene dopo l'altro, e tre riquadri uguali di fianco non lo dicono —
+   dicono «tre funzioni», che è un'altra frase. I numeri sono tabellari come
+   ogni numero del prodotto. */
+.vetrina__passi {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  border-top: 1px solid var(--line-subtle);
+}
+.vetrina__passo {
+  display: grid;
+  grid-template-columns: 2rem 1fr;
+  gap: var(--space-3);
+  padding-block: var(--space-4);
+  border-bottom: 1px solid var(--line-subtle);
+}
+.vetrina__passo-n {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-tertiary);
+  line-height: var(--leading-prose);
+}
+.vetrina__passo-t {
+  display: block;
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+  line-height: var(--leading-snug);
+  letter-spacing: -0.008em;
+}
+.vetrina__passo p {
+  margin-top: var(--space-1);
+  color: var(--text-secondary);
+  line-height: var(--leading-prose);
+}
 
-/* ---- Motion (Emil): staggered reveal, once; reduced-motion safe -------- */
-[data-rise] { opacity: 0; transform: translateY(14px); transition: opacity 620ms var(--mk-ease), transform 620ms var(--mk-ease); }
-[data-rise].in { opacity: 1; transform: none; }
-@media (prefers-reduced-motion: reduce) { [data-rise] { opacity: 1; transform: none; transition: none; } }
+/* --- Prosa e conti ----------------------------------------------------------
+   Due colonne di parole, non una tabella: sono tre righe, e una tabella per
+   tre righe è un mobile per tre libri. Sotto i 768 diventa una colonna, come
+   ogni griglia a due del prodotto. */
+.vetrina__prosa {
+  color: var(--text-secondary);
+  line-height: var(--leading-prose);
+  max-width: 62ch;
+}
+.vetrina__prosa + .vetrina__prosa { margin-top: var(--space-3); }
+.vetrina__passi + .vetrina__prosa { margin-top: var(--space-4); }
+
+.vetrina__conti {
+  margin: var(--space-6) 0 0;
+  border-top: 1px solid var(--line-subtle);
+  font-variant-numeric: tabular-nums;
+}
+.vetrina__conto {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
+  gap: var(--space-3);
+  padding-block: var(--space-3);
+  border-bottom: 1px solid var(--line-subtle);
+  font-size: var(--text-base);
+}
+.vetrina__conto dt { font-weight: var(--weight-medium); }
+.vetrina__conto dd { margin: 0; color: var(--text-secondary); }
+@media (max-width: 768px) {
+  .vetrina__conto { grid-template-columns: 1fr; gap: var(--space-1); }
+}
+
+/* --- Piede ------------------------------------------------------------------
+   L'unico cambio di fondo della pagina, e serve a dire «qui finisce». */
+.vetrina__piede {
+  border-top: 1px solid var(--line-subtle);
+  background: var(--surface-sunken);
+  padding-block: var(--space-8);
+}
+.vetrina__piede-riga {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3) var(--space-6);
+}
+.vetrina__copia {
+  margin-left: auto;
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-tertiary);
+}
+@media (max-width: 768px) {
+  .vetrina__copia { margin-left: 0; width: 100%; }
+}

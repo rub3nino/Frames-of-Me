@@ -1,23 +1,338 @@
-body { background: var(--c-canvas); }
+/* ============================================================================
+   Frames of Me — console di servizio (admin)
+   Load order: @ui/tokens.css → @ui/base.css → @ui/components.css → questo file
 
-.ad-wrap { display: flex; min-height: 100dvh; }
-.ad-wrap .sidebar { position: sticky; top: 0; height: 100dvh; align-self: flex-start; }
-.ad-brand { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 1.0625rem; letter-spacing: -0.01em; color: var(--c-ink); text-decoration: none; padding: 4px 10px 18px; }
-.ad-brand svg { width: 26px; height: 26px; }
-.nav-item svg { width: 18px; height: 18px; color: var(--c-ink-3); flex: none; }
-.ad-chip { font-size: var(--fs-xs); color: var(--c-ink-3); padding: 10px; line-height: 1.3; }
-.ad-main { flex: 1; padding: var(--s-6) var(--s-7); max-width: 1120px; width: 100%; }
-.ad-top { margin-bottom: var(--s-6); }
-.ad-top .sub { color: var(--c-ink-3); font-size: var(--fs-sm); margin-top: 4px; }
+   Qui c'è SOLO il guscio e le poche composizioni che il kit non ha: barra
+   laterale, topbar, pagina, coda di moderazione, finestra di conferma. Tutto
+   il resto (pulsanti, campi, tabelle, pannello, chip, esiti, vuoti) viene da
+   components.css e non si riscrive.
 
-.ad-auth { min-height: 100dvh; display: grid; place-items: center; padding: var(--s-6); }
-.ad-auth .card { width: 100%; max-width: 420px; }
+   Ogni `var()` è un RUOLO della prima metà di tokens.css. Nessun alias del
+   vecchio sistema (--c-*, --s-*, --fs-*, --maxw-*): quel blocco viene
+   cancellato e questo file non lo cita. Dove serviva una misura che non ha un
+   ruolo — la larghezza massima di pagina — il numero è scritto a mano con il
+   motivo accanto.
 
-.statgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: var(--s-3); }
-.barstack { display: flex; height: 14px; border-radius: 999px; overflow: hidden; background: var(--c-sunken); }
-.barstack > span { display: block; height: 100%; }
-.legend { display: flex; gap: var(--s-5); flex-wrap: wrap; margin-top: var(--s-4); font-size: var(--fs-sm); }
-.legend .k { display: inline-flex; align-items: center; gap: 7px; color: var(--c-ink-2); }
-.legend .dot { width: 9px; height: 9px; border-radius: 3px; }
+   Perché questa app ha un guscio e il percorso partecipante no: lo dice
+   `docs/brand/README.md`. Qui lo strumento si usa per ore, da due persone, e
+   deve sparire. Niente marca sul fondo, niente ombre a galleggiare, niente
+   blu a colorare un'azione: si guarda il lavoro.
+   ============================================================================ */
 
-@media (max-width: 720px) { .ad-wrap { flex-direction: column; } .ad-wrap .sidebar { width: 100%; height: auto; position: static; flex-direction: row; overflow-x: auto; } }
+body { background: var(--surface-page); }
+
+/* --- Guscio ----------------------------------------------------------------
+   Due colonne: barra laterale 240 px e area di lavoro. Compressa la barra
+   scende a 56, la misura in cui resta l'icona e la voce corrente si legge
+   ancora. Sotto i 1024 px la barra diventa un cassetto (REGOLE §8) e la
+   griglia torna a una colonna sola. */
+.guscio { display: grid; grid-template-columns: var(--sidebar-w) minmax(0, 1fr); min-height: 100dvh; }
+.guscio[data-compressa="true"] { grid-template-columns: 56px minmax(0, 1fr); }
+
+/* --- Barra laterale --------------------------------------------------------
+   Un grado più scura della pagina (surface-sunken): è così che la schermata
+   resta calma. Il separatore è una linea, non un'ombra. */
+.barra {
+  position: sticky; top: 0; align-self: start; z-index: 2;
+  height: 100dvh; display: flex; flex-direction: column;
+  padding-bottom: var(--space-2);
+  background: var(--surface-sunken); border-right: 1px solid var(--line-subtle);
+  overflow: hidden;
+}
+.barra__testa {
+  display: flex; align-items: center; gap: var(--space-2);
+  height: var(--topbar-h); flex-shrink: 0; padding: 0 var(--space-3);
+}
+.barra__marchio {
+  display: flex; align-items: center; gap: var(--space-2); min-width: 0;
+  color: var(--text-primary); text-decoration: none;
+  font-size: var(--text-base); font-weight: var(--weight-semibold); letter-spacing: -0.01em;
+}
+.barra__marchio:hover { text-decoration: none; }
+.barra__marchio svg { width: 20px; height: 20px; flex-shrink: 0; }
+.barra__nome { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.barra__nav { flex: 1; min-height: 0; overflow-y: auto; padding: var(--space-2) var(--space-2) 0; }
+.barra__gruppo + .barra__gruppo { margin-top: var(--space-4); }
+.barra__etichetta {
+  padding: 0 var(--space-2) var(--space-1);
+  font-size: var(--text-xs); color: var(--text-tertiary);
+}
+
+/* La voce corrente NON è blu: il blu è selezione e fuoco, non navigazione.
+   È il fondo premuto più l'inchiostro pieno, che si leggono anche compressi.
+   Nessuna transizione: cambiare schermata non è un'animazione. */
+.voce {
+  display: flex; align-items: center; gap: var(--space-2);
+  height: 30px; padding: 0 var(--space-2); border-radius: var(--radius-sm);
+  color: var(--text-secondary); text-decoration: none;
+  font-size: var(--text-base); white-space: nowrap; overflow: hidden;
+}
+.voce:hover { background: var(--surface-hover); color: var(--text-primary); text-decoration: none; }
+.voce[aria-current="page"] {
+  background: var(--surface-pressed); color: var(--text-primary); font-weight: var(--weight-medium);
+}
+.voce svg { width: 16px; height: 16px; flex-shrink: 0; color: var(--text-tertiary); }
+.voce[aria-current="page"] svg { color: var(--text-primary); }
+.voce__testo { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+.barra__pie {
+  flex-shrink: 0; padding: var(--space-3) var(--space-3) 0; margin-top: var(--space-2);
+  border-top: 1px solid var(--line-subtle);
+  font-size: var(--text-xs); color: var(--text-tertiary); line-height: var(--leading-snug);
+}
+.barra__chi { display: block; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; }
+
+/* Compressa: restano le icone. Le etichette dei gruppi spariscono — un gruppo
+   senza nome è rumore — e il nome della voce resta nel suo `title`. */
+.guscio[data-compressa="true"] .barra__nome,
+.guscio[data-compressa="true"] .barra__etichetta,
+.guscio[data-compressa="true"] .voce__testo,
+.guscio[data-compressa="true"] .barra__pie { display: none; }
+.guscio[data-compressa="true"] .voce { justify-content: center; padding: 0; }
+.guscio[data-compressa="true"] .barra__testa { justify-content: center; padding: 0; }
+
+/* --- Topbar ----------------------------------------------------------------
+   48 px. Tiene lo scopo (quale evento) e chi lavora. Il titolo della
+   schermata sta nella pagina, non qui: ripeterlo è una riga da leggere due
+   volte. z-index 1: sopra il contenuto che scorre e sopra le intestazioni
+   appiccicate della tabella, sotto il pannello (--z-panel = 40). */
+.area { display: flex; flex-direction: column; min-width: 0; }
+.topbar {
+  position: sticky; top: 0; z-index: 1;
+  display: flex; align-items: center; gap: var(--space-3);
+  height: var(--topbar-h); flex-shrink: 0; padding: 0 var(--space-6);
+  background: var(--surface-page); border-bottom: 1px solid var(--line-subtle);
+}
+.topbar__fine { margin-left: auto; display: flex; align-items: center; gap: var(--space-3); }
+.topbar__ambito { display: flex; align-items: center; gap: var(--space-2); min-width: 0; font-size: var(--text-sm); color: var(--text-secondary); }
+.topbar .select { height: 26px; width: auto; min-width: 180px; padding: 0 var(--space-6) 0 var(--space-2); font-size: var(--text-sm); }
+.topbar__chi { font-size: var(--text-xs); color: var(--text-tertiary); }
+/* Il tasto del cassetto esiste solo quando la barra è un cassetto. */
+.topbar__cassetto { display: none; }
+
+/* --- Pagina ----------------------------------------------------------------
+   `--page-w` è la pagina intera: oltre quella misura una riga di tabella non
+   si segue più da un capo all'altro.
+   Margini laterali: 16 sotto 768, 24 sotto 1280, 32 da 1280, 64 oltre 1600,
+   dove 1400 px di dati senz'aria si leggono male (REGOLE §8). */
+.pagina {
+  width: 100%; max-width: var(--page-w); margin-inline: auto;
+  padding: var(--space-6) var(--space-6) var(--space-16);
+}
+@media (min-width: 1280px) { .topbar { padding-inline: var(--space-8); } .pagina { padding-inline: var(--space-8); } }
+@media (min-width: 1600px) { .topbar { padding-inline: var(--space-16); } .pagina { padding-inline: var(--space-16); } }
+
+.testa { display: flex; align-items: flex-end; gap: var(--space-4); flex-wrap: wrap; margin-bottom: var(--space-5); }
+.testa__testo { flex: 1; min-width: 260px; }
+.testa h1 { font-size: var(--text-xl); font-weight: var(--weight-semibold); letter-spacing: -0.01em; }
+.testa__dek { margin-top: var(--space-1); font-size: var(--text-base); color: var(--text-secondary); max-width: 78ch; }
+.testa__azioni { display: flex; align-items: flex-end; gap: var(--space-2); flex-wrap: wrap; }
+
+/* --- Barra degli strumenti di una schermata --------------------------------
+   Filtri a sinistra, ricerca a destra, tutto alto 32 così sta su una riga.
+   Nessuna transizione: un filtro non si anima. */
+.strumenti { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; margin-bottom: var(--space-4); }
+.strumenti__fine { margin-left: auto; display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.strumenti .tabs { margin-bottom: 0; }
+/* Etichetta e controllo sulla stessa riga, nella barra degli strumenti: è il
+   `.field` sdraiato, non un componente nuovo. */
+.campo-riga { display: inline-flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm); color: var(--text-secondary); }
+/* Il campo di ricerca di una schermata: larghezza in una classe e non in uno
+   stile in linea, altrimenti a 768 px vince lui e la barra esce dallo
+   schermo. */
+.cerca { min-width: 240px; }
+
+/* --- Blocchi di una schermata ---------------------------------------------
+   Solo spazio verticale e una riga di titolo: niente riquadro dentro un
+   riquadro (REGOLE §1.6). */
+.sezione + .sezione { margin-top: var(--space-6); }
+.sezione__testa { display: flex; align-items: baseline; gap: var(--space-3); flex-wrap: wrap; margin-bottom: var(--space-3); }
+.sezione__testa h2 { font-size: var(--text-lg); font-weight: var(--weight-semibold); }
+.sezione__nota { font-size: var(--text-sm); color: var(--text-secondary); max-width: 90ch; }
+.sezione__testa .sezione__nota { margin-left: auto; }
+
+/* Coppie etichetta/valore. Un valore assente è `—`, mai `0` (REGOLE §1.5). */
+.dati { display: grid; grid-template-columns: minmax(0, auto) minmax(0, 1fr); gap: var(--space-2) var(--space-4); font-size: var(--text-sm); }
+.dati dt { color: var(--text-tertiary); }
+.dati dd { margin: 0; color: var(--text-primary); overflow-wrap: anywhere; }
+
+/* Una riga di riepilogo, non una griglia di numeri grandi (REGOLE §1, divieti). */
+.numeri { display: flex; flex-wrap: wrap; gap: var(--space-3) var(--space-8); padding: var(--space-4); border: 1px solid var(--line-subtle); border-radius: var(--radius-md); background: var(--surface-raised); }
+.numero { display: flex; flex-direction: column; gap: 2px; min-width: 92px; }
+.numero b { font-size: var(--text-lg); font-weight: var(--weight-semibold); font-variant-numeric: tabular-nums; line-height: var(--leading-tight); }
+.numero span { font-size: var(--text-xs); color: var(--text-tertiary); }
+/* «Guarda qui» è ambra, non rossa: un numero alto non blocca il lavoro. */
+.numero[data-guarda="true"] b { color: var(--attention-text); }
+
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.mono--id { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-secondary); }
+
+/* Il motivo per cui un primario non si può premere, scritto: un pulsante
+   spento e muto è un vicolo cieco (REGOLE §3). */
+.primario { display: inline-flex; flex-direction: column; align-items: flex-start; gap: var(--space-1); }
+.primario--blocco { display: flex; width: 100%; }
+/* Una pila verticale: lo stesso gradino di spazio che c'è tra due campi. */
+.pila { display: flex; flex-direction: column; gap: var(--space-4); }
+.motivo { font-size: var(--text-xs); color: var(--text-tertiary); max-width: 52ch; }
+
+/* --- Fuoco -----------------------------------------------------------------
+   L'anello lo dipinge `base.css` per tutto il prodotto, e qui non si tocca:
+   in una console che si guida da tastiera per ore, con un tasto che distrugge
+   un file, non vedere il fuoco è il modo in cui si rifiuta la foto sbagliata.
+   Qui ci sono solo le due eccezioni che l'identità chiede.
+
+   Nei campi l'anello esterno lascia il posto a bordo accento e alone, come
+   dice components.css: le due cose non si sommano (REGOLE §5). */
+.input:focus-visible, .select:focus-visible, .textarea:focus-visible { outline: none; }
+/* Il corpo del pannello riceve il fuoco all'apertura, e la pagina lo riceve
+   quando il pannello si chiude e chi l'aveva aperto non c'è più. Sono
+   contenitori, non controlli: l'anello si disegna DENTRO il bordo, così si
+   vede dove è finito il fuoco senza un alone intorno a mezza schermata. */
+.panel__body:focus-visible, .pagina:focus-visible { outline-offset: -3px; }
+
+/* --- Esiti che il kit non nomina ------------------------------------------
+   Costruiti con le FORME già definite (cerchio vuoto, mezzo pieno, pieno,
+   rombo, trattino) e con i ruoli: nessuna tinta nuova. «In attesa della
+   pipeline» è un cerchio vuoto NEUTRO, perché non c'è niente da guardare:
+   l'ambra significa «guarda qui» e resta a ciò che aspetta una persona. */
+.esito--attesa::before { border: 1.5px solid var(--neutral-mark); }
+
+/* --- Tabella: le poche aggiunte dense ------------------------------------- */
+.tbl td.tbl__mini { width: 40px; padding-right: 0; }
+.tbl .mini { display: block; width: 28px; height: 28px; border-radius: var(--radius-xs); object-fit: cover; background: var(--surface-hover); }
+.tbl__fine { display: flex; align-items: center; justify-content: center; gap: var(--space-3); padding: var(--space-3); border-top: 1px solid var(--line-subtle); }
+.tbl tbody tr.riga--click { cursor: pointer; }
+/* La riga corrente (aria-selected, in components.css: fondo accent-soft e
+   filetto interno) e la riga spuntata sono due gesti diversi e non si
+   fondono: la spunta non colora la riga, dice solo che è inclusa. */
+.tbl td.tbl__check, .tbl th.tbl__check { width: 34px; text-align: center; }
+.tbl__azioni { width: 1%; white-space: nowrap; text-align: right; }
+
+/* Sotto i 768 px una tabella densa diventa schede (REGOLE §8): l'involucro
+   perde bordo e fondo, altrimenti sarebbe un riquadro dentro un riquadro. */
+@media (max-width: 768px) {
+  .tbl-wrap:has(.tbl--schede) { border: 0; border-radius: 0; background: none; overflow: visible; }
+  .tbl--schede thead { display: none; }
+  .tbl--schede, .tbl--schede tbody, .tbl--schede tr, .tbl--schede td { display: block; }
+  .tbl--schede tr { padding: var(--space-2) var(--space-3); border: 1px solid var(--line-subtle); border-radius: var(--radius-md); background: var(--surface-raised); }
+  .tbl--schede tr + tr { margin-top: var(--space-2); }
+  .tbl--schede td { height: auto; padding: var(--space-1) 0; border-bottom: 0; text-align: left; }
+  .tbl--schede td[data-et]::before {
+    content: attr(data-et) " "; display: block;
+    font-size: var(--text-xs); color: var(--text-tertiary);
+  }
+  .tbl--schede td.num { text-align: left; }
+  .tbl--schede .tbl__azioni { width: auto; text-align: left; padding-top: var(--space-2); }
+}
+
+/* Provini dentro un pannello: una griglia di quadrati, senza riquadro
+   intorno — il pannello è già la superficie. */
+.provini { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: var(--space-2); }
+.provini a { position: relative; display: block; aspect-ratio: 1; border-radius: var(--radius-xs); overflow: hidden; background: var(--surface-hover); }
+.provini img { width: 100%; height: 100%; object-fit: cover; }
+.provini .chip { position: absolute; left: 4px; bottom: 4px; }
+
+/* --- Coda di moderazione --------------------------------------------------
+   Il lavoro è la foto: prende tutto lo spazio che resta. La coda sta a destra
+   e resta stretta, perché serve a sapere cosa manca, non a sfogliare. */
+.moderazione { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: var(--space-5); align-items: start; }
+@media (max-width: 1180px) { .moderazione { grid-template-columns: minmax(0, 1fr); } }
+.palco { border: 1px solid var(--line-subtle); border-radius: var(--radius-md); background: var(--surface-raised); overflow: hidden; }
+.palco__foto { display: block; width: 100%; max-height: 60vh; object-fit: contain; background: var(--surface-sunken); }
+.palco__vuoto { display: grid; place-items: center; height: 280px; background: var(--surface-sunken); color: var(--text-tertiary); font-size: var(--text-sm); }
+.palco__sotto { display: flex; align-items: center; gap: var(--space-2) var(--space-4); flex-wrap: wrap; padding: var(--space-3) var(--space-4); border-top: 1px solid var(--line-subtle); font-size: var(--text-sm); color: var(--text-secondary); }
+.palco__azioni { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; padding: var(--space-3) var(--space-4); border-top: 1px solid var(--line-subtle); background: var(--surface-sunken); }
+.coda { border: 1px solid var(--line-subtle); border-radius: var(--radius-md); background: var(--surface-raised); overflow: hidden; }
+.coda__testa { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--line-subtle); background: var(--surface-sunken); font-size: var(--text-sm); color: var(--text-secondary); }
+.coda__elenco { max-height: 56vh; overflow: auto; }
+.coda .tbl-wrap { border: 0; border-radius: 0; }
+.tasti { display: flex; align-items: center; gap: var(--space-1) var(--space-3); flex-wrap: wrap; font-size: var(--text-sm); color: var(--text-secondary); }
+.tasti b { display: inline-flex; align-items: center; gap: var(--space-1); font-weight: var(--weight-regular); }
+
+/* --- Finestra di conferma -------------------------------------------------
+   REGOLE §4 dice: una conferma irreversibile è un DIALOGO, poi il primario
+   pericolo — non un pannello, che non è un dialogo. components.css non ha
+   l'anatomia di un dialogo, quindi questa è costruita sul `<dialog>` nativo
+   (`showModal`: fuoco intrappolato, pagina inerte, Esc, e il fuoco che torna
+   da sé a chi l'ha aperto) con i soli ruoli: --radius-lg è il raggio delle
+   «finestre» in tokens.css, --shadow-float la loro profondità. Il velo è
+   quello del browser: non c'è un ruolo per il velo e non se ne inventa uno. */
+.finestra {
+  width: min(460px, calc(100vw - 2 * var(--space-6))); max-width: none;
+  padding: 0; border: 1px solid var(--line-strong); border-radius: var(--radius-lg);
+  background: var(--surface-raised); color: var(--text-primary);
+  box-shadow: var(--shadow-float);
+}
+.finestra__corpo { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-5); }
+.finestra h2 { font-size: var(--text-md); font-weight: var(--weight-semibold); }
+.finestra p { font-size: var(--text-base); color: var(--text-secondary); }
+.finestra strong { color: var(--text-primary); font-weight: var(--weight-medium); }
+.finestra__cosa {
+  margin: 0; padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--line-subtle); border-bottom: 1px solid var(--line-subtle);
+  font-size: var(--text-sm); color: var(--text-secondary); list-style: none;
+  max-height: 30vh; overflow: auto;
+}
+.finestra__cosa li { display: flex; gap: var(--space-2); padding: 2px 0; }
+/* Piede: primario a sinistra, Annulla subito dopo (REGOLE §3 e §4). */
+.finestra__pie { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-3) var(--space-5); border-top: 1px solid var(--line-subtle); background: var(--surface-sunken); flex-wrap: wrap; }
+
+/* --- Accesso ---------------------------------------------------------------
+   L'unica schermata senza guscio: non c'è ancora un lavoro da mostrare. */
+.accesso-pagina { min-height: 100dvh; display: grid; place-items: center; padding: var(--space-6); background: var(--surface-page); }
+.accesso-modulo { width: 100%; max-width: 380px; display: flex; flex-direction: column; gap: var(--space-4); }
+.accesso-modulo__testa { display: flex; align-items: center; gap: var(--space-2); color: var(--text-primary); font-size: var(--text-base); font-weight: var(--weight-semibold); }
+.accesso-modulo__testa svg { width: 22px; height: 22px; }
+.accesso-modulo h1 { font-size: var(--text-xl); font-weight: var(--weight-semibold); letter-spacing: -0.01em; }
+.accesso-modulo__dek { margin-top: var(--space-1); font-size: var(--text-base); color: var(--text-secondary); }
+.accesso-modulo__nota { font-size: var(--text-xs); color: var(--text-tertiary); line-height: var(--leading-snug); }
+
+/* --- Sotto i 1024 px: la barra diventa un cassetto (REGOLE §8) ------------
+   Non è un secondo layout: è la stessa barra, che entra da sinistra quando
+   la si chiede. Il pannello laterale va a tutto schermo da sé
+   (components.css). Questa console si usa su una scrivania; sul telefono
+   serve a guardare, non a moderare per ore. */
+@media (max-width: 1024px) {
+  .guscio, .guscio[data-compressa="true"] { grid-template-columns: minmax(0, 1fr); }
+  .topbar__cassetto { display: inline-flex; }
+  /* Comprimere un cassetto non vuol dire niente: il tasto sparisce. */
+  .topbar__comprimi { display: none; }
+  .barra {
+    position: fixed; inset: 0 auto 0 0; width: var(--sidebar-w); z-index: var(--z-overlay);
+    border-right: 1px solid var(--line-strong); box-shadow: var(--shadow-float);
+    transform: translateX(-100%); visibility: hidden;
+    transition: transform var(--dur-panel) var(--ease-panel), visibility 0s linear var(--dur-panel);
+  }
+  .guscio[data-cassetto="true"] .barra {
+    transform: none; visibility: visible;
+    transition: transform var(--dur-panel) var(--ease-panel), visibility 0s;
+  }
+  /* Nel cassetto le etichette tornano: lo spazio c'è. */
+  .guscio[data-compressa="true"] .barra__nome,
+  .guscio[data-compressa="true"] .barra__etichetta,
+  .guscio[data-compressa="true"] .voce__testo,
+  .guscio[data-compressa="true"] .barra__pie { display: revert; }
+  .guscio[data-compressa="true"] .voce { justify-content: flex-start; padding: 0 var(--space-2); }
+  .guscio[data-compressa="true"] .barra__testa { justify-content: flex-start; padding: 0 var(--space-3); }
+}
+@media (max-width: 768px) {
+  .topbar { padding-inline: var(--space-4); }
+  .pagina { padding-inline: var(--space-4); }
+  .topbar .select { min-width: 0; }
+  /* Alla larghezza del pollice la topbar tiene solo il cassetto e l'ambito:
+     l'identificativo dell'evento è già nel nome accanto, e una barra che
+     scorre di lato è una barra rotta. */
+  .topbar__fine { display: none; }
+  .testa__azioni, .strumenti, .strumenti__fine { width: 100%; }
+  .strumenti__fine { margin-left: 0; }
+  .testa__azioni .input-group { width: 100%; }
+  .cerca { min-width: 0; width: 100%; }
+}
+
+/* Il cassetto dissolve invece di scorrere, come il pannello — e solo dove il
+   cassetto esiste: sopra i 1024 px la barra è una colonna e resta ferma. */
+@media (max-width: 1024px) and (prefers-reduced-motion: reduce) {
+  .barra { transform: none; opacity: 0; transition: opacity var(--dur-press) var(--ease-out), visibility 0s linear var(--dur-press); }
+  .guscio[data-cassetto="true"] .barra { opacity: 1; transition: opacity var(--dur-press) var(--ease-out), visibility 0s; }
+}

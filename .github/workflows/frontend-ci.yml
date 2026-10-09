@@ -5,8 +5,13 @@
 # real production build so a broken build fails the PR. The landing app has no
 # build step (static HTML), so we only assert its entry file exists.
 #
-# Apps are standalone: each has its own package.json + lockfile and is NOT part
-# of a root npm workspace, so we install and build inside each app directory.
+# Apps are standalone: each is its own pnpm root with its own package.json +
+# pnpm-lock.yaml and is NOT part of the backend workspace, so we install and
+# build inside each app directory. pnpm is pinned to the same version the
+# backend workspace uses, here in the workflow and not in the apps'
+# package.json: pnpm 12 records `packageManager` in the lockfile, so declaring
+# it there would make `--frozen-lockfile` fail until every lockfile is
+# regenerated.
 # Vite resolves the shared packages (../../packages/ui, ../../packages/api-client)
 # via the `@ui`/`@api` aliases + `server.fs.allow` already set in each
 # vite.config.ts, so no extra wiring is needed here.
@@ -99,26 +104,36 @@ jobs:
             echo "::notice::${{ matrix.app }} unchanged — skipping build"
           fi
 
+      # Has to run before setup-node, or `cache: pnpm` finds no pnpm binary to
+      # ask for the store path. Not corepack: `corepack prepare --activate`
+      # creates no shim, and setup-node then replaces the Node that `corepack
+      # enable` would have put one under. The version is explicit so a change
+      # to the runner image cannot change which pnpm resolves the lockfile.
+      - name: Install pnpm 12.6.0
+        if: steps.gate.outputs.changed == 'true'
+        uses: pnpm/action-setup@v4
+        with:
+          version: 12.6.0
+
       - name: Setup Node
         if: steps.gate.outputs.changed == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          # Each app has its own lockfile; cache per-app node_modules via npm cache.
-          cache: npm
-          cache-dependency-path: frontend/apps/${{ matrix.app }}/package-lock.json
+          cache: pnpm
+          cache-dependency-path: frontend/apps/${{ matrix.app }}/pnpm-lock.yaml
 
       - name: Install
         if: steps.gate.outputs.changed == 'true'
         working-directory: frontend/apps/${{ matrix.app }}
-        # Prefer the reproducible `npm ci`; fall back to `npm install` if the
-        # lockfile is absent or out of sync.
-        run: npm ci || npm install
+        # No fallback: a lockfile out of sync must fail the PR, not be silently
+        # resolved to whatever is newest on the registry.
+        run: pnpm install --frozen-lockfile
 
       - name: Build
         if: steps.gate.outputs.changed == 'true'
         working-directory: frontend/apps/${{ matrix.app }}
-        run: npm run build
+        run: pnpm build
 
       - name: Assert dist output
         if: steps.gate.outputs.changed == 'true'

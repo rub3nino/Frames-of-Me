@@ -1,0 +1,7 @@
+# This app is its own pnpm root: the frontend/ apps are deliberately NOT part of the
+# backend workspace (see the repo's pnpm-workspace.yaml) and keep per-app lockfiles.
+#
+# pnpm blocks every dependency build script by default and fails the install on any
+# unlisted one. esbuild is vite's bundler and has to build, or `pnpm build` cannot run.
+allowBuilds:
+  esbuild: true

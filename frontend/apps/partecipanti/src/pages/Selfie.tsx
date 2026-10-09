@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
-import { Screen, CheckIcon } from "../ui";
+import { Link, useNavigate } from "react-router-dom";
+import { Screen, Callout, GlifoMotivo, motivoSelfie } from "../ui";
 import { api, EVENT_SLUG } from "../lib/api";
 import {
   CHALLENGE_STEPS, LivenessError, SERVER_ACTION_LABELS, STEP_LABELS, cameraSupported,
@@ -9,161 +9,361 @@ import {
 } from "../lib/liveness";
 import type { FaceLandmarker } from "@mediapipe/tasks-vision";
 
-const CONSENT_TEXT_VERSION = "2026-10-08";
-const CONSENT_TEXT =
+/**
+ * Il selfie. La schermata con più stati di tutta l'app, e la regola che la
+ * governa è una sola: NESSUNO STATO È SOLO COLORE. Ogni stato ha una forma e
+ * una parola, e un rifiuto dice che cosa fare di diverso — non «non valido».
+ *
+ * Gli stati, e da dove ognuno si sa davvero:
+ *
+ * - DAL BROWSER, mentre la camera è aperta: sto aprendo la camera; il passo
+ *   da fare (guarda, gira a sinistra, gira a destra, sbatti le palpebre) con
+ *   le tacche di `.mini-tappe` e la parola in una regione viva; tempo scaduto;
+ *   camera negata o assente; file di formato sbagliato.
+ * - DAL SERVER, dopo l'invio: nessun volto, volto troppo piccolo, foto
+ *   sfocata o scura, più di una persona. Questi quattro NON si possono sapere
+ *   qui: il landmarker gira con `numFaces: 1` e non misura la qualità, quindi
+ *   inventarli lato client vorrebbe dire mentire. Arrivano in `reason` da
+ *   `GET /v1/events/:slug/gallery` (CONTRACTS.md), e questa pagina li RILEGGE
+ *   all'ingresso: chi torna a rifare il selfie trova scritto, sopra la
+ *   camera, perché il precedente non è andato e cosa cambiare. Ogni motivo ha
+ *   il suo glifo, non la sua tinta.
+ * - MENTRE SI ASPETTA un clic già fatto: `.btn-spin` DENTRO il bottone che ha
+ *   iniziato l'attesa. Non uno scheletro al posto del bottone, non uno
+ *   spinner a tutto schermo.
+ *
+ * Il consenso: un adulto lo dà qui. Un minore NON lo dà qui — l'ha dato chi
+ * ne ha la responsabilità, e chiederglielo di nuovo sarebbe far firmare a un
+ * quindicenne una cosa che non può autorizzare. Se il segno del genitore non
+ * c'è, questa pagina NON apre la camera: senza quel consenso il volto non si
+ * cerca, e il cancello è qui perché il server non ha ancora la rotta.
+ */
+
+const CONSENSO_VERSIONE = "2026-10-08";
+const CONSENSO_TESTO =
   "Acconsento al confronto del mio volto con le foto dell'evento per trovare gli scatti in cui compaio. Il selfie viene cancellato subito dopo la ricerca; un modello numerico del mio volto resta per la durata dell'evento, solo per agganciare le foto caricate in seguito, e viene cancellato con le foto. Le foto restano disponibili per 90 giorni.";
 
-type Phase = "consent" | "capture" | "result";
-type Liveness = "challenge" | "file";
+type Fase = "consenso" | "ripresa";
+type Provenienza = "challenge" | "file";
 const isImage = (f: File) => f.type === "image/jpeg" || f.type === "image/png";
 
 export default function Selfie() {
-  const [phase, setPhase] = useState<Phase>("consent");
-  const [accepted, setAccepted] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  const nav = useNavigate();
+  const minore = sessionStorage.getItem("fom.minore") === "1";
+  const consensoGenitore = sessionStorage.getItem("fom.consenso-genitore");
+
+  /* Per un minore il consenso c'è già: si parte dalla ripresa. */
+  const [fase, setFase] = useState<Fase>(minore && consensoGenitore ? "ripresa" : "consenso");
+  const [accettato, setAccettato] = useState(false);
+  const [inCorso, setInCorso] = useState(false);
+  const [errore, setErrore] = useState("");
   const [file, setFile] = useState<File | null>(null);
-  const [liveness, setLiveness] = useState<Liveness>("file");
-  // Server-verified challenge (v4 report F05): set when the server dictated and the client
-  // completed a challenge. Its frames are uploaded instead of a single selfie.
-  const [challenge, setChallenge] = useState<{ id: string; frames: Blob[] } | null>(null);
-  const [preview, setPreview] = useState<string | null>(null);
-  const [mode, setMode] = useState<"camera" | "file">("camera");
-  const [attempt, setAttempt] = useState(0);
+  const [provenienza, setProvenienza] = useState<Provenienza>("file");
+  /* La sfida verificata dal server (F05): piena quando il server ha dettato la
+     sequenza e il client l'ha completata. In quel caso si caricano i suoi
+     fotogrammi, non un selfie singolo — è questo che la rende non aggirabile
+     dal client, a differenza delle indicazioni locali. */
+  const [sfida, setSfida] = useState<{ id: string; frames: Blob[] } | null>(null);
+  const [anteprima, setAnteprima] = useState<string | null>(null);
+  const [modo, setModo] = useState<"camera" | "file">(cameraSupported() ? "camera" : "file");
+  const [motivoCamera, setMotivoCamera] = useState("");
+  const [tentativo, setTentativo] = useState(0);
+  /* Il motivo del selfie precedente, letto dal server una volta sola. */
+  const [motivoPrec, setMotivoPrec] = useState<ReturnType<typeof motivoSelfie>>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => () => { if (preview) URL.revokeObjectURL(preview); }, [preview]);
+  useEffect(() => () => { if (anteprima) URL.revokeObjectURL(anteprima); }, [anteprima]);
 
-  async function saveConsent(e: React.FormEvent) {
+  /* Perché il selfie precedente non è andato. Una chiamata, all'ingresso.
+     `no_photos_yet` non è un rifiuto: il selfie era buono, mancano le foto. */
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      try {
+        const g: any = await api.getGallery(EVENT_SLUG, { limit: 1 });
+        if (!vivo || g?.status === "queued") return;
+        const m = motivoSelfie(g?.reason);
+        if (m && g?.reason !== "no_photos_yet") setMotivoPrec(m);
+      } catch { /* senza galleria la pagina funziona comunque */ }
+    })();
+    return () => { vivo = false; };
+  }, []);
+
+  async function salvaConsenso(e: React.FormEvent) {
     e.preventDefault();
-    if (!accepted || busy) return;
-    setBusy(true); setErr(null);
+    if (!accettato || inCorso) return;
+    setInCorso(true);
+    setErrore("");
     try {
-      await api.giveConsent(EVENT_SLUG, CONSENT_TEXT_VERSION, true); // POST .../consent
-      setMode(cameraSupported() ? "camera" : "file");
-      setPhase("capture");
-    } catch (e: any) { setErr(e?.message || "Non riusciamo a salvare il consenso."); }
-    finally { setBusy(false); }
+      await api.giveConsent(EVENT_SLUG, CONSENSO_VERSIONE, true);
+      setFase("ripresa");
+    } catch (err: any) {
+      if (err?.status === 401) setErrore("La sessione è scaduta. Torna all'accesso ed entra di nuovo.");
+      else setErrore("Non è stato possibile registrare il consenso. Riprova; se continua, chiedi al banco dell'evento.");
+    } finally {
+      setInCorso(false);
+    }
   }
 
-  function choose(next: File | null, source: Liveness) {
-    if (preview) URL.revokeObjectURL(preview);
-    setChallenge(null);
-    if (!next) { setFile(null); setPreview(null); return; }
-    if (!isImage(next)) { setErr("Usa un jpeg o un png."); return; }
-    setErr(null); setFile(next); setLiveness(source); setPreview(URL.createObjectURL(next));
+  function scegli(prossimo: File | null, da: Provenienza) {
+    if (anteprima) URL.revokeObjectURL(anteprima);
+    setSfida(null);
+    if (!prossimo) { setFile(null); setAnteprima(null); return; }
+    if (!isImage(prossimo)) {
+      setErrore("Questo file non è una foto: serve un jpeg o un png. Se l'hai scaricata da una chat, riscattala con la camera.");
+      return;
+    }
+    setErrore("");
+    setMotivoPrec(null);
+    setFile(prossimo);
+    setProvenienza(da);
+    setAnteprima(URL.createObjectURL(prossimo));
   }
 
-  // A completed server challenge: keep its frames, and show the frontal frame as the preview.
-  function chooseChallenge(id: string, frames: Blob[]) {
-    if (preview) URL.revokeObjectURL(preview);
-    const frontal = frames[frames.length - 1]!;
-    const frontalFile = new File([frontal], "selfie.jpg", { type: frontal.type || "image/jpeg" });
-    setErr(null);
-    setChallenge({ id, frames });
-    setLiveness("challenge");
-    setFile(frontalFile);
-    setPreview(URL.createObjectURL(frontal));
+  /* Una sfida del server completata: i fotogrammi restano da caricare, e
+     quello frontale — l'ultimo — fa da anteprima. */
+  function scegliSfida(id: string, frames: Blob[]) {
+    if (anteprima) URL.revokeObjectURL(anteprima);
+    const frontale = frames[frames.length - 1]!;
+    setErrore("");
+    setMotivoPrec(null);
+    setSfida({ id, frames });
+    setProvenienza("challenge");
+    setFile(new File([frontale], "selfie.jpg", { type: frontale.type || "image/jpeg" }));
+    setAnteprima(URL.createObjectURL(frontale));
   }
 
-  async function send(e: React.FormEvent) {
+  async function invia(e: React.FormEvent) {
     e.preventDefault();
-    if (!file || busy) return;
-    setBusy(true); setErr(null);
+    if (!file || inCorso) return;
+    setInCorso(true);
+    setErrore("");
     try {
-      if (challenge) await api.sendSelfieChallenge(EVENT_SLUG, challenge.id, challenge.frames);
-      else await api.sendSelfie(EVENT_SLUG, file, liveness, file.name); // POST .../selfie
-      setPhase("result");
-    } catch (e: any) {
-      if (e?.status === 429) setErr("Hai già cercato più volte. Riprova più tardi.");
-      else setErr(e?.message || "Non riusciamo a inviare il selfie.");
-    } finally { setBusy(false); }
+      if (sfida) await api.sendSelfieChallenge(EVENT_SLUG, sfida.id, sfida.frames);
+      else await api.sendSelfie(EVENT_SLUG, file, provenienza, file.name);
+      nav("/attesa");
+    } catch (err: any) {
+      const stato = err?.status;
+      if (stato === 401) setErrore("La sessione è scaduta. Torna all'accesso ed entra di nuovo.");
+      else if (stato === 429) setErrore("Hai già cercato più volte di seguito. Aspetta qualche minuto e riprova: le foto non si perdono.");
+      else if (stato === 413) setErrore("La foto è troppo grande. Riscattala con la camera invece di scegliere un file dalla galleria.");
+      else setErrore("Non è stato possibile inviare il selfie. Controlla la rete e riprova.");
+      setInCorso(false);
+    }
   }
 
-  if (phase === "consent") {
+  /* --- Il cancello del minore ---------------------------------------------
+     Senza il consenso di chi ha la responsabilità non si apre nemmeno la
+     camera. Rosso: è un errore che blocca il lavoro, non un «guarda qui». */
+  if (minore && !consensoGenitore) {
     return (
-      <Screen tabbar>
-        <form className="stack" onSubmit={saveConsent}>
-          <div>
-            <h1>Scatta un selfie</h1>
-            <p className="dek">Lo usiamo solo per trovarti tra le foto.</p>
-          </div>
-          <label className="check">
-            <input type="checkbox" checked={accepted} onChange={(e) => setAccepted(e.target.checked)} />
-            <span className="box"><CheckIcon /></span>
-            <span className="check-label">{CONSENT_TEXT}</span>
+      <Screen center>
+        <div className="colonna">
+          <h1 className="titolo">Serve il consenso di un genitore</h1>
+          <Callout variante="errore">
+            Hai dichiarato di avere tra 14 e 17 anni. Finché un genitore o chi ti tutela non
+            conferma, non cerchiamo il tuo volto in nessuna foto.
+          </Callout>
+          <Link className="btn btn--primary btn--block" to="/consenso-genitore">
+            Apri il consenso del genitore
+          </Link>
+          <p className="nota">
+            La conferma la dà un adulto, su questo telefono o sul suo. Dura un minuto.
+          </p>
+        </div>
+      </Screen>
+    );
+  }
+
+  /* --- Il consenso dell'adulto -------------------------------------------- */
+  if (fase === "consenso") {
+    return (
+      <Screen dati>
+        <form className="colonna" onSubmit={salvaConsenso}>
+          <header className="gruppo">
+            <h1 className="titolo">Fai un selfie</h1>
+            <p className="dek">Serve solo a trovarti tra le foto dell'evento.</p>
+          </header>
+
+          <label className="check accesso__consenso">
+            <input
+              type="checkbox"
+              checked={accettato}
+              onChange={(e) => setAccettato(e.target.checked)}
+            />
+            <span>{CONSENSO_TESTO}</span>
           </label>
-          <div className="reassure">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2l8 3.5v6c0 5-3.5 8.6-8 10-4.5-1.4-8-5-8-10v-6L12 2Z" /><path d="M8.5 12l2.4 2.4L16 9" /></svg>
-            <span>Il selfie viene cancellato subito dopo la ricerca. Puoi ritirare il consenso quando vuoi.</span>
-          </div>
-          {err && <div className="banner banner-danger"><span>{err}</span></div>}
-          <button className="btn btn-primary btn-lg btn-block" type="submit" disabled={!accepted || busy} data-press>
-            {busy ? "Salvo…" : "Acconsento e continuo"}
+
+          <Callout variante="info">
+            Il file del selfie si cancella subito dopo la ricerca. Puoi revocare il consenso
+            quando vuoi da «I miei dati».
+          </Callout>
+
+          {errore && <Callout variante="errore">{errore}</Callout>}
+
+          <button
+            className="btn btn--primary btn--block"
+            type="submit"
+            disabled={!accettato || inCorso}
+            data-loading={inCorso || undefined}
+            title={!accettato ? "Serve il consenso per cercare il tuo volto" : undefined}
+          >
+            {inCorso && <span className="btn-spin" aria-hidden="true" />}
+            {modo === "camera" ? "Acconsento e apro la camera" : "Acconsento e scelgo una foto"}
           </button>
+          {!accettato && (
+            <span className="field__hint">Serve il consenso per cercare il tuo volto.</span>
+          )}
         </form>
       </Screen>
     );
   }
 
-  if (phase === "capture") {
-    const challenging = mode === "camera" && !file;
-    return (
-      <Screen tabbar>
-        <form className="stack" onSubmit={send}>
-          <div>
-            <h1>Scatta un selfie</h1>
-            <p className="dek">{challenging ? "Segui le indicazioni: lo scatto parte da solo." : "Un primo piano, jpeg o png."}</p>
+  /* --- La ripresa ---------------------------------------------------------- */
+  const inSfida = modo === "camera" && !file;
+  return (
+    <Screen dati>
+      <div className="colonna">
+        <header className="gruppo">
+          <h1 className="titolo">Fai un selfie</h1>
+          <p className="dek">
+            {inSfida
+              ? "Segui le indicazioni: lo scatto parte da solo, non devi premere niente."
+              : "Un primo piano, da solo, con la luce davanti."}
+          </p>
+        </header>
+
+        {minore && consensoGenitore && (
+          <Callout variante="info">
+            Il consenso per te l'ha già dato un genitore. Non serve darlo di nuovo.
+          </Callout>
+        )}
+
+        {/* Perché il precedente non è andato, e cosa cambiare. Ambra: non è un
+            errore bloccante, è «guarda qui, fai così». Il glifo cambia con il
+            motivo, così due rifiuti diversi non sono la stessa tinta. */}
+        {motivoPrec && (
+          <Callout variante="attention" glifo={<GlifoMotivo nome={motivoPrec.glifo} piccolo />}>
+            <b>{motivoPrec.titolo}.</b> {motivoPrec.rimedio}
+          </Callout>
+        )}
+
+        {motivoCamera && <Callout variante="attention">{motivoCamera}</Callout>}
+        {errore && <Callout variante="errore">{errore}</Callout>}
+
+        <input
+          ref={inputRef}
+          className="sr-only"
+          type="file"
+          accept="image/jpeg,image/png"
+          capture="user"
+          onChange={(e) => scegli(e.target.files?.[0] ?? null, "file")}
+        />
+
+        {inSfida && (
+          <Sfida
+            key={tentativo}
+            onSfida={scegliSfida}
+            onScatto={(blob) => scegli(new File([blob], "selfie.jpg", { type: "image/jpeg" }), "challenge")}
+            onRinuncia={(perche) => { setModo("file"); setMotivoCamera(perche); scegli(null, "file"); }}
+          />
+        )}
+
+        {anteprima && (
+          <div className="ripresa">
+            <div className="ripresa__quadro">
+              <img src={anteprima} alt="Anteprima del selfie" />
+            </div>
           </div>
-          <input ref={inputRef} className="sr-only" type="file" accept="image/jpeg,image/png"
-            onChange={(e) => choose(e.target.files?.[0] ?? null, "file")} />
-          {challenging && (
-            <CameraChallenge key={attempt}
-              onChallenge={chooseChallenge}
-              onCaptured={(blob) => choose(new File([blob], "selfie.jpg", { type: "image/jpeg" }), "challenge")}
-              onFallback={() => { setMode("file"); choose(null, "file"); }} />
-          )}
-          {preview && <img className="preview" src={preview} alt="Anteprima del selfie" />}
-          {err && <div className="banner banner-danger"><span>{err}</span></div>}
-          {!challenging && (
-            file
-              ? <button className="btn btn-primary btn-lg btn-block" type="submit" disabled={busy} data-press>{busy ? "Invio…" : "Trova le mie foto"}</button>
-              : <button className="btn btn-secondary btn-block" type="button" onClick={() => inputRef.current?.click()} data-press>Scatta o scegli una foto</button>
-          )}
-          {file && liveness === "challenge" && <button className="muted-link" type="button" onClick={() => { choose(null, "file"); setMode("camera"); setAttempt((n) => n + 1); }}>Rifai lo scatto</button>}
-          {file && liveness === "file" && <button className="muted-link" type="button" onClick={() => inputRef.current?.click()}>Scegli un'altra</button>}
-          {!file && mode === "file" && cameraSupported() && <button className="muted-link" type="button" onClick={() => { setMode("camera"); setAttempt((n) => n + 1); }}>Usa la camera</button>}
-        </form>
-      </Screen>
-    );
-  }
+        )}
 
-  return <SearchResult />;
+        {/* L'unico primario, e dice verbo + oggetto. Lo spinner sta dentro. */}
+        {file ? (
+          <>
+            <button
+              className="btn btn--primary btn--block"
+              type="button"
+              onClick={invia}
+              disabled={inCorso}
+              data-loading={inCorso || undefined}
+            >
+              {inCorso && <span className="btn-spin" aria-hidden="true" />}
+              Trova le mie foto
+            </button>
+            <button
+              className="btn btn--link"
+              type="button"
+              onClick={() => {
+                scegli(null, "file");
+                if (provenienza === "challenge") { setModo("camera"); setTentativo((n) => n + 1); }
+                else inputRef.current?.click();
+              }}
+            >
+              {provenienza === "challenge" ? "Rifai lo scatto" : "Scegli un'altra foto"}
+            </button>
+          </>
+        ) : modo === "file" ? (
+          <>
+            <button className="btn btn--primary btn--block" type="button" onClick={() => inputRef.current?.click()}>
+              Scatta o scegli una foto
+            </button>
+            {cameraSupported() && (
+              <button
+                className="btn btn--link"
+                type="button"
+                onClick={() => { setMotivoCamera(""); setModo("camera"); setTentativo((n) => n + 1); }}
+              >
+                Usa la camera con le indicazioni
+              </button>
+            )}
+          </>
+        ) : null}
+
+        <p className="nota">
+          Il selfie non finisce in nessuna galleria e non lo vede nessuno: serve solo al
+          confronto, e il file si cancella subito dopo.
+        </p>
+      </div>
+    </Screen>
+  );
 }
 
-function CameraChallenge({
-  onChallenge,
-  onCaptured,
-  onFallback,
+/**
+ * La sfida. La guida dentro il quadro è la cornice di messa a fuoco del
+ * marchio, a tratto: prima era una sfumatura radiale che velava il viso, e le
+ * sfumature sono vietate.
+ *
+ * Le tacche sono `.mini-tappe`, il componente che il sistema ha già per «a
+ * che punto sei». Sono decorative — la parola del passo la dice la regione
+ * viva qui sotto, che è quello che legge uno screen reader e quello che
+ * resta leggibile senza distinguere i colori.
+ */
+function Sfida({
+  onSfida,
+  onScatto,
+  onRinuncia,
 }: {
-  onChallenge: (id: string, frames: Blob[]) => void;
-  onCaptured: (b: Blob) => void;
-  onFallback: () => void;
+  onSfida: (id: string, frames: Blob[]) => void;
+  onScatto: (b: Blob) => void;
+  onRinuncia: (perche: string) => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const lmRef = useRef<FaceLandmarker | null>(null);
-  const [status, setStatus] = useState<"loading" | "running" | "timeout">("loading");
-  // Progress is generic: the legacy flow has fixed steps, the server flow a dictated action list.
-  const [instruction, setInstruction] = useState<string>("");
-  const [progress, setProgress] = useState<{ index: number; total: number }>({ index: 0, total: CHALLENGE_STEPS.length });
-  const [round, setRound] = useState(0);
-  const latest = useRef({ onChallenge, onCaptured, onFallback });
-  latest.current = { onChallenge, onCaptured, onFallback };
+  const [stato, setStato] = useState<"apro" | "corso" | "scaduto">("apro");
+  /* Una parola e un numero di tacche, non un passo di un elenco fisso: il
+     flusso locale ha tappe fisse, quello del server una lista dettata. */
+  const [istruzione, setIstruzione] = useState("");
+  const [avanzamento, setAvanzamento] = useState({ indice: 0, totale: CHALLENGE_STEPS.length });
+  const [giro, setGiro] = useState(0);
+  const ultimo = useRef({ onSfida, onScatto, onRinuncia });
+  ultimo.current = { onSfida, onScatto, onRinuncia };
 
   useEffect(() => {
-    const el = videoRef.current; if (!el) return;
-    const controller = new AbortController(); const { signal } = controller;
+    const el = videoRef.current;
+    if (!el) return;
+    const controller = new AbortController();
+    const { signal } = controller;
     (async (video: HTMLVideoElement) => {
       try {
         if (!streamRef.current || !lmRef.current) {
@@ -174,112 +374,137 @@ function CameraChallenge({
             if (signal.aborted) return;
             throw cam.status === "rejected" ? cam.reason : (lm as PromiseRejectedResult).reason;
           }
-          streamRef.current = cam.value; lmRef.current = lm.value;
-          video.srcObject = cam.value; await video.play();
+          streamRef.current = cam.value;
+          lmRef.current = lm.value;
+          video.srcObject = cam.value;
+          await video.play();
         }
         if (signal.aborted) return;
 
-        // v4 report F05: ask the server for a challenge. When it answers, run the dictated
-        // sequence and upload every frame. A 404 means the server runs the legacy flow.
-        let serverActions: ServerAction[] | null = null;
-        let challengeId = "";
+        /* Si chiede al server la sequenza da eseguire. Un 404 vuol dire che
+           questo server fa ancora il flusso locale: è l'unico errore che non
+           ferma la ripresa. */
+        let azioni: ServerAction[] | null = null;
+        let idSfida = "";
         try {
-          const challenge = await api.getSelfieChallenge(EVENT_SLUG);
-          serverActions = challenge.actions as ServerAction[];
-          challengeId = challenge.challengeId;
+          const dettata = await api.getSelfieChallenge(EVENT_SLUG);
+          azioni = dettata.actions as ServerAction[];
+          idSfida = dettata.challengeId;
         } catch (cause) {
-          // 404 = the server runs the legacy single-selfie flow; anything else is a real error.
-          const status = (cause as { status?: number } | null)?.status;
-          if (status !== 404) throw cause;
+          if ((cause as { status?: number } | null)?.status !== 404) throw cause;
         }
         if (signal.aborted) return;
-        setStatus("running");
+        setStato("corso");
 
-        if (serverActions) {
-          setProgress({ index: 0, total: serverActions.length });
+        if (azioni) {
+          const lista = azioni;
+          setAvanzamento({ indice: 0, totale: lista.length });
           const frames = await runServerChallenge({
             video,
             landmarker: lmRef.current,
-            actions: serverActions,
-            onAction: (action, index) => {
-              setInstruction(SERVER_ACTION_LABELS[action]);
-              setProgress({ index, total: serverActions!.length });
+            actions: lista,
+            onAction: (azione, indice) => {
+              setIstruzione(SERVER_ACTION_LABELS[azione]);
+              setAvanzamento({ indice, totale: lista.length });
             },
             signal,
           });
-          latest.current.onChallenge(challengeId, frames);
+          ultimo.current.onSfida(idSfida, frames);
         } else {
-          setProgress({ index: 0, total: CHALLENGE_STEPS.length });
+          setAvanzamento({ indice: 0, totale: CHALLENGE_STEPS.length });
           const blob = await runChallenge({
             video,
             landmarker: lmRef.current,
-            onStep: (step) => {
-              setInstruction(STEP_LABELS[step]);
-              setProgress({ index: CHALLENGE_STEPS.indexOf(step), total: CHALLENGE_STEPS.length });
+            onStep: (passo) => {
+              setIstruzione(STEP_LABELS[passo]);
+              setAvanzamento({ indice: CHALLENGE_STEPS.indexOf(passo), totale: CHALLENGE_STEPS.length });
             },
             signal,
           });
-          latest.current.onCaptured(blob);
+          ultimo.current.onScatto(blob);
         }
       } catch (cause) {
         if (signal.aborted) return;
-        if (cause instanceof LivenessError && cause.code === "timeout") { setStatus("timeout"); return; }
-        latest.current.onFallback();
+        if (cause instanceof LivenessError && cause.code === "timeout") { setStato("scaduto"); return; }
+        /* Ogni motivo dice cosa fare di diverso, non «camera non disponibile». */
+        const code = cause instanceof LivenessError ? cause.code : "";
+        ultimo.current.onRinuncia(
+          code === "denied"
+            ? "La camera è bloccata per questo sito. Puoi sbloccarla dalle impostazioni del browser, oppure scattare una foto normale qui sotto."
+            : code === "model"
+            ? "Le indicazioni guidate non si caricano su questo telefono. Scatta una foto normale qui sotto: funziona uguale."
+            : "Questo telefono non ci dà accesso alla camera. Scatta una foto normale qui sotto.",
+        );
       }
     })(el);
     return () => controller.abort();
-  }, [round]);
+  }, [giro]);
 
-  useEffect(() => () => { stopStream(streamRef.current); streamRef.current = null; lmRef.current?.close(); lmRef.current = null; }, []);
-
-  return (
-    <div className="live">
-      <div className="live-frame">
-        <video ref={videoRef} autoPlay muted playsInline aria-label="Anteprima della camera" />
-        <div className="live-guide" aria-hidden="true" />
-      </div>
-      <ol className="live-steps" aria-hidden="true">
-        {Array.from({ length: progress.total }, (_, i) => (
-          <li key={i} data-state={status !== "running" ? undefined : i < progress.index ? "done" : i === progress.index ? "active" : undefined} />
-        ))}
-      </ol>
-      <p className="live-step" role="status" aria-live="polite">
-        {status === "loading" ? "Apro la camera…" : status === "timeout" ? "Tempo scaduto. Riprova." : instruction}
-      </p>
-      {status === "timeout"
-        ? <button className="btn btn-primary" type="button" onClick={() => setRound((n) => n + 1)} data-press>Riprova</button>
-        : <p className="live-hint">Tieni il viso nell'ovale, a circa 40 cm.</p>}
-      <button className="muted-link" type="button" onClick={onFallback}>Usa un file invece</button>
-    </div>
+  useEffect(
+    () => () => {
+      stopStream(streamRef.current);
+      streamRef.current = null;
+      lmRef.current?.close();
+      lmRef.current = null;
+    },
+    [],
   );
-}
 
-function SearchResult() {
-  const [status, setStatus] = useState<string>("queued");
-  useEffect(() => {
-    let stop = false;
-    const tick = async () => {
-      try {
-        const g: any = await api.getGallery(EVENT_SLUG);
-        if (stop) return;
-        setStatus(g.status);
-        if (g.status === "ready") stop = true;
-      } catch { /* keep polling */ }
-    };
-    tick();
-    const id = window.setInterval(() => { if (!stop) tick(); }, 2500);
-    return () => { stop = true; window.clearInterval(id); };
-  }, []);
-  const ready = status === "ready";
   return (
-    <Screen center tabbar>
-      <div className="stack" style={{ textAlign: "center" }}>
-        <h1>{ready ? "Le tue foto sono pronte" : "Confronto in corso…"}</h1>
-        <p className="dek">{ready ? "Apri la tua galleria." : "Ci vuole qualche secondo. Puoi chiudere la pagina: ti avvisiamo per email."}</p>
-        {ready
-          ? <Link className="btn btn-primary btn-lg btn-block" to={`/e/${EVENT_SLUG}`} data-press>Apri le mie foto</Link>
-          : <div style={{ marginTop: "var(--s-5)" }}><span className="badge badge-info">In corso</span></div>}
+    <div className="ripresa">
+      <div className="ripresa__quadro">
+        <video ref={videoRef} autoPlay muted playsInline aria-label="Anteprima della camera" />
+        <div className="ripresa__guida" aria-hidden="true">
+          <svg viewBox="0 0 75 100" fill="none" preserveAspectRatio="none">
+            <g stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeOpacity="0.8">
+              <path d="M10 26 V19 a5 5 0 0 1 5-5 H22" />
+              <path d="M53 14 H60 a5 5 0 0 1 5 5 V26" />
+              <path d="M65 74 V81 a5 5 0 0 1-5 5 H53" />
+              <path d="M22 86 H15 a5 5 0 0 1-5-5 V74" />
+            </g>
+          </svg>
+        </div>
       </div>
-    </Screen>
+
+      <div className="mini-tappe" aria-hidden="true">
+        {Array.from({ length: avanzamento.totale }, (_, i) => (
+          <i
+            key={i}
+            className={
+              stato !== "corso" ? "" : i < avanzamento.indice ? "done" : i === avanzamento.indice ? "now" : ""
+            }
+          />
+        ))}
+      </div>
+
+      <p className="ripresa__passo" role="status" aria-live="polite">
+        {stato === "apro"
+          ? "Apro la camera…"
+          : stato === "scaduto"
+          ? "Tempo scaduto: non siamo riusciti a seguirti"
+          : istruzione}
+      </p>
+
+      {stato === "scaduto" ? (
+        <>
+          <p className="ripresa__aiuto">
+            Tieni il viso dentro la cornice e fai un movimento alla volta, senza fretta.
+          </p>
+          <button className="btn btn--primary" type="button" onClick={() => { setStato("apro"); setGiro((n) => n + 1); }}>
+            Riprova le indicazioni
+          </button>
+        </>
+      ) : (
+        <p className="ripresa__aiuto">Tieni il viso nella cornice, a circa 40 cm.</p>
+      )}
+
+      <button
+        className="btn btn--link"
+        type="button"
+        onClick={() => onRinuncia("")}
+      >
+        Scatta una foto normale invece
+      </button>
+    </div>
   );
 }

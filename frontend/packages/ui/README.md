@@ -1,62 +1,44 @@
-# Frames of Me — UI & Brand (`design/`)
+# `packages/ui` — il kit condiviso
 
-Static HTML/CSS/JS prototype of the whole product UI, built on a single brand system.
-This is the **design/brand layer** — the visual source of truth that precedes wiring the real
-Next.js app in `apps/web`. Aesthetic (v2): **Apple-grade — serious, clear, light-only**,
-grounded in Apple's real design-system values and the clean photo galleries of Pic-Time, with
-every rule taken from the `impeccable` skill (one blue accent used rarely, decisive hairlines,
-one authored "Recognition" motion moment, no eyebrows, no dark theme). Type is **Geist**.
+Tre file, caricati in quest'ordine, e sono la verità eseguibile del design:
 
-## How to view
-Open any page directly, or serve the folder:
+| File | Cosa contiene |
+|---|---|
+| [`tokens.css`](tokens.css) | i **ruoli** (colore, tipografia, spazio, raggi, profondità, movimento, misure), ognuno con il perché accanto |
+| [`base.css`](base.css) | reset e difetti degli elementi: fuoco visibile, numeri tabellari, selezione |
+| [`components.css`](components.css) | l'**anatomia** dei componenti, con scritto dentro perché una misura è quella |
 
-```bash
-cd design && python3 -m http.server 4599
-```
+Le regole di giudizio — quale pezzo per quale bisogno, e perché la scelta
+sbagliata è sbagliata — stanno in **[`../../../docs/brand/REGOLE.md`](../../../docs/brand/REGOLE.md)**.
 
-Then visit `http://localhost:4599/pages/index.html`.
+## Due cose da sapere prima di scrivere una riga
 
-## Folder map
-```
-design/
-├─ README.md              ← this file
-├─ PRODUCT.md             ← product context (audience, voice, constraints) — impeccable style
-├─ styleguide.html        ← living brand board (open this to see the whole system)
-├─ brand/
-│  ├─ DESIGN.md           ← full brand identity (logo, color, type, motion, do/don't)
-│  ├─ tokens.css          ← ★ single source of truth: color/type/space/radius/shadow/motion (+ dark)
-│  ├─ base.css            ← reset + element defaults + layout helpers
-│  ├─ components.css      ← the component kit (buttons, fields, cards, tints, tiles, nav, …)
-│  ├─ motion.js           ← Apple-style motion engine (press, reveal, fan, count-up, sheets, theme)
-│  ├─ logo.svg / mark.svg ← brand marks (Focus Lock)
-│  ├─ logo-explorations.html ← 6 logo directions to choose from
-├─ assets/
-│  └─ ph-01…12.svg        ← on-brand placeholder "photos" (replace with real event photos)
-├─ pages/
-│  ├─ index.html          ← LANDING (shared entry; editorial photo-fan hero)
-│  ├─ participant/        ← mobile-first guest flow
-│  │  ├─ iscrizione.html · attesa.html · verify.html · selfie.html · galleria.html · i-miei-dati.html
-│  ├─ photographer/       ← desktop-first
-│  │  ├─ invito.html · upload.html
-│  └─ admin/              ← desktop
-│     ├─ login.html · dashboard.html · eventi.html · fotografi.html · partecipanti.html · foto.html · retention.html · audit.html
-└─ emails/                ← transactional HTML emails (table-based, inline styles)
-   ├─ magic-link.html · invito.html · foto-pronte.html · nuove-foto.html
-```
+**Si cita un ruolo, non un colore.** Un esadecimale in un componente è un
+difetto. Se serve una tinta che non è un ruolo, il ruolo manca: si aggiunge a
+`tokens.css`, non al componente.
 
-## The one rule
-**Everything is token-driven.** Components never hardcode a color/space/radius that exists in
-`tokens.css`. Use `var(--token)`. Dark mode and theming come for free when you only use tokens.
+**In fondo a `tokens.css` c'è un blocco di alias di transizione. Non si usa.**
+Le quattro app (`landing`, `partecipanti`, `fotografi`, `admin`) non ne citano
+nemmeno uno, verificato a macchina. Quel blocco resta in vita solo per
+`_reference/vetrina/**` — la copia del sito dell'evento reale, che non è nostra
+UI — e per `styleguide.html` e `logo-explorations.html`, due pagine di sviluppo
+che descrivono il sistema precedente. Quando spariscono, il blocco si cancella.
 
-## Where the flows come from
-Page-by-page flows, states, GDPR checkpoints and open API gaps live in
-[`../docs/ux-flows.md`](../docs/ux-flows.md). This folder is the visual realization of that study.
+## Le eccezioni, e sono due sole
 
-## Fonts
-Loaded from Google Fonts in each page `<head>`: **Geist** (one family — display, UI, body) and
-**Geist Mono** (data, counts, codes). SF-grade precision, self-hostable, and deliberately not
-Inter/Fraunces (both are AI-default faces `impeccable` flags).
+**Le email.** I client di posta non supportano le variabili CSS, quindi in
+`frontend/emails/**` il valore letterale è corretto. Si copia dai **commenti**
+di `tokens.css`, non si scegle a occhio, e un colore che non ha un ruolo si
+segnala invece di inventarlo.
 
-## Next step (after design sign-off)
-Port these components into `apps/web` as React components (the token CSS can be reused almost
-verbatim as a global stylesheet / CSS variables layer).
+**`<meta name="theme-color">`.** Un meta tag non accetta una variabile. È
+l'unico esadecimale ammesso in una pagina, e porta il commento che dice di
+quale ruolo è la copia.
+
+## Ritirato
+
+`DESIGN.md` descriveva il sistema precedente e ora rimanda qui: insegnava
+Geist da Google Fonts, `#0071E3`, raggi fino a 18, display fino a 6rem e
+«Primary = solid accent, white text» — l'inversione della regola attuale.
+`styleguide.html` e `logo-explorations.html` sono della stessa epoca e non
+sono stati aggiornati: non si usano come riferimento.
