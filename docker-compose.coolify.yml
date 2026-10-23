@@ -259,6 +259,18 @@ services:
   web:
     # FQDN in Coolify: framesofme.com + www.framesofme.com -> 3000. The web app proxies /v1/* to the api.
     # NEXT_PUBLIC_* are inlined at build time: set them as build args (Coolify: Build Variables).
+    #
+    # Traefik labels: Coolify's domain UI usually adds labels automatically, but explicit labels
+    # here ensure routing survives Redeploy and handle both apex + www. Production and staging run
+    # on the same Traefik (coolify-proxy on e0), so routers MUST have unique names to avoid collision.
+    #
+    # Setup per environment (set in Coolify Environment Variables):
+    #   Production:  WEB_ROUTER_NAME=web-prod    WEB_DOMAIN=framesofme.com
+    #   Staging:     WEB_ROUTER_NAME=web-staging WEB_DOMAIN=staging.framesofme.com
+    #
+    # Both are REQUIRED (no defaults that could let staging claim production hosts). Cloudflare
+    # Tunnel e0-home -> Traefik handles TLS, so Traefik receives HTTP on entrypoint `web` (not
+    # `websecure`). No TLS/certresolver in labels — Cloudflare already terminated it.
     build:
       context: .
       dockerfile: apps/web/Dockerfile
@@ -273,6 +285,22 @@ services:
       NEXT_PUBLIC_WEB_ORIGIN: ${NEXT_PUBLIC_WEB_ORIGIN:-http://localhost:3000}
     expose:
       - "3000"
+    labels:
+      # Apex router (framesofme.com or staging.framesofme.com)
+      - "traefik.enable=true"
+      - "traefik.http.routers.${WEB_ROUTER_NAME:?WEB_ROUTER_NAME required (web-prod or web-staging)}.rule=Host(`${WEB_DOMAIN:?WEB_DOMAIN required (framesofme.com or staging.framesofme.com)}`)"
+      - "traefik.http.routers.${WEB_ROUTER_NAME}.entrypoints=web"
+      - "traefik.http.routers.${WEB_ROUTER_NAME}.priority=${WEB_TRAEFIK_PRIORITY:-1100}"
+      - "traefik.http.routers.${WEB_ROUTER_NAME}.service=${WEB_ROUTER_NAME}-svc"
+      - "traefik.http.services.${WEB_ROUTER_NAME}-svc.loadbalancer.server.port=3000"
+      # www router (www.framesofme.com or www.staging.framesofme.com) -> redirect to apex
+      - "traefik.http.routers.${WEB_ROUTER_NAME}-www.rule=Host(`www.${WEB_DOMAIN}`)"
+      - "traefik.http.routers.${WEB_ROUTER_NAME}-www.entrypoints=web"
+      - "traefik.http.routers.${WEB_ROUTER_NAME}-www.priority=${WEB_TRAEFIK_PRIORITY:-1100}"
+      - "traefik.http.routers.${WEB_ROUTER_NAME}-www.middlewares=${WEB_ROUTER_NAME}-www-redirect"
+      - "traefik.http.middlewares.${WEB_ROUTER_NAME}-www-redirect.redirectregex.regex=^http://www\\.(.+)"
+      - "traefik.http.middlewares.${WEB_ROUTER_NAME}-www-redirect.redirectregex.replacement=http://$${1}"
+      - "traefik.http.middlewares.${WEB_ROUTER_NAME}-www-redirect.redirectregex.permanent=true"
     depends_on:
       api:
         condition: service_healthy

@@ -16,6 +16,7 @@
     "seed:test": "node --env-file=.env --import tsx scripts/seed-test.ts"
   },
   "devDependencies": {
+    "sharp": "^0.35.5",
     "tsx": "^4.20.5",
     "typescript": "^5.9.2"
   },
