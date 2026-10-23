@@ -259,6 +259,11 @@ services:
   web:
     # FQDN in Coolify: framesofme.com + www.framesofme.com -> 3000. The web app proxies /v1/* to the api.
     # NEXT_PUBLIC_* are inlined at build time: set them as build args (Coolify: Build Variables).
+    #
+    # Traefik labels: Coolify uses Traefik for routing. These labels configure the router and make
+    # it survive Redeploy. Host rules are controlled by WEB_DOMAIN (defaults to framesofme.com for
+    # production; set to staging.framesofme.com for staging). Coolify's env substitution handles
+    # ${VAR} at deploy time, so these become concrete Traefik values without leftover ${...} strings.
     build:
       context: .
       dockerfile: apps/web/Dockerfile
@@ -273,6 +278,19 @@ services:
       NEXT_PUBLIC_WEB_ORIGIN: ${NEXT_PUBLIC_WEB_ORIGIN:-http://localhost:3000}
     expose:
       - "3000"
+    labels:
+      - "traefik.enable=${WEB_TRAEFIK_ENABLE:-true}"
+      - "traefik.http.routers.web.rule=Host(`${WEB_DOMAIN:-framesofme.com}`) || Host(`www.${WEB_DOMAIN:-framesofme.com}`)"
+      - "traefik.http.routers.web.entrypoints=websecure"
+      - "traefik.http.routers.web.tls=true"
+      - "traefik.http.routers.web.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.web.priority=${WEB_TRAEFIK_PRIORITY:-1000}"
+      - "traefik.http.services.web.loadbalancer.server.port=3000"
+      # Redirect www to apex
+      - "traefik.http.middlewares.web-redirect.redirectregex.regex=^https://www\\.(.+)"
+      - "traefik.http.middlewares.web-redirect.redirectregex.replacement=https://$${1}"
+      - "traefik.http.middlewares.web-redirect.redirectregex.permanent=true"
+      - "traefik.http.routers.web.middlewares=web-redirect@docker"
     depends_on:
       api:
         condition: service_healthy
