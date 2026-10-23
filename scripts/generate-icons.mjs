@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
- * Generate favicon and app icons from the brand mark SVG.
+ * Generate favicon and app icons from the Frames of Me brand mark PNG.
+ * Source: brand-identity/frames-of-me/icon-source.png (1024×1024 black bg, white frame mark)
  * Run: node scripts/generate-icons.mjs
  */
 
 import sharp from 'sharp';
-import { readFileSync, writeFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
@@ -21,34 +21,47 @@ const sizes = [
   { size: 512, name: 'icon-512.png', dest: 'apps/web/public' },
 ];
 
-const svgPath = join(root, 'brand-identity/pecorella/logo/mark.svg');
-const svgBuffer = readFileSync(svgPath);
+const sourcePath = join(root, 'brand-identity/frames-of-me/icon-source.png');
 
-console.log('Generating icons from', svgPath);
+console.log('Generating icons from', sourcePath);
+console.log('Source: Frames of Me abstract frame mark (1024×1024 PNG)\n');
 
 for (const { size, name, dest } of sizes) {
   const outPath = join(root, dest, name);
-  await sharp(svgBuffer)
+  await sharp(sourcePath)
     .resize(size, size, {
       fit: 'contain',
-      background: { r: 243, g: 238, b: 230, alpha: 1 } // #f3eee6
+      background: { r: 0, g: 0, b: 0, alpha: 1 } // Black background (brand mark has black bg)
     })
     .png()
     .toFile(outPath);
-  console.log(`✓ Created ${name} (${size}x${size})`);
+  console.log(`✓ Created ${name} (${size}×${size})`);
 }
 
-// Also create favicon.ico with multiple sizes
+// favicon.ico (use 32×32 PNG)
 const icoPath = join(root, 'apps/web/public/favicon.ico');
-await sharp(svgBuffer)
+await sharp(sourcePath)
   .resize(32, 32, {
     fit: 'contain',
-    background: { r: 243, g: 238, b: 230, alpha: 1 }
+    background: { r: 0, g: 0, b: 0, alpha: 1 }
   })
   .png()
-  .toFile(icoPath.replace('.ico', '-32.png'));
+  .toFile(icoPath);
 
-console.log('✓ Created favicon assets');
-console.log('\nNext steps:');
-console.log('1. Update apps/web/app/layout.tsx metadata if needed');
-console.log('2. Verify icons appear correctly in browser tabs and when added to home screen');
+console.log('✓ Created favicon.ico (32×32)');
+
+// Also create icon.svg placeholder (Next.js App Router convention)
+// Since source is PNG, just copy a sized version as reference
+const iconSvgNote = join(root, 'apps/web/app/icon.png');
+await sharp(sourcePath)
+  .resize(192, 192, {
+    fit: 'contain',
+    background: { r: 0, g: 0, b: 0, alpha: 1 }
+  })
+  .png()
+  .toFile(iconSvgNote);
+console.log('✓ Created app/icon.png (192×192) — Next.js will use this as favicon fallback');
+
+console.log('\n✅ All icons generated from Frames of Me brand mark');
+console.log('   Browser tabs, Safari, iOS, and Android will show the white frame on black.');
+console.log('\nTo regenerate: node scripts/generate-icons.mjs');
