@@ -6,9 +6,11 @@ import { loadFaceEngine } from "./face.js";
 import { bootstrapAdmins, seedStaffCredentials } from "./bootstrap.js";
 import { createMailer } from "./mailer.js";
 import { createS3ObjectStore } from "./objects.js";
+import { initSentry } from "./observability.js";
 import { createQueue } from "./queue.js";
 
 const env = loadEnv();
+initSentry(env, "api");
 const sql = createSql(env.DATABASE_URL, { max: env.DATABASE_POOL_MAX });
 // Migrations and demo seeding run in the one-shot `migrate` service (and `pnpm db:seed`
 // in local dev), not here, so the first boot of a multi-replica stack is deterministic.

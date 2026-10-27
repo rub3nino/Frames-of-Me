@@ -13,6 +13,8 @@ import {
 import type { EventRow, PhotoRow, TagProfileRow, UserRow } from "@rephoto/db";
 import type { AppDeps, AppEnv } from "./deps.js";
 import { ApiError, MESSAGES } from "./errors.js";
+import { objectReadUrl } from "./media-urls.js";
+import { incrementSharedLimit } from "./distributed-rate-limit.js";
 import { readJson, requireRole, requireUser } from "./http.js";
 
 /**
@@ -82,8 +84,8 @@ export function registerTagRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     for (const row of tagged) {
       items.push({
         photoId: row.photoId,
-        thumbUrl: await deps.objects.presignGet(row.thumbKey),
-        webUrl: await deps.objects.presignGet(row.webKey),
+        thumbUrl: await objectReadUrl(deps, row.thumbKey),
+        webUrl: await objectReadUrl(deps, row.webKey),
         createdAt: row.createdAt.toISOString(),
       });
     }
@@ -169,7 +171,16 @@ export function registerTagRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const term = query.data.q.trim();
     if (term.length < TAG_SEARCH_MIN_CHARS) throw new ApiError(400, MESSAGES.validation);
     // Rule 5: the budget is per session.
-    if (!searchLimiter.allow(sessionKey(user), TAG_SEARCH_RATE_LIMIT.max)) {
+    if (
+      await overTagLimit(
+        deps,
+        searchLimiter,
+        sessionKey(user),
+        TAG_SEARCH_RATE_LIMIT.max,
+        TAG_SEARCH_RATE_LIMIT.windowSeconds,
+        `rephoto:tags:search:${sessionKey(user)}`,
+      )
+    ) {
       throw new ApiError(429, MESSAGES.rateLimited);
     }
     // Rules 1 and 3 are in the query itself: an `event_members` row for THIS event with
@@ -197,7 +208,16 @@ export function registerTagRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     await assertEventMember(deps, user, event);
     const body = tagCreateBodySchema.safeParse(await readJson(c));
     if (!body.success) throw new ApiError(400, MESSAGES.validation);
-    if (!writeLimiter.allow(sessionKey(user), TAG_WRITE_RATE_LIMIT.max)) {
+    if (
+      await overTagLimit(
+        deps,
+        writeLimiter,
+        sessionKey(user),
+        TAG_WRITE_RATE_LIMIT.max,
+        TAG_WRITE_RATE_LIMIT.windowSeconds,
+        `rephoto:tags:write:${sessionKey(user)}`,
+      )
+    ) {
       throw new ApiError(429, MESSAGES.rateLimited);
     }
     const photo = await visibleTagPhoto(deps, user, event, body.data.photoId);
@@ -331,6 +351,28 @@ type TagLimiter = {
 };
 
 /** The same sliding window `routes.ts` uses for registrations, local to the tag routes. */
+async function overTagLimit(
+  deps: AppDeps,
+  limiter: TagLimiter,
+  key: string,
+  max: number,
+  windowSeconds: number,
+  redisKey: string,
+): Promise<boolean> {
+  let count: number | null = null;
+  try {
+    count = await incrementSharedLimit({
+      ...(deps.env.REDIS_URL ? { redisUrl: deps.env.REDIS_URL } : {}),
+      key: redisKey,
+      windowSeconds,
+    });
+  } catch {
+    /* fall back to in-process limiter */
+  }
+  if (count !== null) return count > max;
+  return !limiter.allow(key, max);
+}
+
 function createTagLimiter(windowSeconds: number): TagLimiter {
   const hits = new Map<string, number[]>();
   const windowMs = windowSeconds * 1000;

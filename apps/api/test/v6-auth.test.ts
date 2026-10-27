@@ -34,6 +34,10 @@ const GOOGLE_CLIENT_ID = "client-123.apps.googleusercontent.com";
 
 const baseEnv = {
   DATABASE_URL: "postgres://rephoto:rephoto@localhost:5432/rephoto",
+  S3_ENDPOINT: "http://localhost:9000",
+  S3_PUBLIC_ENDPOINT: "http://localhost:9000",
+  S3_ACCESS_KEY: "rephoto",
+  S3_SECRET_KEY: "rephoto-secret",
   S3_BUCKET: "rephoto",
   S3_REGION: "eu-central-1",
   SESSION_SECRET: "test-session-secret-value",
@@ -87,6 +91,9 @@ class StubObjectStore implements ObjectStore {
   }
   async presignUploadPart(): Promise<string> {
     return "http://localhost:9000/part";
+  }
+  async uploadPart(): Promise<string> {
+    return "part-1";
   }
   async completeMultipartUpload(key: string, uploadId: string, parts: CompletedPart[]): Promise<void> {
     void key;

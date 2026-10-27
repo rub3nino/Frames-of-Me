@@ -26,12 +26,33 @@
  * the database count. It THROWS on a transport or protocol failure, so the caller can decide
  * between falling back and failing closed; every call site here falls back.
  */
+async function incrementPrivateRedis(
+  redisUrl: string,
+  key: string,
+  windowSeconds: number,
+): Promise<number> {
+  const { createClient } = await import("redis");
+  const client = createClient({ url: redisUrl });
+  await client.connect();
+  try {
+    const count = await client.incr(key);
+    if (count === 1) await client.expire(key, windowSeconds);
+    return count;
+  } finally {
+    await client.quit();
+  }
+}
+
 export async function incrementSharedLimit(input: {
   url?: string;
   token?: string;
+  redisUrl?: string;
   key: string;
   windowSeconds: number;
 }): Promise<number | null> {
+  if (input.redisUrl) {
+    return incrementPrivateRedis(input.redisUrl, input.key, input.windowSeconds);
+  }
   if (!input.url || !input.token) return null;
   const response = await fetch(`${input.url.replace(/\/$/, "")}/pipeline`, {
     method: "POST",

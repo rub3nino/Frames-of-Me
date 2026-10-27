@@ -206,6 +206,19 @@ export const envSchema = z
      */
     UPSTASH_REDIS_REST_URL: z.preprocess(blankToUndefined, z.string().url().optional()),
     UPSTASH_REDIS_REST_TOKEN: optionalText,
+    /** Private-network Redis (ADR-004). Preferred over Upstash when self-hosted. */
+    REDIS_URL: z.preprocess(blankToUndefined, z.string().url().optional()),
+    /** When true, uploads and media URLs go through the API (default when S3_PUBLIC_ENDPOINT is unset). */
+    MEDIA_VIA_API: z.preprocess(blankToUndefined, z.enum(["true", "false"]).optional()),
+    SENTRY_DSN: z.preprocess(blankToUndefined, z.string().url().optional()),
+    SENTRY_ENVIRONMENT: z.preprocess(blankToUndefined, z.string().min(1).optional()),
+    /** Generic staff OIDC (Authentik on Tailscale). All four required together. */
+    STAFF_OIDC_AUTHORIZE_URL: z.preprocess(blankToUndefined, z.string().url().optional()),
+    STAFF_OIDC_TOKEN_URL: z.preprocess(blankToUndefined, z.string().url().optional()),
+    STAFF_OIDC_CLIENT_ID: optionalText,
+    STAFF_OIDC_CLIENT_SECRET: optionalText,
+    STAFF_OIDC_REDIRECT_URL: z.preprocess(blankToUndefined, z.string().url().optional()),
+    STAFF_OIDC_ISSUERS: z.preprocess(blankToUndefined, z.string().default("")),
     /** Comma-separated emails upserted as admin when the api boots. */
     BOOTSTRAP_ADMINS: z.preprocess(blankToUndefined, z.string().default("")),
     WEB_ORIGIN: z.string().url(),
@@ -401,6 +414,21 @@ export const envSchema = z
         path: ["GOOGLE_CLIENT_ID"],
         message:
           "GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET and GOOGLE_REDIRECT_URL must be set together",
+      });
+    }
+    const staffOidc = [
+      env.STAFF_OIDC_AUTHORIZE_URL,
+      env.STAFF_OIDC_TOKEN_URL,
+      env.STAFF_OIDC_CLIENT_ID,
+      env.STAFF_OIDC_CLIENT_SECRET,
+      env.STAFF_OIDC_REDIRECT_URL,
+    ];
+    if (staffOidc.some(Boolean) && !staffOidc.every(Boolean)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["STAFF_OIDC_AUTHORIZE_URL"],
+        message:
+          "STAFF_OIDC_AUTHORIZE_URL, STAFF_OIDC_TOKEN_URL, STAFF_OIDC_CLIENT_ID, STAFF_OIDC_CLIENT_SECRET and STAFF_OIDC_REDIRECT_URL must be set together",
       });
     }
   })

@@ -1,7 +1,9 @@
 name: CI
 
 # Backend monorepo (apps/api, apps/worker, apps/web + packages/*). The separate frontend/
-# monorepo has its own workflow (frontend-ci.yml).
+# monorepo has its own workflow (frontend-ci.yml) — path-filtered Vite builds for landing,
+# partecipanti, fotografi, admin when `frontend/**` changes; no duplicate job here until
+# Coolify deploy hooks for static apps are wired (see frontend/DEPLOY.md).
 on:
   push:
     branches: [main]

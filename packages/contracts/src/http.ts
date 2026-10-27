@@ -38,6 +38,8 @@ export const SELFIE_RATE_LIMIT = { max: 5, windowSeconds: 60 * 60 } as const;
 export const PUBLIC_UPLOAD_RATE_LIMIT = { max: 20, windowSeconds: 60 * 60 } as const;
 /** 10 MiB: the largest body the api accepts (selfie multipart of 8 MiB plus overhead). */
 export const API_BODY_MAX_BYTES = 10_485_760;
+/** Max bytes for a single upload body through the API proxy (ADR-002). */
+export const API_UPLOAD_MAX_BYTES = 73_400_320;
 export const MAGIC_LINK_RATE_LIMIT = { perEmail: 3, perIp: 20, windowSeconds: 60 * 60 } as const;
 export const MULTIPART_THRESHOLD_BYTES = 8_388_608;
 /** 60 MiB. */

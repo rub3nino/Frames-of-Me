@@ -13,6 +13,10 @@ CI decides what to ship from `main`.
 | `apps/admin` | `admin.framesofme.com` | dynamic | as needed |
 | backend | `api.framesofme.com` | `../apps/api` | — |
 
+**Coolify production:** see [docs/infra-coolify.md](../docs/infra-coolify.md). Static apps must not
+embed secrets; uploads use API proxy URLs when `MEDIA_VIA_API=true` ([ADR-002](../docs/adr/002-media-via-api.md)).
+`apps/web` (Next) is deprecated for new work ([ADR-005](../docs/adr/005-frontend-static.md)).
+
 Each app's host (or a shared edge/reverse proxy) routes **`/v1/*` → the API** so the browser sees
 the API as same-origin and the session cookie (`rephoto_session`, httpOnly, SameSite=Lax) works
 without CORS. This is why `packages/api-client` defaults to `/v1`.

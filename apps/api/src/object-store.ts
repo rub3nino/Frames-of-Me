@@ -39,6 +39,13 @@ export interface ObjectStore {
   presignPut(key: string, contentType: string, bytes?: number): Promise<string>;
   createMultipartUpload(key: string, contentType: string): Promise<string>;
   presignUploadPart(key: string, uploadId: string, partNumber: number): Promise<string>;
+  /** Server-side multipart part upload (API proxy mode). Returns S3 ETag. */
+  uploadPart(
+    key: string,
+    uploadId: string,
+    partNumber: number,
+    body: Uint8Array,
+  ): Promise<string>;
   completeMultipartUpload(
     key: string,
     uploadId: string,

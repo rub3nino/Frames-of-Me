@@ -26,6 +26,7 @@ import { pollOnce } from "../src/run.js";
 export const env: Env = envSchema.parse({
   DATABASE_URL: "postgres://rephoto:rephoto@localhost:5432/rephoto",
   S3_ENDPOINT: "http://localhost:9000",
+  S3_PUBLIC_ENDPOINT: "http://localhost:9000",
   S3_BUCKET: "rephoto",
   S3_ACCESS_KEY: "rephoto",
   S3_SECRET_KEY: "rephoto-secret",
@@ -96,6 +97,10 @@ export class MemoryObjectStore implements ObjectStore {
 
   async presignUploadPart(key: string, uploadId: string, partNumber: number): Promise<string> {
     return `http://localhost:9000/${key}?upload=${uploadId}&part=${partNumber}`;
+  }
+
+  async uploadPart(_key: string, _uploadId: string, partNumber: number): Promise<string> {
+    return `part-${partNumber}`;
   }
 
   async completeMultipartUpload(
