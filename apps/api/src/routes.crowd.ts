@@ -51,6 +51,11 @@ import { incrementSharedLimit } from "./distributed-rate-limit.js";
 import { ApiError, MESSAGES } from "./errors.js";
 import { decodeCursor, encodeCursor, readJson, requireRole, requireUser, since } from "./http.js";
 import { purgePhoto } from "./purge.js";
+import {
+  crowdUploadPartPutUrl,
+  crowdUploadSinglePutUrl,
+  objectReadUrl,
+} from "./media-urls.js";
 import { rateLimitExempt } from "./routes.js";
 import { noopScreening } from "./screening.js";
 
@@ -124,7 +129,14 @@ export function registerCrowdRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
         id: uploadId,
         objectKey,
         mode: "single" as const,
-        url: await deps.objects.presignPut(objectKey, input.contentType, input.bytes),
+        url: await crowdUploadSinglePutUrl(
+          deps,
+          album.id,
+          uploadId,
+          objectKey,
+          input.contentType,
+          input.bytes,
+        ),
       },
       201,
     );
@@ -138,7 +150,10 @@ export function registerCrowdRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     if (!session.s3UploadId) throw new ApiError(400, MESSAGES.validation);
     const body = uploadPartBodySchema.safeParse(await readJson(c));
     if (!body.success) throw new ApiError(400, MESSAGES.validation);
-    const url = await deps.objects.presignUploadPart(
+    const url = await crowdUploadPartPutUrl(
+      deps,
+      album.id,
+      session.id,
       session.objectKey,
       session.s3UploadId,
       body.data.partNumber,
@@ -299,8 +314,8 @@ export function registerCrowdRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
         albumId: row.albumId,
         uploaderId: row.uploaderId,
         createdAt: row.createdAt.toISOString(),
-        thumbUrl: await deps.objects.presignGet(row.thumbKey),
-        webUrl: await deps.objects.presignGet(row.webKey),
+        thumbUrl: await objectReadUrl(deps, row.thumbKey),
+        webUrl: await objectReadUrl(deps, row.webKey),
         mine: row.uploaderId === user.id,
       })),
     );
@@ -340,7 +355,7 @@ export function registerCrowdRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const urls = await Promise.all(
       photos.map(async (photo) => ({
         photoId: photo.id,
-        url: await deps.objects.presignGet(photo.webKey),
+        url: await objectReadUrl(deps, photo.webKey),
       })),
     );
     await deps.db.insertAudit({
@@ -449,8 +464,8 @@ export function registerCrowdRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
         openReports: row.openReports,
         reasons: row.reasons,
         notMeReports: row.notMeReports,
-        thumbUrl: row.thumbKey ? await deps.objects.presignGet(row.thumbKey) : null,
-        webUrl: row.webKey ? await deps.objects.presignGet(row.webKey) : null,
+        thumbUrl: row.thumbKey ? await objectReadUrl(deps, row.thumbKey) : null,
+        webUrl: row.webKey ? await objectReadUrl(deps, row.webKey) : null,
       })),
     );
     return c.json({
@@ -633,6 +648,7 @@ async function assertUploadRate(
   let started: number | null = null;
   try {
     started = await incrementSharedLimit({
+      ...(deps.env.REDIS_URL ? { redisUrl: deps.env.REDIS_URL } : {}),
       ...(deps.env.UPSTASH_REDIS_REST_URL ? { url: deps.env.UPSTASH_REDIS_REST_URL } : {}),
       ...(deps.env.UPSTASH_REDIS_REST_TOKEN ? { token: deps.env.UPSTASH_REDIS_REST_TOKEN } : {}),
       // Album, not event: sibling crowd albums have their own `uploads_open` and caps.

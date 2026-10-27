@@ -63,7 +63,12 @@ function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw abortError();
 }
 
+function uploadViaApi(url: string): boolean {
+  return url.startsWith("/v1/");
+}
+
 function putTarget(url: string): string {
+  if (uploadViaApi(url)) return url;
   try {
     const parsed = new URL(url);
     const local = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
@@ -102,7 +107,9 @@ function putPart(
     };
     signal?.addEventListener("abort", onAbort, { once: true });
 
-    xhr.open("PUT", putTarget(url));
+    const target = putTarget(url);
+    xhr.open("PUT", target);
+    if (uploadViaApi(url)) xhr.withCredentials = true;
     xhr.timeout = PART_TIMEOUT_MS;
     if (contentType) xhr.setRequestHeader("Content-Type", contentType);
     xhr.upload.onprogress = (event) => {

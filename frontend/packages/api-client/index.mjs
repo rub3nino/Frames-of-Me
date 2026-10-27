@@ -119,6 +119,18 @@ export function createClient(opts = {}) {
       req(`/uploads/${id}/parts`, { method: "POST", json: { partNumber } }),
     uploadComplete: (id, parts) =>
       req(`/uploads/${id}/complete`, { method: "POST", json: { parts } }),
+    /** PUT bytes to the URL returned by uploadInit (API proxy or presigned S3). */
+    putUploadBytes: async (url, blob, contentType) => {
+      const target = url.startsWith("http") ? url : url.startsWith("/v1/") ? url : `${base.replace(/\/v1$/, "")}${url}`;
+      const res = await fetch(target, {
+        method: "PUT",
+        credentials: "include",
+        headers: contentType ? { "content-type": contentType } : {},
+        body: blob,
+      });
+      if (!res.ok) throw new ApiError(res.status, null);
+      return res.headers.get("etag");
+    },
     uploadsSummary: (eventId) =>
       req(`/uploads/summary?eventId=${encodeURIComponent(eventId)}`),
 

@@ -1,3 +1,4 @@
+import * as Sentry from "@sentry/node";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { getCookie } from "hono/cookie";
@@ -6,6 +7,8 @@ import { sha256Hex } from "./crypto.js";
 import type { AppDeps, AppEnv } from "./deps.js";
 import { ApiError, MESSAGES } from "./errors.js";
 import { applySecurityHeaders, clientIp } from "./http.js";
+import { registerMediaRoutes } from "./routes.media.js";
+import { registerUploadProxyRoutes } from "./routes.upload-proxy.js";
 import { registerRoutes } from "./routes.js";
 
 export function createApp(deps: AppDeps): Hono<AppEnv> {
@@ -20,7 +23,7 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
     }
     if (c.req.method === "OPTIONS") {
       c.header("Access-Control-Allow-Headers", "Content-Type");
-      c.header("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS");
+      c.header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
       return c.body(null, 204);
     }
     c.set("ip", clientIp(c, deps.env.TRUSTED_PROXY_HOPS));
@@ -30,8 +33,12 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
     applySecurityHeaders(c.res.headers, deps.env);
   });
 
+  // Upload proxy (ADR-002): large bodies, registered before the JSON body cap.
+  registerUploadProxyRoutes(app, deps);
+  registerMediaRoutes(app, deps);
+
   // Every body the api reads is buffered (JSON, the selfie multipart): cap it. Photo bytes
-  // never pass through here, they go to S3 on presigned URLs.
+  // never pass through here unless `S3_PUBLIC_ENDPOINT` is set (legacy presigned PUT).
   app.use(
     "*",
     bodyLimit({
@@ -48,6 +55,7 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
     if (!(error instanceof ApiError)) {
       const message = error instanceof Error ? error.message : "api error";
       console.error(message.slice(0, 300));
+      if (deps.env.SENTRY_DSN) Sentry.captureException(error);
     }
     applySecurityHeaders(response.headers, deps.env);
     return response;

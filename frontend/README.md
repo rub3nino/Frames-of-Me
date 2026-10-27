@@ -50,6 +50,12 @@ API is **same-origin** (cookies just work). `packages/api-client` defaults to `/
 either run the app behind the Next dev proxy or set `globalThis.REPHOTO_API_BASE`. Details and the
 CORS note are in [`DEPLOY.md`](DEPLOY.md).
 
+## Observability (Sentry)
+
+Production errors from the API and worker go to Sentry when `SENTRY_DSN` is set on those
+services. Static frontends do not embed a DSN today: use browser devtools and the admin
+**Operazioni** link (`OPS_LINK_SENTRY`) for triage until a client SDK is added per app.
+
 ## Roadmap
 
 - **Phase 1 — foundation (done):** rename + workspace, `packages/ui`, `packages/api-client`,

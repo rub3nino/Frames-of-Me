@@ -14,9 +14,9 @@
 >
 > La storia è conservata in ciascuno: `git blame` e `git log --follow` funzionano.
 >
-> **Questo repo non è archiviato e non va cancellato**: la produzione su Coolify builda ancora
-> da qui, e lo spostamento del deploy è una decisione ancora aperta
-> ([ADR 0005](https://github.com/Frames-of-Me/platform/blob/main/docs/adr/0005-deploy-ancora-dal-monorepo.md)).
+> **Questo repo non è archiviato e non va cancellato**: la produzione su Coolify builda da qui
+> ([docs/infra-coolify.md](docs/infra-coolify.md), [ADR-001](docs/adr/001-coolify-only-deploy.md)).
+> Lo stack VPS in `deploy/` è legacy/non-target per nuovi deploy.
 > Conserva anche le issue, le pull request e i tag `archive/*` e `ref/quadra-jet-pre-merge`.
 >
 > Per lavorare: `git clone https://github.com/Frames-of-Me/platform.git && cd platform && ./bootstrap.sh`

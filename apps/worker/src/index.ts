@@ -1,4 +1,5 @@
 import { createSql, PostgresDatabase } from "@rephoto/db";
+import * as Sentry from "@sentry/node";
 import { loadEnv } from "@rephoto/api/env";
 import { loadFaceEngine } from "@rephoto/api/face";
 import { createMailer } from "@rephoto/api/mailer";
@@ -18,6 +19,13 @@ const HOUSEKEEPING_MS = 10 * 60 * 1000;
 const METRICS_MS = 30 * 1000;
 
 const env = loadEnv();
+if (env.SENTRY_DSN) {
+  Sentry.init({
+    dsn: env.SENTRY_DSN,
+    environment: env.SENTRY_ENVIRONMENT ?? "worker",
+    tracesSampleRate: 0.05,
+  });
+}
 const sql = createSql(env.DATABASE_URL, { max: env.DATABASE_POOL_MAX });
 // The worker never migrates or seeds: the one-shot `migrate` service (and `pnpm db:seed`
 // in local dev) owns the schema. The worker starts only after that has completed.

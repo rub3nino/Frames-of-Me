@@ -46,6 +46,10 @@ import type { Screening, ScreeningInput, ScreeningVerdict } from "../src/screeni
 
 const baseEnv = {
   DATABASE_URL: "postgres://rephoto:rephoto@localhost:5432/rephoto",
+  S3_ENDPOINT: "http://localhost:9000",
+  S3_PUBLIC_ENDPOINT: "http://localhost:9000",
+  S3_ACCESS_KEY: "rephoto",
+  S3_SECRET_KEY: "rephoto-secret",
   S3_BUCKET: "rephoto",
   S3_REGION: "eu-central-1",
   SESSION_SECRET: "test-session-secret-value",
@@ -97,6 +101,9 @@ class MemoryObjectStore implements ObjectStore {
   }
   async presignUploadPart(key: string, uploadId: string, partNumber: number): Promise<string> {
     return `http://localhost:9000/${key}?upload=${uploadId}&part=${partNumber}`;
+  }
+  async uploadPart(_key: string, _uploadId: string, partNumber: number): Promise<string> {
+    return `part-${partNumber}`;
   }
   async completeMultipartUpload(): Promise<void> {}
   async abortMultipartUpload(): Promise<void> {}

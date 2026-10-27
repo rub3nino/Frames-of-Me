@@ -13,6 +13,7 @@ Contenuto di `deploy/`:
 | `scripts/bootstrap.sh` | installa Docker su Debian 12 pulito, crea l'utente, clona, configura, avvia |
 | `scripts/gen-secrets.sh` | genera password e segreti nel file env |
 | `scripts/backup.sh`, `scripts/restore.sh` | backup immediato e ripristino |
+| `scripts/backup-coolify.sh` | sidecar restic per `docker-compose.coolify.yml` (profilo `backup`) |
 | `scripts/migrate.sh` | migrazioni SQL con un container una tantum |
 | `scripts/logs.sh` | log dei servizi e log di accesso di Caddy |
 | `systemd/rephoto.service` | avvio dello stack al boot |
@@ -140,6 +141,7 @@ Il servizio `backup` ogni giorno alle `BACKUP_AT` (UTC) fa `pg_dump -Fc` in `BAC
 
 - Backup subito: `scripts/backup.sh`.
 - Ripristino: `scripts/restore.sh [nome-dump]` (default: l'ultimo). Ferma api e worker, `pg_restore --clean` nel database esistente, rimanda gli oggetti nel bucket (additivo), riavvia.
+- **Coolify (restic):** backup giornaliero con il servizio `backup` in `docker-compose.coolify.yml` e `deploy/scripts/backup-coolify.sh`. Ripristino da snapshot restic: vedi [docs/ops/backup-coolify.md](../docs/ops/backup-coolify.md) (non usare `restore.sh` sullo stack Coolify senza adattare i percorsi volume).
 
 Il disco di backup deve essere **fisico/logico diverso** da quello dei dati (volume aggiuntivo, Storage Box via CIFS/SSHFS, o `rclone` verso un bucket esterno subito dopo `last-ok`). `BACKUP_DIR` sullo stesso disco protegge solo dagli errori umani, non dai guasti.
 

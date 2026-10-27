@@ -181,6 +181,20 @@ export function createS3ObjectStore(env: Env): ObjectStore {
         { expiresIn },
       );
     },
+    async uploadPart(key, uploadId, partNumber, body) {
+      const result = await client.send(
+        new UploadPartCommand({
+          Bucket: bucket,
+          Key: key,
+          UploadId: uploadId,
+          PartNumber: partNumber,
+          Body: body,
+        }),
+      );
+      const etag = result.ETag;
+      if (!etag) throw new Error("UploadPart returned no ETag");
+      return etag.replaceAll('"', "");
+    },
     async completeMultipartUpload(key, uploadId, parts: CompletedPart[]) {
       await client.send(
         new CompleteMultipartUploadCommand({

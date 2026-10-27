@@ -4,11 +4,10 @@ name: rephoto
 # Cloudflare Tunnel -> Coolify's Traefik, so NO service publishes a host port: each one only
 # `expose`s its internal port and you map the FQDN in Coolify's UI (Service -> Domains).
 #
-#   FQDN mapping to set in Coolify:
+#   FQDN mapping (public via Cloudflare Tunnel only — see docs/infra-coolify.md):
 #     web          framesofme.com, www.framesofme.com   -> container port 3000
 #     api          api.framesofme.com                   -> container port 8787
-#     minio        s3.framesofme.com                    -> container port 9000   (browser presigned URLs)
-#     mailpit      mail.framesofme.com                  -> container port 8025   (behind Cloudflare Access)
+#   Do NOT map MinIO or Mailpit to a public hostname (ADR-002: media via API; prod uses SMTP).
 #
 # Secrets and URLs come from Coolify's Environment Variables (see .env.example). The ${VAR:-default}
 # defaults are non-secret dev values so `docker compose -f docker-compose.coolify.yml up` also works
@@ -80,8 +79,26 @@ x-app-env: &app_env
   # Cloudflare + Traefik sit in front of the api: the client IP is 2 hops from the end of x-forwarded-for.
   TRUSTED_PROXY_HOPS: ${TRUSTED_PROXY_HOPS:-2}
   BOOTSTRAP_ADMINS: ${BOOTSTRAP_ADMINS:-}
+  REDIS_URL: ${REDIS_URL:-redis://:${REDIS_PASSWORD:-rephoto-redis}@redis:6379}
+  SENTRY_DSN: ${SENTRY_DSN:-}
+  SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-coolify}
+  MEDIA_VIA_API: ${MEDIA_VIA_API:-true}
 
 services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:-rephoto-redis}", "--appendonly", "yes"]
+    expose:
+      - "6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-rephoto-redis}", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
   postgres:
     # pgvector-enabled Postgres 16 (needed when FACE_ENGINE=insightface; harmless otherwise).
     image: pgvector/pgvector:pg16
@@ -222,12 +239,16 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
       migrate:
         condition: service_completed_successfully
       minio-init:
         condition: service_completed_successfully
     restart: unless-stopped
     deploy:
+      mode: replicated
+      replicas: ${API_REPLICAS:-2}
       resources:
         limits:
           cpus: "1.0"
@@ -235,6 +256,7 @@ services:
 
   worker:
     # No FQDN: not a server. Processes jobs; Docker/Coolify restart it on exit.
+    # Inherits REDIS_URL from *app_env for compose symmetry only — the worker does not use Redis.
     build:
       context: .
       dockerfile: apps/worker/Dockerfile
@@ -244,6 +266,8 @@ services:
       WORKER_PUBLISH_METRICS: ${WORKER_PUBLISH_METRICS:-false}
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
@@ -255,6 +279,23 @@ services:
         limits:
           cpus: "2.0"
           memory: 2g
+
+  backup:
+    # Off-site copy: set BACKUP_RESTIC_REPOSITORY + RESTIC_PASSWORD in Coolify (see docs/ops/backup-coolify.md).
+    image: restic/restic:0.17.3
+    profiles: ["backup"]
+    environment:
+      RESTIC_REPOSITORY: ${BACKUP_RESTIC_REPOSITORY:-}
+      RESTIC_PASSWORD: ${BACKUP_RESTIC_PASSWORD:-}
+      AWS_ACCESS_KEY_ID: ${BACKUP_S3_ACCESS_KEY:-}
+      AWS_SECRET_ACCESS_KEY: ${BACKUP_S3_SECRET_KEY:-}
+      BACKUP_AT: ${BACKUP_AT:-03:30}
+    volumes:
+      - postgres_data:/data/postgres:ro
+      - minio_data:/data/minio:ro
+      - ./deploy/scripts/backup-coolify.sh:/backup.sh:ro
+    entrypoint: ["/bin/sh", "/backup.sh"]
+    restart: unless-stopped
 
   web:
     # FQDN in Coolify: framesofme.com + www.framesofme.com -> 3000. The web app proxies /v1/* to the api.
@@ -341,3 +382,4 @@ volumes:
   postgres_data:
   minio_data:
   mailpit_data:
+  redis_data:

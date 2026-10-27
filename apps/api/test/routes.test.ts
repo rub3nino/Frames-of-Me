@@ -41,6 +41,7 @@ import { createQueue } from "../src/queue.ts";
 const env: Env = envSchema.parse({
   DATABASE_URL: "postgres://rephoto:rephoto@localhost:5432/rephoto",
   S3_ENDPOINT: "http://localhost:9000",
+  S3_PUBLIC_ENDPOINT: "http://localhost:9000",
   S3_BUCKET: "rephoto",
   S3_ACCESS_KEY: "rephoto",
   S3_SECRET_KEY: "rephoto-secret",
@@ -110,6 +111,11 @@ class MemoryObjectStore implements ObjectStore {
 
   async presignUploadPart(key: string, uploadId: string, partNumber: number): Promise<string> {
     return `http://localhost:9000/${key}?upload=${uploadId}&part=${partNumber}`;
+  }
+
+  async uploadPart(key: string, _uploadId: string, partNumber: number, body: Uint8Array): Promise<string> {
+    this.objects.set(key, { body, contentType: "application/octet-stream" });
+    return `part-${partNumber}`;
   }
 
   async completeMultipartUpload(
@@ -2661,4 +2667,55 @@ test("selfie with challenge frames queues a match (v4 report F05)", async () => 
   assert.equal(res.status, 202);
   assert.deepEqual(await res.json(), { status: "queued" });
   assert.equal(await h.db.countMatchJobsSince(participant.id, new Date(Date.now() - 60_000)), 1);
+});
+
+test("MEDIA_VIA_API returns API upload and gallery media paths", async () => {
+  const h = await harness({ env: { ...env, MEDIA_VIA_API: "true" } });
+  const photographer = await h.db.findUserByEmailRole(
+    "photographer@rephoto.local",
+    "photographer",
+  );
+  assert.ok(photographer);
+  const cookie = await sessionCookie(h.db, photographer.id);
+  const init = await h.app.request(
+    json(
+      "POST",
+      "/v1/uploads/init",
+      {
+        eventId: h.event.id,
+        filename: "via-api.jpg",
+        contentType: "image/jpeg",
+        sha256: "b".repeat(64),
+        bytes: 512,
+      },
+      { cookie },
+    ),
+  );
+  assert.equal(init.status, 201);
+  const session = (await init.json()) as { id: string; url: string };
+  assert.equal(session.url, `/v1/uploads/${session.id}/object`);
+
+  const participant = await h.db.createUser({ email: "media-api@example.com", role: "participant" });
+  const pCookie = await sessionCookie(h.db, participant.id);
+  await h.db.insertConsent({
+    userId: participant.id,
+    eventId: h.event.id,
+    textVersion: CONSENT_TEXT_VERSION,
+    ip: "127.0.0.1",
+    userAgent: "t",
+  });
+  const seeded = await seedGallery(h, participant.id, 1);
+  const galleryRes = await h.app.request(
+    new Request(`http://api.local/v1/events/${h.event.slug}/gallery?limit=1`, {
+      headers: { cookie: pCookie },
+    }),
+  );
+  assert.equal(galleryRes.status, 200);
+  const gallery = (await galleryRes.json()) as { items: Array<{ thumbUrl: string; webUrl: string }> };
+  assert.equal(gallery.items.length, 1);
+  assert.equal(
+    gallery.items[0]?.thumbUrl,
+    `/v1/media/photos/${seeded[0]!.photoId}/thumb`,
+  );
+  assert.equal(gallery.items[0]?.webUrl, `/v1/media/photos/${seeded[0]!.photoId}/web`);
 });

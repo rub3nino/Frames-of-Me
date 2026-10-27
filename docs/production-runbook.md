@@ -1,42 +1,34 @@
 # Production runbook
 
 Operational, not architectural: what has to be configured outside the application, and what has
-to be true before an event opens. The schema and the HTTP surface are `CONTRACTS.md`; the
-self-hosted stack is `deploy/README.md`; the privacy analysis is `docs/DPIA.md`.
+to be true before an event opens. The schema and the HTTP surface are `CONTRACTS.md`; **Coolify
+production** is documented in `docs/infra-coolify.md` ([ADR-001](adr/001-coolify-only-deploy.md));
+legacy VPS stack remains in `deploy/README.md`; the privacy analysis is `docs/DPIA.md`.
 
 ## Required environment
 
-- Keep `S3_ENDPOINT` private. Set `S3_PUBLIC_ENDPOINT` only to the Cloudflare/CDN hostname used
-  for signed browser URLs (`packages/contracts/src/env.ts:17,171`: `S3_ENDPOINT` stays internal,
-  `S3_PUBLIC_ENDPOINT` is the host the browser sees).
+- Keep `S3_ENDPOINT` private (Compose-internal MinIO). **Production (Coolify): do not set
+  `S3_PUBLIC_ENDPOINT`.** Set `MEDIA_VIA_API=true` (default in `docker-compose.coolify.yml`) so
+  uploads and gallery URLs go through the API ([ADR-002](adr/002-media-via-api.md)). Legacy
+  presigned URLs remain available only when `S3_PUBLIC_ENDPOINT` is set (dev/staging).
+- Set `REDIS_URL` before running **≥2 API replicas** ([ADR-004](adr/004-redis-and-job-queue.md)).
+  Crowd upload burst limits and registration rate limits use Redis when configured; otherwise
+  they fall back to Postgres counts or in-process windows.
 - Use `FACE_ENGINE=insightface` only after the face service health check and the
   consent/retention process have been verified.
 - Set `RETENTION_SCHEDULER=true` on the worker, with `RETENTION_ALARM_MAIL` and
   `RETENTION_ALARM_EMAIL`. Nothing else triggers the `retention` job: the worker's scheduler
   (`apps/worker/src/retention-scheduler.ts`) is what calls it on the ninetieth day, and with the
   scheduler off a retention period is a number in a column that nobody acts on.
-- **PENDING (piece C): the shared upload limiter.** This branch has **no** `UPSTASH_*`
-  configuration and no cross-replica limiter — `packages/contracts/src/env.ts` declares neither
-  variable. What it does have, and what you are therefore relying on today:
-  - **Database-backed, so correct across replicas**: magic links
-    (`apps/api/src/routes.ts:124-135`), selfies (`routes.ts:242-249`), reports
-    (`routes.crowd.ts:311-318`), password reset (`routes.reset.ts:105-122`). Each counts rows in
-    a window, so two API replicas cannot each grant the full allowance.
-  - **In-process `Map` windows, so the effective limit is multiplied by the replica count**:
-    self-registration (`createRateLimiter`, `routes.ts:1857`) and tagging
-    (`createTagLimiter`, `routes.tags.ts:334`). For registration that is deliberate — the hard
-    guarantee is `event_codes.max_uses`, enforced in one statement — and for tagging there is no
-    such backstop.
-  - **No windowed limit at all on the crowd upload path.** `POST /v1/albums/:albumId/uploads/init`
-    gates on three things only (`routes.crowd.ts:56-120`): the album's `uploads_open` kill switch
-    (`423`), per-album dedup on `sha256`, and the absolute per-user cap
-    `albums.max_photos_per_user` (`assertBelowCap`, `routes.crowd.ts:548`, re-checked at
-    `complete`). A cap bounds total volume, not burst rate, and an album with
-    `max_photos_per_user = null` is unbounded in both.
-
-  Until piece C lands a decision, run the API as **one replica** or set a finite
-  `max_photos_per_user` on every crowd album, and treat this section as the thing to re-read
-  before scaling out.
+- **Cross-replica limits (piece C):** with `REDIS_URL` or `UPSTASH_*`, crowd album upload burst
+  (`ALBUM_UPLOAD_MAX_PER_HOUR`) and registration windows use `incrementSharedLimit`
+  (`apps/api/src/distributed-rate-limit.ts`). Without Redis, crowd uploads still fall back to an
+  exact `upload_sessions` count; registration falls back to in-process limiters (multiplied by
+  replica count — hard backstop remains `event_codes.max_uses`). Tagging limiters are still
+  in-process; set finite caps where that matters.
+- Optional `SENTRY_DSN` on api and worker (`docs/ops/observability.md`).
+- Staff SSO: `STAFF_OIDC_*` or `GOOGLE_*` (`docs/ops/sso-authentik.md`); participants stay on
+  magic link.
 
 ## Object store lifecycle
 
@@ -106,15 +98,14 @@ Before opening an event to participants:
 3. Confirm object store lifecycle, backup restore and CDN signed URL behaviour in a staging event.
    A backup that has never been restored is not a backup — `deploy/README.md` § 6 has the restore
    drill and the checks to run on its result.
-4. **PENDING (piece C): confirm the upload limiter holds across replicas.** On this branch there
-   is nothing to confirm, because there is no cross-replica counter — so instead confirm the
-   replica count is 1, or that every crowd album has a finite `max_photos_per_user` and
-   `uploads_open` can be flipped from the console. Replace this step with the real check once
-   piece C decides.
-5. Verify an upload into an album with `recognition = false` never creates a face row and never
+4. Confirm upload burst limits with the intended API replica count: Redis reachable, burst test on
+   crowd `uploads/init` returns `429` when expected (`scripts/loadtest/` or manual). Every crowd
+   album should have a finite `max_photos_per_user` unless Redis limits are verified.
+5. Confirm **no public MinIO hostname** and gallery JSON contains `/v1/media/` URLs, not object-store hosts.
+6. Verify an upload into an album with `recognition = false` never creates a face row and never
    calls the face engine. `apps/worker/test/v6.test.ts` has the named case ("index stores no
    vector for an album without recognition").
-6. Verify the kill switch: setting `albums.uploads_open = false` answers `423` on the upload
+7. Verify the kill switch: setting `albums.uploads_open = false` answers `423` on the upload
    routes on the next request, with no restart of anything.
 
 ## v4 report — go-live gate (security & load)

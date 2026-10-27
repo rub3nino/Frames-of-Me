@@ -90,9 +90,12 @@ import {
   verifiedEmail,
   verifyCallbackState,
 } from "./oauth.js";
+import { objectReadUrl, uploadPartPutUrl, uploadSinglePutUrl } from "./media-urls.js";
 import { purgePhoto } from "./purge.js";
 import { registerAdminV6Routes } from "./routes.admin-v6.js";
 import { registerCrowdRoutes } from "./routes.crowd.js";
+import { registerStaffOidcRoutes } from "./routes.staff-oidc.js";
+import { incrementSharedLimit } from "./distributed-rate-limit.js";
 // v6 G (agent G): the privacy routes live in their own file; this is the only line they add here.
 import { registerPrivacyRoutes } from "./routes.privacy.js";
 import { registerResetRoutes } from "./routes.reset.js";
@@ -382,8 +385,8 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const items = await Promise.all(
       page.items.map(async (row) => ({
         photoId: row.photoId,
-        thumbUrl: await deps.objects.presignGet(row.thumbKey),
-        webUrl: await deps.objects.presignGet(row.webKey),
+        thumbUrl: await objectReadUrl(deps, row.thumbKey),
+        webUrl: await objectReadUrl(deps, row.webKey),
         score: row.score,
         source: row.source,
         createdAt: row.createdAt.toISOString(),
@@ -534,7 +537,13 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
           id: uploadId,
           objectKey,
           mode: "single" as const,
-          url: await deps.objects.presignPut(objectKey, input.contentType, input.bytes),
+          url: await uploadSinglePutUrl(
+            deps,
+            uploadId,
+            objectKey,
+            input.contentType,
+            input.bytes,
+          ),
         },
         201,
       );
@@ -599,7 +608,13 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
         id: uploadId,
         objectKey,
         mode: "single" as const,
-        url: await deps.objects.presignPut(objectKey, input.contentType, input.bytes),
+        url: await uploadSinglePutUrl(
+          deps,
+          uploadId,
+          objectKey,
+          input.contentType,
+          input.bytes,
+        ),
       },
       201,
     );
@@ -612,7 +627,9 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     if (!session.s3UploadId) throw new ApiError(400, MESSAGES.validation);
     const body = uploadPartBodySchema.safeParse(await readJson(c));
     if (!body.success) throw new ApiError(400, MESSAGES.validation);
-    const url = await deps.objects.presignUploadPart(
+    const url = await uploadPartPutUrl(
+      deps,
+      session.id,
       session.objectKey,
       session.s3UploadId,
       body.data.partNumber,
@@ -1091,7 +1108,9 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
       page.items.map(async (photo) => ({
         ...adminPhoto(photo),
         thumbUrl:
-          photo.status === "indexed" ? await deps.objects.presignGet(objectKeys.thumb(photo.id)) : null,
+          photo.status === "indexed"
+            ? await objectReadUrl(deps, objectKeys.thumb(photo.id))
+            : null,
       })),
     );
     return c.json({
@@ -1112,8 +1131,8 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const thumb = derivatives.find((row) => row.kind === "thumb");
     return c.json({
       photo: adminPhoto(detail.photo),
-      webUrl: web ? await deps.objects.presignGet(web.s3Key) : null,
-      thumbUrl: thumb ? await deps.objects.presignGet(thumb.s3Key) : null,
+      webUrl: web ? await objectReadUrl(deps, web.s3Key) : null,
+      thumbUrl: thumb ? await objectReadUrl(deps, thumb.s3Key) : null,
       faces: detail.faces,
       galleries: detail.galleries,
     });
@@ -1443,12 +1462,36 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
     const ip = c.get("ip");
     if (!rateLimitExempt(deps, ip)) {
       const perIp = deps.env.REGISTER_PER_IP;
-      if (perIp > 0 && !registerLimiter.allow(`ip:${ip}`, perIp)) {
-        throw new ApiError(429, MESSAGES.rateLimited);
+      if (perIp > 0) {
+        let count: number | null = null;
+        try {
+          count = await incrementSharedLimit({
+            ...(deps.env.REDIS_URL ? { redisUrl: deps.env.REDIS_URL } : {}),
+            key: `rephoto:register:ip:${ip}`,
+            windowSeconds: REGISTER_RATE_LIMIT.windowSeconds,
+          });
+        } catch {
+          /* fall back to in-process limiter */
+        }
+        if (count !== null ? count > perIp : !registerLimiter.allow(`ip:${ip}`, perIp)) {
+          throw new ApiError(429, MESSAGES.rateLimited);
+        }
       }
       const perCode = deps.env.REGISTER_PER_CODE;
-      if (perCode > 0 && !registerLimiter.allow(`code:${eventCode}`, perCode)) {
-        throw new ApiError(429, MESSAGES.rateLimited);
+      if (perCode > 0) {
+        let count: number | null = null;
+        try {
+          count = await incrementSharedLimit({
+            ...(deps.env.REDIS_URL ? { redisUrl: deps.env.REDIS_URL } : {}),
+            key: `rephoto:register:code:${eventCode}`,
+            windowSeconds: REGISTER_RATE_LIMIT.windowSeconds,
+          });
+        } catch {
+          /* fall back */
+        }
+        if (count !== null ? count > perCode : !registerLimiter.allow(`code:${eventCode}`, perCode)) {
+          throw new ApiError(429, MESSAGES.rateLimited);
+        }
       }
     }
     // Checked before the code is claimed, so a second tap on "Registrati" does not burn a
@@ -1497,6 +1540,7 @@ export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
 
   registerAdminV6Routes(app, deps); // v6 D (agent D): admin console, routes.admin-v6.ts
   registerCrowdRoutes(app, deps);
+  registerStaffOidcRoutes(app, deps);
   registerPrivacyRoutes(app, deps); // v6 G (agent G): apps/api/src/routes.privacy.ts
   // v6 hardening H1 (agent H): password reset, own token table. This REPLACES the two
   // inline /v1/auth/password-reset routes that agent B had written against `magic_links`
@@ -1543,7 +1587,7 @@ function adminPhoto(photo: PhotoAdminRow) {
 /** Admin views tolerate photos whose derivatives are not there yet. */
 async function presignOrPlaceholder(deps: AppDeps, key: string): Promise<string> {
   if (!key) return `${webOrigin(deps.env)}/missing`;
-  return deps.objects.presignGet(key);
+  return objectReadUrl(deps, key);
 }
 
 /**
@@ -1693,7 +1737,7 @@ async function requireParticipantAccess(
   }
 }
 
-async function ownUpload(deps: AppDeps, id: string, photographerId: string) {
+export async function ownUpload(deps: AppDeps, id: string, photographerId: string) {
   const session = await deps.db.findUploadSession(parseUuid(id));
   if (!session || session.photographerId !== photographerId) {
     throw new ApiError(404, MESSAGES.notFound);
@@ -1752,7 +1796,7 @@ function presignVariantUrls(
   return Promise.all(
     photos.map(async (photo) => ({
       photoId: photo.id,
-      url: await deps.objects.presignGet(variantKey(photo, variant)),
+      url: await objectReadUrl(deps, variantKey(photo, variant)),
     })),
   );
 }
@@ -1990,7 +2034,7 @@ async function readSelfieFrame(
  * their role. `users.unique (email, role)` is untouched: the same address can exist as a
  * participant and as a photographer, and only the participant row is looked up by e-mail.
  */
-async function resolveGoogleUser(
+export async function resolveGoogleUser(
   deps: AppDeps,
   subject: string,
   verifiedEmailAddress: string | null,
@@ -2026,7 +2070,7 @@ async function resolveGoogleUser(
 }
 
 /** Where the web sends each role after a sign-in. Mirrors `apps/web/lib/paths.ts`. */
-function homePathForRole(role: Role): string {
+export function homePathForRole(role: Role): string {
   if (role === "photographer") return "/upload";
   if (role === "admin") return "/admin";
   return "/selfie";

@@ -30,7 +30,9 @@
     "@rephoto/db": "workspace:*",
     "@rephoto/face-engine": "workspace:*",
     "archiver": "^8.0.0",
+    "@sentry/node": "^9.46.0",
     "hono": "^4.9.8",
+    "redis": "^5.8.2",
     "nodemailer": "^10.0.15",
     "tsx": "^4.20.5"
   },
