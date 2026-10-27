@@ -49,4 +49,7 @@ jobs:
       - name: Build images
         env:
           S3_APP_SECRET_KEY: ci-build-placeholder-not-a-credential
+          # Traefik labels on `web` require these; CI only validates compose + Docker builds.
+          WEB_ROUTER_NAME: ci-web
+          WEB_DOMAIN: ci.example.com
         run: docker compose -f docker-compose.coolify.yml build api worker web
