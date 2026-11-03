@@ -34,6 +34,9 @@ export function staffOidcConfig(env: Env): StaffOidcConfig | null {
     return null;
   }
   const issuers = env.STAFF_OIDC_ISSUERS.split(",").map((s) => s.trim()).filter(Boolean);
+  if (env.WEB_ORIGIN.startsWith("https://") && issuers.length === 0) {
+    return null;
+  }
   return {
     authorizeUrl: env.STAFF_OIDC_AUTHORIZE_URL,
     tokenUrl: env.STAFF_OIDC_TOKEN_URL,
@@ -41,7 +44,7 @@ export function staffOidcConfig(env: Env): StaffOidcConfig | null {
     clientSecret: env.STAFF_OIDC_CLIENT_SECRET,
     redirectUrl: env.STAFF_OIDC_REDIRECT_URL,
     stateSecret: env.OAUTH_STATE_SECRET,
-    issuers: issuers.length > 0 ? issuers : [],
+    issuers,
   };
 }
 
@@ -96,10 +99,11 @@ export function assertStaffClaims(
   input: { config: StaffOidcConfig; nonce: string; now?: number },
 ): void {
   const now = input.now ?? Date.now();
-  if (input.config.issuers.length > 0) {
-    if (!claims.iss || !input.config.issuers.includes(claims.iss)) {
-      throw new OauthError("unexpected issuer");
-    }
+  if (input.config.issuers.length === 0) {
+    throw new OauthError("issuer allowlist required");
+  }
+  if (!claims.iss || !input.config.issuers.includes(claims.iss)) {
+    throw new OauthError("unexpected issuer");
   }
   if (claims.aud !== input.config.clientId) throw new OauthError("unexpected audience");
   if (claims.exp === null || claims.exp * 1000 + CLOCK_SKEW_SECONDS * 1000 < now) {

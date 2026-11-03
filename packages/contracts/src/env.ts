@@ -431,6 +431,20 @@ export const envSchema = z
           "STAFF_OIDC_AUTHORIZE_URL, STAFF_OIDC_TOKEN_URL, STAFF_OIDC_CLIENT_ID, STAFF_OIDC_CLIENT_SECRET and STAFF_OIDC_REDIRECT_URL must be set together",
       });
     }
+    if (staffOidc.every(Boolean)) {
+      const issuers = (env.STAFF_OIDC_ISSUERS ?? "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (env.WEB_ORIGIN.startsWith("https://") && issuers.length === 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["STAFF_OIDC_ISSUERS"],
+          message:
+            "STAFF_OIDC_ISSUERS must list at least one allowed issuer when staff OIDC is enabled on a https WEB_ORIGIN",
+        });
+      }
+    }
   })
   .transform((env) => ({
     ...env,

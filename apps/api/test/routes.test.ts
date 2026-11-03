@@ -2458,6 +2458,22 @@ test("the shared rate limiter is optional, needs both halves, and falls back whe
   assert.equal(both.UPSTASH_REDIS_REST_URL, "https://x.upstash.io/");
   assert.equal(both.ALBUM_UPLOAD_MAX_PER_HOUR, 3);
 
+  const staffOidcBase = {
+    ...base,
+    WEB_ORIGIN: "https://framesofme.com",
+    STAFF_OIDC_AUTHORIZE_URL: "https://idp.example/oauth/authorize",
+    STAFF_OIDC_TOKEN_URL: "https://idp.example/oauth/token",
+    STAFF_OIDC_CLIENT_ID: "client",
+    STAFF_OIDC_CLIENT_SECRET: "secret",
+    STAFF_OIDC_REDIRECT_URL: "https://framesofme.com/v1/auth/staff/callback",
+  };
+  assert.throws(() => envSchema.parse({ ...staffOidcBase, STAFF_OIDC_ISSUERS: "" }));
+  const staffOk = envSchema.parse({
+    ...staffOidcBase,
+    STAFF_OIDC_ISSUERS: "https://idp.example/application/o/rephoto/",
+  });
+  assert.equal(staffOk.STAFF_OIDC_ISSUERS, "https://idp.example/application/o/rephoto/");
+
   // And the limiter itself: null when unconfigured, the INCR result when it answers, a throw
   // when it does not — which is what lets the call site fall back instead of failing closed.
   assert.equal(await incrementSharedLimit({ key: "k", windowSeconds: 60 }), null);
@@ -2718,4 +2734,27 @@ test("MEDIA_VIA_API returns API upload and gallery media paths", async () => {
     `/v1/media/photos/${seeded[0]!.photoId}/thumb`,
   );
   assert.equal(gallery.items[0]?.webUrl, `/v1/media/photos/${seeded[0]!.photoId}/web`);
+
+  const thumbRes = await h.app.request(
+    new Request(`http://api.local/v1/media/photos/${seeded[0]!.photoId}/thumb`, {
+      headers: { cookie: pCookie },
+    }),
+  );
+  assert.equal(thumbRes.status, 200);
+
+  const stranger = await h.db.createUser({ email: "media-stranger@example.com", role: "participant" });
+  const sCookie = await sessionCookie(h.db, stranger.id);
+  await h.db.insertConsent({
+    userId: stranger.id,
+    eventId: h.event.id,
+    textVersion: CONSENT_TEXT_VERSION,
+    ip: "127.0.0.1",
+    userAgent: "t",
+  });
+  const denied = await h.app.request(
+    new Request(`http://api.local/v1/media/photos/${seeded[0]!.photoId}/thumb`, {
+      headers: { cookie: sCookie },
+    }),
+  );
+  assert.equal(denied.status, 403);
 });
