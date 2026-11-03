@@ -24,8 +24,8 @@ name: rephoto
 x-app-env: &app_env
   DATABASE_URL: ${DATABASE_URL:-postgres://rephoto:rephoto@postgres:5432/rephoto}
   DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-10}
-  # The api signs presigned URLs against S3_ENDPOINT; it must be the public host the BROWSER uses
-  # (SigV4 includes the host), i.e. https://s3.framesofme.com in Coolify.
+  # Internal object-store URL for api/worker (compose network). With MEDIA_VIA_API=true (default)
+  # browsers never call MinIO directly — ADR-002; do not map a public MinIO FQDN in Coolify.
   S3_ENDPOINT: ${S3_ENDPOINT:-http://minio:9000}
   S3_BUCKET: ${S3_BUCKET:-rephoto}
   # v6 hardening H3 — least privilege. These used to read S3_ACCESS_KEY / S3_SECRET_KEY,
@@ -59,7 +59,7 @@ x-app-env: &app_env
   INSIGHTFACE_MIN_FACE_QUALITY: ${INSIGHTFACE_MIN_FACE_QUALITY:-0.2}
   FACE_INDEX_TPS: ${FACE_INDEX_TPS:-20}
   FACE_SEARCH_TPS: ${FACE_SEARCH_TPS:-20}
-  # Liveness (v4 report F05): per gli eventi reali il runbook chiede LIVENESS_CHALLENGE=true.
+  # Liveness (v4 report F05): real events — set LIVENESS_CHALLENGE=true in Coolify (ops; not forced here).
   LIVENESS_CHECK: ${LIVENESS_CHECK:-false}
   LIVENESS_REQUIRED: ${LIVENESS_REQUIRED:-false}
   LIVENESS_CHALLENGE: ${LIVENESS_CHALLENGE:-false}
@@ -124,7 +124,7 @@ services:
           memory: 1g
 
   minio:
-    # FQDN in Coolify: s3.framesofme.com -> 9000 (the browser PUTs/GETs presigned URLs here).
+    # Internal only — no public FQDN (media via /v1/media and /v1/uploads when MEDIA_VIA_API=true).
     image: cgr.dev/chainguard/minio:latest
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
@@ -317,12 +317,13 @@ services:
       dockerfile: apps/web/Dockerfile
       args:
         NEXT_PUBLIC_EVENT_SLUG: ${NEXT_PUBLIC_EVENT_SLUG:-demo}
-        NEXT_PUBLIC_MEDIA_ORIGINS: ${NEXT_PUBLIC_MEDIA_ORIGINS:-http://localhost:9000}
+        # With MEDIA_VIA_API=true, gallery/upload URLs are same-origin /v1/* — CSP needs no MinIO origin.
+        NEXT_PUBLIC_MEDIA_ORIGINS: ${NEXT_PUBLIC_MEDIA_ORIGINS:-}
         NEXT_PUBLIC_WEB_ORIGIN: ${NEXT_PUBLIC_WEB_ORIGIN:-http://localhost:3000}
     environment:
       API_PROXY_TARGET: ${API_PROXY_TARGET:-http://api:8787}
       NEXT_PUBLIC_EVENT_SLUG: ${NEXT_PUBLIC_EVENT_SLUG:-demo}
-      NEXT_PUBLIC_MEDIA_ORIGINS: ${NEXT_PUBLIC_MEDIA_ORIGINS:-http://localhost:9000}
+      NEXT_PUBLIC_MEDIA_ORIGINS: ${NEXT_PUBLIC_MEDIA_ORIGINS:-}
       NEXT_PUBLIC_WEB_ORIGIN: ${NEXT_PUBLIC_WEB_ORIGIN:-http://localhost:3000}
     expose:
       - "3000"

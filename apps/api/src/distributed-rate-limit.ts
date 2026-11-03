@@ -26,21 +26,42 @@
  * the database count. It THROWS on a transport or protocol failure, so the caller can decide
  * between falling back and failing closed; every call site here falls back.
  */
+type PrivateRedisClient = {
+  isOpen: boolean;
+  incr(key: string): Promise<number>;
+  expire(key: string, seconds: number): Promise<number>;
+  quit(): Promise<string>;
+};
+
+let privateRedis: { url: string; client: PrivateRedisClient } | null = null;
+
+async function privateRedisClient(redisUrl: string): Promise<PrivateRedisClient> {
+  if (privateRedis?.url === redisUrl && privateRedis.client.isOpen) {
+    return privateRedis.client;
+  }
+  if (privateRedis?.client.isOpen) {
+    await privateRedis.client.quit().catch(() => {});
+  }
+  const { createClient } = await import("redis");
+  const client = createClient({ url: redisUrl });
+  client.on("error", () => {
+    privateRedis = null;
+  });
+  await client.connect();
+  const connected = client as unknown as PrivateRedisClient;
+  privateRedis = { url: redisUrl, client: connected };
+  return connected;
+}
+
 async function incrementPrivateRedis(
   redisUrl: string,
   key: string,
   windowSeconds: number,
 ): Promise<number> {
-  const { createClient } = await import("redis");
-  const client = createClient({ url: redisUrl });
-  await client.connect();
-  try {
-    const count = await client.incr(key);
-    if (count === 1) await client.expire(key, windowSeconds);
-    return count;
-  } finally {
-    await client.quit();
-  }
+  const client = await privateRedisClient(redisUrl);
+  const count = await client.incr(key);
+  if (count === 1) await client.expire(key, windowSeconds);
+  return count;
 }
 
 export async function incrementSharedLimit(input: {
