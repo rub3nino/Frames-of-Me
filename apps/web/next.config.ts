@@ -1,7 +1,13 @@
 import path from "node:path";
 import type { NextConfig } from "next";
 
-const mediaOrigins = (process.env.NEXT_PUBLIC_MEDIA_ORIGINS || "http://localhost:9000")
+const mediaOriginsRaw = process.env.NEXT_PUBLIC_MEDIA_ORIGINS?.trim();
+const mediaOrigins = (mediaOriginsRaw === undefined || mediaOriginsRaw === ""
+  ? process.env.NODE_ENV === "production"
+    ? ""
+    : "http://localhost:9000"
+  : mediaOriginsRaw
+)
   .split(/\s+/)
   .filter(Boolean)
   .join(" ");
