@@ -1141,6 +1141,24 @@ test("a staff-only album is not readable by a participant", async () => {
   );
 });
 
+test("staff-only album photos are not streamable via /v1/media for participants", async () => {
+  const h = await harness({}, { visibility: "staff" });
+  const anna = await participant(h, "anna@example.com");
+  const done = await upload(h, h.crowd.id, anna.cookie, "staff-secret");
+  assert.equal(done.status, 201);
+  const photoId = String(done.body.photoId);
+  await derive(h, photoId);
+  assert.equal(
+    (await h.app.request(get(`/v1/media/photos/${photoId}/thumb`, anna.cookie))).status,
+    403,
+  );
+  const adminCookie = await cookieFor(h.db, h.admin.id);
+  assert.equal(
+    (await h.app.request(get(`/v1/media/photos/${photoId}/thumb`, adminCookie))).status,
+    200,
+  );
+});
+
 // ---- C3: video is out of scope -----------------------------------------------------------
 
 test("the upload route refuses every video content type (decision 4, frozen)", async () => {

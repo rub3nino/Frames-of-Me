@@ -1,8 +1,8 @@
 import { stream } from "hono/streaming";
-import type { Context } from "hono";
 import type { AppDeps, AppEnv } from "./deps.js";
 import { ApiError, MESSAGES } from "./errors.js";
 import { requireUser } from "./http.js";
+import { assertPhotoMediaReadable } from "./photo-access.js";
 import {
   objectKeyForPhotoVariant,
   type PhotoMediaVariant,
@@ -18,7 +18,7 @@ export function registerMediaRoutes(app: import("hono").Hono<AppEnv>, deps: AppD
     const user = requireUser(c);
     const photo = await deps.db.findPhoto(photoId);
     if (!photo) throw new ApiError(404, MESSAGES.notFound);
-    await assertPhotoReadable(deps, c, user.id, user.role, photo);
+    await assertPhotoMediaReadable(deps, user, photo);
     const key = objectKeyForPhotoVariant(
       photo.id,
       photo.eventId,
@@ -35,21 +35,4 @@ export function registerMediaRoutes(app: import("hono").Hono<AppEnv>, deps: AppD
       }
     });
   });
-}
-
-async function assertPhotoReadable(
-  deps: AppDeps,
-  c: Context<AppEnv>,
-  userId: string,
-  role: string,
-  photo: { id: string; eventId: string; photographerId: string | null; albumId: string },
-): Promise<void> {
-  if (role === "admin") return;
-  if (role === "photographer" && photo.photographerId === userId) return;
-  if (role === "participant") {
-    const member = await deps.db.findEventMember(userId, photo.eventId);
-    if (!member) throw new ApiError(403, MESSAGES.forbidden);
-    return;
-  }
-  throw new ApiError(403, MESSAGES.forbidden);
 }
